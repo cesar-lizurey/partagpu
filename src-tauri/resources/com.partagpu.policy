@@ -5,7 +5,7 @@
 <policyconfig>
 
   <vendor>PartaGPU</vendor>
-  <vendor_url>https://github.com/partagpu/partagpu</vendor_url>
+  <vendor_url>https://github.com/cesar-lizurey/partagpu</vendor_url>
 
   <action id="com.partagpu.manage">
     <description>Manage the PartaGPU compute sharing user and cgroups</description>

@@ -1,8 +1,11 @@
 [package]
 name = "partagpu-helper"
-version = "0.1.0"
+version = "1.0.0"
 description = "PartaGPU privilege helper — runs via pkexec as root"
-authors = ["PartaGPU"]
+authors = ["César Lizurey"]
+homepage = "https://cesar.lizurey.fr"
+repository = "https://github.com/cesar-lizurey/partagpu"
+license = "MIT"
 edition = "2021"
 
 [[bin]]

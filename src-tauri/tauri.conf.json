@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nickolay/tauri-docs-en/refs/heads/next/references/config-schema.json",
   "productName": "PartaGPU",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.partagpu.app",
   "build": {
     "frontendDist": "../dist",

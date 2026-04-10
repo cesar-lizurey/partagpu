@@ -5,6 +5,13 @@ node_modules/
 dist/
 src-tauri/target/
 
+# CI cache
+.cargo/
+.rustup/
+
+# Helper binary copied during CI build (not versioned)
+src-tauri/resources/partagpu-helper
+
 # IDE
 .vscode/
 .idea/

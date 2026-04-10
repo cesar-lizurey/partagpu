@@ -36,17 +36,23 @@ Chaque poste peut choisir de mettre à disposition tout ou partie de ses ressour
 
 ## Installation
 
-### 1. Cloner et installer
+### Option A : installer le .deb (recommandé)
+
+Téléchargez la dernière version depuis la [page des releases](https://github.com/cesar-lizurey/partagpu/releases) :
 
 ```bash
-git clone <repo-url> partagpu
-cd partagpu
-npm install
+# Téléchargez le .deb depuis la page des releases, puis :
+sudo dpkg -i partagpu_*_amd64.deb
 ```
 
-### 2. Lancer l'application
+Le `.deb` installe tout automatiquement : l'application, le helper, et la règle PolicyKit. PartaGPU apparaît dans le menu d'applications.
+
+### Option B : depuis les sources (développement)
 
 ```bash
+git clone https://github.com/cesar-lizurey/partagpu.git
+cd partagpu
+npm install
 npm run tauri:dev      # mode développement
 npm run tauri:build    # build de production (génère un .deb)
 ```
@@ -350,7 +356,31 @@ Les ajustements de sliders, la consultation du statut, et le monitoring **n'appe
 
 Pour le détail complet de chaque mécanisme (schémas, fichiers concernés, scénarios d'attaque), voir [SECURITY.md](SECURITY.md).
 
-Voir [TODO.md](TODO.md) pour les mesures restantes à implémenter.
+Pour le détail de toutes les mesures restantes, voir [TODO.md](TODO.md).
+
+---
+
+## CI/CD
+
+Le projet utilise GitLab CI/CD. Le pipeline s'exécute automatiquement à chaque push :
+
+| Étape | Ce qui est vérifié |
+|-------|-------------------|
+| **check** | TypeScript (`tsc --noEmit`), formatage (Prettier), lint (ESLint), compilation Rust (`cargo check`) |
+| **audit** | `npm audit` et `cargo audit` — détection de vulnérabilités dans les dépendances |
+| **build** | Construction du `.deb` (frontend + backend + helper) — uniquement sur `main` et les tags |
+| **release** | Publication automatique sur la page des releases avec le `.deb` en téléchargement |
+
+### Publier une nouvelle version
+
+```bash
+# Mettre à jour la version dans package.json, Cargo.toml et tauri.conf.json
+# Puis taguer et pousser :
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+Le pipeline construit le `.deb` et le publie automatiquement dans une release GitLab. Le lien de téléchargement dans la section [Installation](#installation) pointe vers la dernière release.
 
 ---
 

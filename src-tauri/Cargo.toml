@@ -3,9 +3,12 @@ members = [".", "helper"]
 
 [package]
 name = "partagpu"
-version = "0.1.0"
+version = "1.0.0"
 description = "Partage de ressources de calcul sur réseau local"
-authors = ["PartaGPU"]
+authors = ["César Lizurey"]
+homepage = "https://cesar.lizurey.fr"
+repository = "https://github.com/cesar-lizurey/partagpu"
+license = "MIT"
 edition = "2021"
 
 [lib]
