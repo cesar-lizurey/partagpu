@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200" font-family="Inter, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="fbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1d27"/>
+      <stop offset="100%" stop-color="#0f1117"/>
+    </linearGradient>
+    <filter id="fsh">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <rect width="600" height="200" rx="16" fill="url(#fbg)"/>
+  <text x="300" y="28" text-anchor="middle" fill="#e4e6eb" font-size="15" font-weight="600">Gestion automatique du pare-feu</text>
+
+  <!-- States -->
+  <rect x="30" y="55" width="120" height="45" rx="8" fill="#222632" stroke="#8b8fa3" stroke-width="1.5" filter="url(#fsh)"/>
+  <text x="90" y="82" text-anchor="middle" fill="#8b8fa3" font-size="12" font-weight="500">Désactivé</text>
+
+  <rect x="190" y="55" width="120" height="45" rx="8" fill="#222632" stroke="#22c55e" stroke-width="1.5" filter="url(#fsh)"/>
+  <text x="250" y="82" text-anchor="middle" fill="#22c55e" font-size="12" font-weight="500">Actif</text>
+
+  <rect x="350" y="55" width="120" height="45" rx="8" fill="#222632" stroke="#f59e0b" stroke-width="1.5" filter="url(#fsh)"/>
+  <text x="410" y="82" text-anchor="middle" fill="#f59e0b" font-size="12" font-weight="500">Pause</text>
+
+  <!-- Port status -->
+  <rect x="30" y="120" width="120" height="28" rx="6" fill="rgba(239,68,68,0.1)"/>
+  <text x="90" y="139" text-anchor="middle" fill="#ef4444" font-size="11">Port 7654 fermé</text>
+
+  <rect x="190" y="120" width="120" height="28" rx="6" fill="rgba(34,197,94,0.1)"/>
+  <text x="250" y="139" text-anchor="middle" fill="#22c55e" font-size="11">Port 7654 ouvert</text>
+
+  <rect x="350" y="120" width="120" height="28" rx="6" fill="rgba(239,68,68,0.1)"/>
+  <text x="410" y="139" text-anchor="middle" fill="#ef4444" font-size="11">Port 7654 fermé</text>
+
+  <!-- mDNS always -->
+  <rect x="190" y="160" width="280" height="28" rx="6" fill="rgba(99,102,241,0.1)"/>
+  <text x="330" y="179" text-anchor="middle" fill="#6366f1" font-size="11">Port 5353/UDP (mDNS) — toujours ouvert</text>
+
+  <!-- Arrows -->
+  <line x1="150" y1="78" x2="190" y2="78" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="170" y="72" text-anchor="middle" fill="#22c55e" font-size="9">Activer</text>
+
+  <line x1="310" y1="78" x2="350" y2="78" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="330" y="72" text-anchor="middle" fill="#f59e0b" font-size="9">Pause</text>
+
+  <path d="M470,78 Q510,78 510,55 Q510,45 480,45 L170,45 Q150,45 150,55 L150,60" stroke="#8b8fa3" stroke-width="1" fill="none" stroke-dasharray="4,3"/>
+  <text x="340" y="42" text-anchor="middle" fill="#8b8fa3" font-size="9">Désactiver</text>
+</svg>

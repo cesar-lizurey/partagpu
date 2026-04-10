@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 190" font-family="Inter, system-ui, sans-serif">
+  <rect width="480" height="190" rx="10" fill="#222632"/>
+
+  <text x="20" y="30" fill="#e4e6eb" font-size="14" font-weight="600">Limites de partage</text>
+
+  <!-- CPU -->
+  <text x="20" y="62" fill="#e4e6eb" font-size="12">CPU : <tspan font-weight="700">60%</tspan></text>
+  <rect x="20" y="72" width="440" height="10" fill="#2a2e3a"/>
+  <rect x="20" y="72" width="264" height="10" fill="#6366f1"/>
+  <circle cx="284" cy="77" r="7" fill="#6366f1" stroke="#e4e6eb" stroke-width="2"/>
+
+  <!-- RAM -->
+  <text x="20" y="112" fill="#e4e6eb" font-size="12">RAM : <tspan font-weight="700">8192 Mo</tspan> <tspan fill="#8b8fa3" font-weight="400">/ 16384 Mo total</tspan></text>
+  <rect x="20" y="122" width="440" height="10" fill="#2a2e3a"/>
+  <rect x="20" y="122" width="220" height="10" fill="#a78bfa"/>
+  <circle cx="240" cy="127" r="7" fill="#a78bfa" stroke="#e4e6eb" stroke-width="2"/>
+
+  <!-- GPU -->
+  <text x="20" y="162" fill="#e4e6eb" font-size="12">GPU : <tspan font-weight="700">40%</tspan></text>
+  <rect x="20" y="172" width="440" height="10" fill="#2a2e3a"/>
+  <rect x="20" y="172" width="176" height="10" fill="#f59e0b"/>
+  <circle cx="196" cy="177" r="7" fill="#f59e0b" stroke="#e4e6eb" stroke-width="2"/>
+</svg>

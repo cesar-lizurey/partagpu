@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 420" font-family="Inter, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="bg3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1d27"/>
+      <stop offset="100%" stop-color="#0f1117"/>
+    </linearGradient>
+    <filter id="sh">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.25"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="10" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#6366f1"/>
+    </marker>
+    <marker id="arrowGray" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="10" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#8b8fa3"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="780" height="420" rx="16" fill="url(#bg3)"/>
+
+  <!-- Machine A -->
+  <rect x="30" y="20" width="320" height="380" rx="12" fill="none" stroke="#2a2e3a" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <text x="190" y="48" text-anchor="middle" fill="#e4e6eb" font-size="15" font-weight="600">Machine A</text>
+
+  <!-- Machine B -->
+  <rect x="430" y="20" width="320" height="380" rx="12" fill="none" stroke="#2a2e3a" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <text x="590" y="48" text-anchor="middle" fill="#e4e6eb" font-size="15" font-weight="600">Machine B</text>
+
+  <!-- A: Frontend -->
+  <rect x="70" y="70" width="240" height="50" rx="8" fill="#222632" stroke="#6366f1" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="190" y="100" text-anchor="middle" fill="#6366f1" font-size="13" font-weight="600">Frontend (React)</text>
+
+  <!-- A: Backend -->
+  <rect x="70" y="170" width="240" height="50" rx="8" fill="#222632" stroke="#a78bfa" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="190" y="200" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="600">Backend (Rust / Tauri)</text>
+
+  <!-- A: Helper -->
+  <rect x="70" y="270" width="240" height="50" rx="8" fill="#222632" stroke="#f59e0b" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="190" y="300" text-anchor="middle" fill="#f59e0b" font-size="13" font-weight="600">partagpu-helper (root)</text>
+
+  <!-- A: Cgroup -->
+  <rect x="95" y="350" width="190" height="40" rx="6" fill="#2a2e3a"/>
+  <text x="190" y="374" text-anchor="middle" fill="#8b8fa3" font-size="11">/sys/fs/cgroup/partagpu/</text>
+
+  <!-- B: Frontend -->
+  <rect x="470" y="70" width="240" height="50" rx="8" fill="#222632" stroke="#6366f1" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="590" y="100" text-anchor="middle" fill="#6366f1" font-size="13" font-weight="600">Frontend (React)</text>
+
+  <!-- B: Backend -->
+  <rect x="470" y="170" width="240" height="50" rx="8" fill="#222632" stroke="#a78bfa" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="590" y="200" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="600">Backend (Rust / Tauri)</text>
+
+  <!-- B: Helper -->
+  <rect x="470" y="270" width="240" height="50" rx="8" fill="#222632" stroke="#f59e0b" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="590" y="300" text-anchor="middle" fill="#f59e0b" font-size="13" font-weight="600">partagpu-helper (root)</text>
+
+  <!-- B: Cgroup -->
+  <rect x="495" y="350" width="190" height="40" rx="6" fill="#2a2e3a"/>
+  <text x="590" y="374" text-anchor="middle" fill="#8b8fa3" font-size="11">/sys/fs/cgroup/partagpu/</text>
+
+  <!-- Vertical arrows A -->
+  <line x1="190" y1="120" x2="190" y2="170" stroke="#8b8fa3" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+  <text x="210" y="150" fill="#8b8fa3" font-size="10">invoke</text>
+
+  <line x1="190" y1="220" x2="190" y2="270" stroke="#8b8fa3" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+  <text x="210" y="250" fill="#f59e0b" font-size="10">pkexec</text>
+
+  <line x1="190" y1="320" x2="190" y2="350" stroke="#8b8fa3" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+  <!-- Vertical arrows B -->
+  <line x1="590" y1="120" x2="590" y2="170" stroke="#8b8fa3" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+  <text x="610" y="150" fill="#8b8fa3" font-size="10">invoke</text>
+
+  <line x1="590" y1="220" x2="590" y2="270" stroke="#8b8fa3" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+  <text x="610" y="250" fill="#f59e0b" font-size="10">pkexec</text>
+
+  <line x1="590" y1="320" x2="590" y2="350" stroke="#8b8fa3" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+  <!-- Horizontal: mDNS -->
+  <line x1="310" y1="78" x2="470" y2="78" stroke="#6366f1" stroke-width="1.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <rect x="355" y="65" width="70" height="20" rx="10" fill="#6366f1" fill-opacity="0.15"/>
+  <text x="390" y="79" text-anchor="middle" fill="#6366f1" font-size="10" font-weight="500">mDNS</text>
+
+  <!-- Horizontal: gRPC -->
+  <line x1="310" y1="195" x2="470" y2="195" stroke="#a78bfa" stroke-width="1.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <rect x="345" y="181" width="90" height="20" rx="10" fill="#a78bfa" fill-opacity="0.15"/>
+  <text x="390" y="195" text-anchor="middle" fill="#a78bfa" font-size="10" font-weight="500">gRPC / tâches</text>
+</svg>

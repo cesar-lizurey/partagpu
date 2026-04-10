@@ -1,0 +1,12 @@
+[package]
+name = "partagpu-helper"
+version = "0.1.0"
+description = "PartaGPU privilege helper — runs via pkexec as root"
+authors = ["PartaGPU"]
+edition = "2021"
+
+[[bin]]
+name = "partagpu-helper"
+path = "src/main.rs"
+
+[dependencies]

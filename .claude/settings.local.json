@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo --version)",
+      "Bash(rustc --version)",
+      "Bash(cargo install:*)",
+      "Bash(npm list:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite:*)",
+      "Bash(cargo check:*)",
+      "Bash(npx tauri:*)",
+      "Bash(python3 -c \"from PIL import Image; print\\('ok'\\)\")",
+      "Bash(python3)",
+      "Bash(chmod +x /home/cesar/partagpu/src-tauri/resources/partagpu-helper)",
+      "Bash(chmod +x /home/cesar/partagpu/scripts/install-helper.sh /home/cesar/partagpu/scripts/uninstall-helper.sh)",
+      "Bash(grep -r \"fn generate\\\\|fn default\\\\|fn new\" target/debug/.fingerprint/totp-rs*/lib-*)",
+      "Bash(cargo doc:*)",
+      "Bash(grep -rn \"generate_secret\\\\|Secret\" /home/cesar/partagpu/src-tauri/target/debug/build/totp-rs-*/out/)",
+      "Bash(cargo build:*)",
+      "Bash(bwrap --version)"
+    ]
+  }
+}

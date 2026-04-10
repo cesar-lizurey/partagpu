@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nickolay/tauri-docs-en/refs/heads/next/references/capability-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for PartaGPU",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open"
+  ]
+}

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 52" font-family="Inter, system-ui, sans-serif">
+  <rect width="560" height="52" rx="8" fill="#0f1117"/>
+
+  <!-- Left: App title -->
+  <text x="20" y="33" font-size="18" font-weight="700">
+    <tspan fill="#6366f1">Parta</tspan><tspan fill="#a78bfa">GPU</tspan>
+  </text>
+
+  <!-- Right: Editable name -->
+  <rect x="330" y="10" width="210" height="32" rx="6" fill="none" stroke="#2a2e3a" stroke-width="1"/>
+  <text x="344" y="31" fill="#e4e6eb" font-size="14" font-weight="600">César</text>
+  <text x="390" y="31" fill="#8b8fa3" font-size="12">(pc-salle-201)</text>
+  <text x="516" y="31" fill="#8b8fa3" font-size="12">&#9998;</text>
+</svg>

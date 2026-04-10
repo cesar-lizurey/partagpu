@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 380" font-family="Inter, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="sbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1d27"/>
+      <stop offset="100%" stop-color="#0f1117"/>
+    </linearGradient>
+    <filter id="ssh">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.25"/>
+    </filter>
+    <marker id="sarr" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="10" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#8b8fa3"/>
+    </marker>
+  </defs>
+
+  <rect width="700" height="380" rx="16" fill="url(#sbg)"/>
+  <text x="350" y="30" text-anchor="middle" fill="#e4e6eb" font-size="15" font-weight="600">Exécution sandboxée d'une tâche</text>
+
+  <!-- Incoming task -->
+  <rect x="30" y="55" width="160" height="50" rx="8" fill="#222632" stroke="#6366f1" stroke-width="1.5" filter="url(#ssh)"/>
+  <text x="110" y="75" text-anchor="middle" fill="#6366f1" font-size="12" font-weight="600">Tâche entrante</text>
+  <text x="110" y="92" text-anchor="middle" fill="#8b8fa3" font-size="10">python3 train.py</text>
+
+  <!-- Arrow to allowlist -->
+  <line x1="190" y1="80" x2="230" y2="80" stroke="#8b8fa3" stroke-width="1.5" marker-end="url(#sarr)"/>
+
+  <!-- Allowlist check -->
+  <rect x="235" y="55" width="130" height="50" rx="8" fill="#222632" stroke="#f59e0b" stroke-width="1.5" filter="url(#ssh)"/>
+  <text x="300" y="75" text-anchor="middle" fill="#f59e0b" font-size="12" font-weight="600">Allowlist</text>
+  <text x="300" y="92" text-anchor="middle" fill="#8b8fa3" font-size="10">python3 autorisé ?</text>
+
+  <!-- Arrow to sandbox -->
+  <line x1="365" y1="80" x2="405" y2="80" stroke="#8b8fa3" stroke-width="1.5" marker-end="url(#sarr)"/>
+
+  <!-- Reject arrow -->
+  <line x1="300" y1="105" x2="300" y2="135" stroke="#ef4444" stroke-width="1.5" marker-end="url(#sarr)"/>
+  <rect x="245" y="138" width="110" height="28" rx="6" fill="rgba(239,68,68,0.15)"/>
+  <text x="300" y="157" text-anchor="middle" fill="#ef4444" font-size="11" font-weight="500">Refusé</text>
+
+  <!-- Sandbox box -->
+  <rect x="410" y="40" width="270" height="320" rx="10" fill="none" stroke="#22c55e" stroke-width="2" stroke-dasharray="6,4"/>
+  <text x="545" y="62" text-anchor="middle" fill="#22c55e" font-size="13" font-weight="600">Sandbox bubblewrap</text>
+
+  <!-- Filesystem -->
+  <rect x="430" y="78" width="230" height="44" rx="6" fill="#222632" filter="url(#ssh)"/>
+  <text x="545" y="96" text-anchor="middle" fill="#e4e6eb" font-size="11" font-weight="500">Filesystem</text>
+  <text x="545" y="114" text-anchor="middle" fill="#8b8fa3" font-size="10">/usr /lib /bin /etc = lecture seule</text>
+
+  <!-- Workspace -->
+  <rect x="430" y="130" width="230" height="34" rx="6" fill="#222632" filter="url(#ssh)"/>
+  <text x="545" y="152" text-anchor="middle" fill="#a78bfa" font-size="11">/workspace = tmpfs (écriture)</text>
+
+  <!-- No network -->
+  <rect x="430" y="172" width="110" height="34" rx="6" fill="rgba(239,68,68,0.1)" stroke="#ef4444" stroke-width="1"/>
+  <text x="485" y="194" text-anchor="middle" fill="#ef4444" font-size="11" font-weight="500">Pas de réseau</text>
+
+  <!-- PID namespace -->
+  <rect x="550" y="172" width="110" height="34" rx="6" fill="rgba(239,68,68,0.1)" stroke="#ef4444" stroke-width="1"/>
+  <text x="605" y="194" text-anchor="middle" fill="#ef4444" font-size="11" font-weight="500">PID isolé</text>
+
+  <!-- User -->
+  <rect x="430" y="214" width="110" height="34" rx="6" fill="#222632" filter="url(#ssh)"/>
+  <text x="485" y="236" text-anchor="middle" fill="#f59e0b" font-size="11">UID: partagpu</text>
+
+  <!-- Cgroup -->
+  <rect x="550" y="214" width="110" height="34" rx="6" fill="#222632" filter="url(#ssh)"/>
+  <text x="605" y="236" text-anchor="middle" fill="#f59e0b" font-size="11">cgroup limité</text>
+
+  <!-- Timeout -->
+  <rect x="430" y="256" width="110" height="34" rx="6" fill="#222632" filter="url(#ssh)"/>
+  <text x="485" y="278" text-anchor="middle" fill="#8b8fa3" font-size="11">Timeout 1h</text>
+
+  <!-- Output limits -->
+  <rect x="550" y="256" width="110" height="34" rx="6" fill="#222632" filter="url(#ssh)"/>
+  <text x="605" y="278" text-anchor="middle" fill="#8b8fa3" font-size="11">Sortie max 1 Mo</text>
+
+  <!-- Result -->
+  <rect x="430" y="304" width="230" height="40" rx="6" fill="#222632" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="545" y="329" text-anchor="middle" fill="#22c55e" font-size="12" font-weight="500">Résultat (exit code + stdout + stderr)</text>
+
+  <!-- Left labels -->
+  <text x="30" y="200" fill="#8b8fa3" font-size="10" font-style="italic">La machine hôte</text>
+  <text x="30" y="215" fill="#8b8fa3" font-size="10" font-style="italic">n'est pas affectée</text>
+  <text x="30" y="230" fill="#8b8fa3" font-size="10" font-style="italic">par la tâche.</text>
+</svg>

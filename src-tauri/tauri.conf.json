@@ -1,0 +1,47 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nickolay/tauri-docs-en/refs/heads/next/references/config-schema.json",
+  "productName": "PartaGPU",
+  "version": "0.1.0",
+  "identifier": "com.partagpu.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PartaGPU — Partage de ressources",
+        "width": 960,
+        "height": 700,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": [
+      "resources/com.partagpu.policy"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["policykit-1"],
+        "desktopTemplate": null,
+        "postInstallScript": "#!/bin/bash\nmkdir -p /usr/local/lib/partagpu\ncp /usr/lib/partagpu/resources/partagpu-helper /usr/local/lib/partagpu/partagpu-helper\nchmod 755 /usr/local/lib/partagpu/partagpu-helper\nchown root:root /usr/local/lib/partagpu/partagpu-helper\ncp /usr/lib/partagpu/resources/com.partagpu.policy /usr/share/polkit-1/actions/com.partagpu.policy\nchmod 644 /usr/share/polkit-1/actions/com.partagpu.policy"
+      }
+    }
+  }
+}

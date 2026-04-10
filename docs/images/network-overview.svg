@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 340" font-family="Inter, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1d27"/>
+      <stop offset="100%" stop-color="#0f1117"/>
+    </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="880" height="340" rx="16" fill="url(#bg)"/>
+
+  <!-- Title -->
+  <text x="440" y="32" text-anchor="middle" fill="#8b8fa3" font-size="13" font-weight="500">Salle de cours — réseau local</text>
+
+  <!-- PC Cards -->
+  <!-- César -->
+  <rect x="20" y="52" width="190" height="170" rx="10" fill="#222632" stroke="#2a2e3a" stroke-width="1" filter="url(#shadow)"/>
+  <circle cx="40" cy="74" r="5" fill="#22c55e"/>
+  <text x="52" y="78" fill="#e4e6eb" font-size="14" font-weight="600">PC-César</text>
+  <text x="36" y="100" fill="#8b8fa3" font-size="12">actif</text>
+  <line x1="36" y1="112" x2="194" y2="112" stroke="#2a2e3a" stroke-width="1"/>
+  <text x="36" y="132" fill="#8b8fa3" font-size="11">Partage :</text>
+  <text x="36" y="152" fill="#6366f1" font-size="13" font-weight="500">CPU 60%</text>
+  <rect x="110" y="140" width="90" height="8" fill="#2a2e3a"/>
+  <rect x="110" y="140" width="54" height="8" fill="#6366f1"/>
+  <text x="36" y="176" fill="#a78bfa" font-size="13" font-weight="500">RAM 50%</text>
+  <rect x="110" y="164" width="90" height="8" fill="#2a2e3a"/>
+  <rect x="110" y="164" width="45" height="8" fill="#a78bfa"/>
+  <text x="36" y="200" fill="#22c55e" font-size="13" font-weight="500">GPU —</text>
+
+  <!-- Corinne -->
+  <rect x="235" y="52" width="190" height="170" rx="10" fill="#222632" stroke="#2a2e3a" stroke-width="1" filter="url(#shadow)"/>
+  <circle cx="255" cy="74" r="5" fill="#22c55e"/>
+  <text x="267" y="78" fill="#e4e6eb" font-size="14" font-weight="600">PC-Corinne</text>
+  <text x="251" y="100" fill="#8b8fa3" font-size="12">actif</text>
+  <line x1="251" y1="112" x2="409" y2="112" stroke="#2a2e3a" stroke-width="1"/>
+  <text x="251" y="132" fill="#8b8fa3" font-size="11">Partage :</text>
+  <text x="251" y="152" fill="#6366f1" font-size="13" font-weight="500">CPU 80%</text>
+  <rect x="325" y="140" width="90" height="8" fill="#2a2e3a"/>
+  <rect x="325" y="140" width="72" height="8" fill="#6366f1"/>
+  <text x="251" y="176" fill="#f59e0b" font-size="13" font-weight="500">GPU 40%</text>
+  <rect x="325" y="164" width="90" height="8" fill="#2a2e3a"/>
+  <rect x="325" y="164" width="36" height="8" fill="#f59e0b"/>
+
+  <!-- Emmanuel -->
+  <rect x="450" y="52" width="190" height="170" rx="10" fill="#222632" stroke="#f59e0b" stroke-width="1.5" filter="url(#shadow)"/>
+  <circle cx="470" cy="74" r="5" fill="#f59e0b"/>
+  <text x="482" y="78" fill="#e4e6eb" font-size="14" font-weight="600">PC-Emmanuel</text>
+  <text x="466" y="100" fill="#f59e0b" font-size="12" font-weight="500">absent — connecté en partagpu</text>
+  <line x1="466" y1="112" x2="624" y2="112" stroke="#2a2e3a" stroke-width="1"/>
+  <text x="466" y="132" fill="#8b8fa3" font-size="11">Partage :</text>
+  <text x="466" y="152" fill="#6366f1" font-size="13" font-weight="500">CPU 100%</text>
+  <rect x="540" y="140" width="90" height="8" fill="#2a2e3a"/>
+  <rect x="540" y="140" width="90" height="8" fill="#6366f1"/>
+  <text x="466" y="176" fill="#a78bfa" font-size="13" font-weight="500">RAM 100%</text>
+  <rect x="540" y="164" width="90" height="8" fill="#2a2e3a"/>
+  <rect x="540" y="164" width="90" height="8" fill="#a78bfa"/>
+
+  <!-- Mika -->
+  <rect x="665" y="52" width="190" height="170" rx="10" fill="#222632" stroke="#2a2e3a" stroke-width="1" filter="url(#shadow)"/>
+  <circle cx="685" cy="74" r="5" fill="#8b8fa3"/>
+  <text x="697" y="78" fill="#e4e6eb" font-size="14" font-weight="600">PC-Mika</text>
+  <text x="681" y="100" fill="#8b8fa3" font-size="12">actif</text>
+  <line x1="681" y1="112" x2="839" y2="112" stroke="#2a2e3a" stroke-width="1"/>
+  <text x="681" y="132" fill="#8b8fa3" font-size="11">Partage :</text>
+  <text x="681" y="152" fill="#8b8fa3" font-size="13" font-weight="500">pause</text>
+
+  <!-- Network connections -->
+  <line x1="115" y1="232" x2="115" y2="268" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="330" y1="232" x2="330" y2="268" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="545" y1="232" x2="545" y2="268" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="760" y1="232" x2="760" y2="268" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+  <!-- Horizontal bus -->
+  <line x1="115" y1="268" x2="760" y2="268" stroke="#6366f1" stroke-width="2"/>
+  <circle cx="115" cy="268" r="4" fill="#6366f1"/>
+  <circle cx="330" cy="268" r="4" fill="#6366f1"/>
+  <circle cx="545" cy="268" r="4" fill="#6366f1"/>
+  <circle cx="760" cy="268" r="4" fill="#6366f1"/>
+
+  <!-- mDNS label -->
+  <rect x="340" y="288" width="200" height="28" rx="14" fill="#6366f1" fill-opacity="0.15"/>
+  <text x="440" y="307" text-anchor="middle" fill="#6366f1" font-size="12" font-weight="500">Découverte automatique (mDNS)</text>
+</svg>
