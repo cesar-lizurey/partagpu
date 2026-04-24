@@ -27,7 +27,8 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "resources/com.partagpu.policy"
+      "resources/com.partagpu.policy",
+      "resources/partagpu-helper"
     ],
     "icon": [
       "icons/32x32.png",
