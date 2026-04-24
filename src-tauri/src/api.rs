@@ -108,7 +108,7 @@ pub fn set_user_password(password: String) -> Result<String, String> {
 // ── Resource monitoring ────────────────────────────────────
 
 #[tauri::command]
-pub fn get_resources(monitor: State<'_, Mutex<ResourceMonitor>>) -> crate::resource::ResourceUsage {
+pub fn get_resources(monitor: State<'_, std::sync::Arc<Mutex<ResourceMonitor>>>) -> crate::resource::ResourceUsage {
     monitor.lock().unwrap().snapshot()
 }
 

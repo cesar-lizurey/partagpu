@@ -1,6 +1,7 @@
 pub mod api;
 pub mod auth;
 pub mod discovery;
+pub mod http_api;
 pub mod resource;
 pub mod sandbox;
 pub mod security_log;
@@ -14,7 +15,7 @@ use resource::ResourceMonitor;
 use sandbox::Sandbox;
 use security_log::SecurityLog;
 use sharing::SharingController;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use task_runner::{IncomingTasks, OutgoingTasks};
 
 /// Load a persistent machine ID from ~/.config/partagpu/machine-id,
@@ -68,7 +69,10 @@ pub fn run() {
     }
     discovery.start_mdns_refresh();
     let sandbox = Sandbox::new();
-    let monitor = ResourceMonitor::new();
+    let monitor = Arc::new(Mutex::new(ResourceMonitor::new()));
+
+    // Start the local HTTP API for the Python package
+    http_api::start(discovery.clone(), sharing.clone(), monitor.clone());
     let incoming = IncomingTasks::new(sandbox);
     let outgoing = OutgoingTasks::new();
 
@@ -77,7 +81,7 @@ pub fn run() {
         .manage(sec_log)
         .manage(auth)
         .manage(discovery)
-        .manage(Mutex::new(monitor))
+        .manage(monitor)
         .manage(sharing)
         .manage(incoming)
         .manage(outgoing)

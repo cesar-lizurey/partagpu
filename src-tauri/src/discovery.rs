@@ -40,6 +40,7 @@ struct PeerMeta {
     last_update: Instant,
 }
 
+#[derive(Clone)]
 pub struct Discovery {
     daemon: ServiceDaemon,
     peers: Arc<Mutex<HashMap<String, Peer>>>,

@@ -406,6 +406,72 @@ Le pipeline construit le `.deb` et le publie automatiquement dans une release Gi
 
 ---
 
+## Package Python — Entraînement distribué
+
+PartaGPU fournit un package Python pour exploiter les GPU partagés directement depuis un notebook Jupyter ou un script.
+
+### Installation
+
+```bash
+pip install partagpu
+```
+
+### Découverte des GPU disponibles
+
+```python
+import partagpu
+
+# Liste tous les GPU disponibles (local + pairs vérifiés)
+gpus = partagpu.discover()
+# → [GPU('local', ip='192.168.70.103', limit=100%, verified),
+#    GPU('César 2', ip='192.168.70.105', limit=50%, verified)]
+```
+
+L'application PartaGPU doit tourner sur la machine locale — le package Python communique avec elle via une API HTTP sur `localhost:7654`.
+
+### Entraînement distribué avec PyTorch
+
+Pour un script d'entraînement classique :
+
+```python
+from partagpu.distributed import launch_workers
+
+# Lance un worker par GPU disponible (local + distant)
+workers = launch_workers("train.py", args=["--epochs", "10"])
+
+# Attendre la fin de l'entraînement
+for w in workers:
+    w.wait()
+```
+
+Dans le script `train.py`, utilisez les variables d'environnement standard PyTorch DDP :
+
+```python
+import os
+import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+dist.init_process_group("nccl")
+rank = int(os.environ["RANK"])
+model = MyModel().cuda(rank)
+model = DDP(model)
+# ... entraînement normal
+dist.destroy_process_group()
+```
+
+### API locale
+
+L'application PartaGPU expose une API HTTP sur `127.0.0.1:7654` :
+
+| Route | Description |
+|-------|-------------|
+| `GET /api/peers` | Liste de tous les pairs découverts (JSON) |
+| `GET /api/gpu` | Liste des GPU disponibles — local + pairs vérifiés qui partagent (JSON) |
+| `GET /api/status` | Statut de partage local (JSON) |
+
+---
+
 ## Prérequis
 
 | Logiciel | Version | Obligatoire |
