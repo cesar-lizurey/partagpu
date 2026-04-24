@@ -25,12 +25,22 @@ pub struct UserManager;
 
 impl UserManager {
     fn helper_path() -> String {
-        // 1. Installed system-wide (production)
+        // 1. Installed system-wide (production .deb)
         if std::path::Path::new(HELPER_INSTALLED).exists() {
             return HELPER_INSTALLED.to_string();
         }
 
-        // 2. Dev mode: built by cargo in the workspace target directory
+        // 2. Bundled next to the executable (AppImage)
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let candidate = dir.join("resources").join("partagpu-helper");
+                if candidate.exists() {
+                    return candidate.to_string_lossy().to_string();
+                }
+            }
+        }
+
+        // 3. Dev mode: built by cargo in the workspace target directory
         let target_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target");
         for profile in ["debug", "release"] {
             let candidate = format!("{target_dir}/{profile}/partagpu-helper");
