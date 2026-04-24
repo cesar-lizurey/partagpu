@@ -183,7 +183,13 @@ impl UserManager {
             .is_ok()
     }
 
+    /// Check if the cgroup directory exists.
+    fn cgroup_exists() -> bool {
+        std::path::Path::new(CGROUP_PATH).exists()
+    }
+
     /// Adjust cgroup limits. Direct write if possible, pkexec fallback.
+    /// If the cgroup doesn't exist and pkexec fails, returns Ok (best effort).
     pub fn setup_cgroup(
         cpu_percent: u32,
         ram_limit_mb: u64,
@@ -198,13 +204,21 @@ impl UserManager {
             return Ok(());
         }
 
-        Self::run_helper(&[
+        // If cgroup exists but isn't writable, or doesn't exist at all,
+        // try pkexec. If that fails (e.g. no admin rights), log and continue.
+        match Self::run_helper(&[
             "setup-cgroup",
             &cpu.to_string(),
             &ram.to_string(),
-        ])?;
-
-        Ok(())
+        ]) {
+            Ok(_) => Ok(()),
+            Err(e) if Self::cgroup_exists() => {
+                // Cgroup exists from a previous setup, just can't adjust limits — acceptable
+                eprintln!("Warning: could not adjust cgroup limits: {e}");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn write_cgroup_limits(cpu_percent: u32, ram_limit_mb: u64) -> Result<(), String> {

@@ -236,7 +236,7 @@ C'est le cas d'usage principal du compte `partagpu` :
 3. Entrez le **mot de passe commun** défini lors de la configuration
 4. PartaGPU **se lance automatiquement** (autostart configuré)
 5. **Rejoignez la salle** en entrant le code d'accès (dictez-le depuis votre poste si besoin)
-6. Cliquez sur **« Activer le partage »** — pas besoin de reconfigurer, tout est persistant
+6. Cliquez sur **« Activer le partage »** — pas besoin de mot de passe administrateur ni de reconfigurer, le compte et le cgroup sont déjà en place depuis la configuration initiale
 
 Le compte `partagpu`, son mot de passe et les paramètres de partage survivent aux redémarrages.
 
@@ -429,9 +429,37 @@ gpus = partagpu.discover()
 
 L'application PartaGPU doit tourner sur la machine locale — le package Python communique avec elle via une API HTTP sur `localhost:7654`.
 
-### Entraînement distribué avec PyTorch
+### Utilisation dans un Jupyter notebook
 
-Pour un script d'entraînement classique :
+```python
+# Cellule 1 — Découvrir les GPU
+import partagpu
+gpus = partagpu.discover()
+print(f"{len(gpus)} GPU disponible(s) :")
+for g in gpus:
+    print(f"  {g}")
+```
+
+```python
+# Cellule 2 — Entraînement distribué
+import torch
+import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
+from partagpu.distributed import distribute
+
+with distribute() as gpus:
+    print(f"Entraînement sur {len(gpus)} GPU")
+
+    model = nn.Linear(784, 10).cuda()
+    model = DDP(model)
+
+    # ... votre boucle d'entraînement habituelle
+    # Le modèle est automatiquement synchronisé entre les GPU
+```
+
+### Entraînement distribué avec un script
+
+Pour un script `train.py` classique, lancez un worker par GPU :
 
 ```python
 from partagpu.distributed import launch_workers
@@ -444,7 +472,7 @@ for w in workers:
     w.wait()
 ```
 
-Dans le script `train.py`, utilisez les variables d'environnement standard PyTorch DDP :
+Dans `train.py`, utilisez les variables d'environnement standard PyTorch DDP :
 
 ```python
 import os

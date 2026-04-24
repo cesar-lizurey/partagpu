@@ -46,16 +46,20 @@ impl SharingController {
     pub fn enable(&self) -> Result<SharingConfig, String> {
         let mut config = self.config.lock().unwrap();
 
-        crate::user_manager::UserManager::create_user()?;
+        // Only create the user if it doesn't exist yet (requires pkexec)
+        if !crate::user_manager::UserManager::user_exists() {
+            crate::user_manager::UserManager::create_user()?;
+        }
 
+        // Setup cgroup — tries direct write first, falls back to pkexec
         crate::user_manager::UserManager::setup_cgroup(
             config.cpu_limit_percent,
             config.ram_limit_mb,
             config.gpu_limit_percent,
         )?;
 
-        // Open firewall for incoming connections
-        crate::user_manager::UserManager::open_port()?;
+        // Open firewall — may silently fail if already open or no privileges
+        let _ = crate::user_manager::UserManager::open_port();
 
         config.status = SharingStatus::Active;
         Ok(config.clone())
