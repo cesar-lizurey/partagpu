@@ -17,13 +17,38 @@ use sharing::SharingController;
 use std::sync::Mutex;
 use task_runner::{IncomingTasks, OutgoingTasks};
 
+/// Load a persistent machine ID from ~/.config/partagpu/machine-id,
+/// or generate and save one on first launch. This avoids mDNS ghost
+/// services when the app is restarted.
+fn load_or_create_machine_id() -> String {
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let path = config_dir.join("partagpu").join("machine-id");
+
+    if let Ok(id) = std::fs::read_to_string(&path) {
+        let id = id.trim().to_string();
+        if !id.is_empty() {
+            return id;
+        }
+    }
+
+    let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, &id);
+    id
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let hostname = hostname::get()
         .map(|h: std::ffi::OsString| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".into());
 
-    let machine_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let machine_id = load_or_create_machine_id();
 
     let sec_log = SecurityLog::new();
     let auth = AuthManager::new();

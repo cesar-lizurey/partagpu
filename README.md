@@ -105,28 +105,39 @@ pomme-tigre-bleu-ocean
 - Les autres postes vérifient ce code — s'il correspond, le pair est marqué **OK** (vérifié)
 - Un poste qui ne connaît pas le secret ne peut pas produire le bon code et apparaît comme **non vérifié**
 
-### Pairs vérifiés et non vérifiés
+### Pairs vérifiés, non vérifiés et inconnus
 
-Un **pair vérifié** est une machine qui a rejoint la même salle que vous avec le bon code d'accès. Concrètement :
+PartaGPU distingue trois catégories de machines :
+
+#### Pair vérifié
+
+Machine visible sur le réseau via mDNS **et** dont le code TOTP correspond au vôtre (même salle, même code d'accès).
 
 - Chaque poste dans la salle possède le même secret (dérivé du code de 4 mots)
 - À partir de ce secret, chaque poste génère un **code temporaire à 6 chiffres** qui change toutes les 30 secondes (protocole TOTP, le même que Google Authenticator)
 - Ce code est annoncé automatiquement aux autres postes via le réseau local
 - Les autres postes vérifient ce code : s'il correspond à ce qu'ils calculent eux-mêmes avec le même secret, le pair est **vérifié**
 
-Un **pair non vérifié** est une machine qui :
-- N'a pas rejoint la salle (pas de code d'accès)
-- A entré un mauvais code d'accès
-- N'utilise pas PartaGPU mais s'annonce sur le réseau
+#### Pair non vérifié
+
+Machine visible sur le réseau via mDNS (elle fait tourner PartaGPU) **mais** dont le code TOTP ne correspond pas. Causes possibles :
+- Elle n'a rejoint aucune salle
+- Elle est dans une salle différente
+- Elle a entré un mauvais code d'accès
+
+#### Pair inconnu
+
+Machine qui n'a **pas été découverte via mDNS** mais qui tente d'envoyer une tâche directement (par exemple via une requête sur le port 7654). C'est un comportement potentiellement malveillant — la tâche est refusée et un événement de sécurité est enregistré.
 
 **Ce que ça change concrètement :**
 
-| | Pair vérifié | Pair non vérifié |
-|---|---|---|
-| Visible dans la liste | Oui | Oui (grisé) |
-| Peut soumettre des tâches | Oui | **Non** — la tâche est refusée |
-| Peut recevoir des tâches | Oui | Oui (c'est lui qui décide) |
-| Indicateur dans le tableau | **OK** (vert) | **?** (rouge) |
+| | Pair vérifié | Pair non vérifié | Pair inconnu |
+|---|---|---|---|
+| Visible dans la liste | Oui | Oui (grisé) | Non |
+| Peut soumettre des tâches | Oui | **Non** — refusée | **Non** — refusée |
+| Peut recevoir des tâches | Oui | Oui (c'est lui qui décide) | Non applicable |
+| Indicateur dans le tableau | **OK** (vert) | **?** (rouge) | — |
+| Log de sécurité | Info | Alerte | Alerte |
 
 Si des machines non vérifiées sont détectées, un bandeau d'avertissement orange s'affiche au-dessus du tableau.
 

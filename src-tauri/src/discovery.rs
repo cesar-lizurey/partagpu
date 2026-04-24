@@ -116,7 +116,7 @@ impl Discovery {
         let service = ServiceInfo::new(
             SERVICE_TYPE,
             &self.instance_name,
-            &format!("{}.local.", self.hostname),
+            &format!("{}.local.", self.instance_name),
             &ip_str,
             SERVICE_PORT,
             &properties[..],
@@ -176,7 +176,7 @@ impl Discovery {
                 if let Ok(service) = ServiceInfo::new(
                     SERVICE_TYPE,
                     &instance_name,
-                    &format!("{}.local.", hostname),
+                    &format!("{}.local.", instance_name),
                     &ip,
                     SERVICE_PORT,
                     &properties[..],
