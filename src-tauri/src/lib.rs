@@ -39,6 +39,7 @@ pub fn run() {
     if let Err(e) = discovery.start_browsing() {
         eprintln!("Warning: could not start mDNS browsing: {e}");
     }
+    discovery.start_totp_refresh();
     let sandbox = Sandbox::new();
     let monitor = ResourceMonitor::new();
     let sharing = SharingController::new();

@@ -135,11 +135,16 @@ impl AuthManager {
         mgr
     }
 
-    /// Create a new room: generate a random TOTP secret + passphrase.
+    /// Create a new room: generate a random 4-word passphrase, then derive
+    /// the TOTP secret from it (same path as join_room) so both sides match.
     pub fn create_room(&self, room_name: &str) -> Result<CreateRoomOutput, String> {
+        // Generate 4 random bytes → 4-word passphrase
         let secret = Secret::generate_secret();
-        let secret_b32 = secret.to_encoded().to_string();
-        let passphrase = secret_to_passphrase(&secret_b32);
+        let raw_b32 = secret.to_encoded().to_string();
+        let passphrase = secret_to_passphrase(&raw_b32);
+
+        // Derive the canonical secret from the passphrase (same as a joiner would)
+        let secret_b32 = passphrase_to_secret(&passphrase)?;
 
         let totp = build_totp(&secret_b32, room_name)?;
 

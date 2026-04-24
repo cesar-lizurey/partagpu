@@ -49,6 +49,8 @@ pub struct Discovery {
     display_name: Arc<Mutex<String>>,
     auth: Option<crate::auth::AuthManager>,
     sec_log: Option<crate::security_log::SecurityLog>,
+    /// Cached last TOTP code to avoid re-registering when unchanged.
+    last_totp: Arc<Mutex<String>>,
 }
 
 impl Discovery {
@@ -66,6 +68,7 @@ impl Discovery {
             display_name: Arc::new(Mutex::new(hostname.to_string())),
             auth: None,
             sec_log: None,
+            last_totp: Arc::new(Mutex::new(String::new())),
         })
     }
 
@@ -125,6 +128,63 @@ impl Discovery {
             .map_err(|e| format!("Failed to register service: {e}"))?;
 
         Ok(())
+    }
+
+    /// Periodically re-register the mDNS service to refresh the TOTP code.
+    pub fn start_totp_refresh(&self) {
+        let daemon = self.daemon.clone();
+        let auth = self.auth.clone();
+        let instance_name = self.instance_name.clone();
+        let hostname = self.hostname.clone();
+        let display_name = self.display_name.clone();
+        let last_totp = self.last_totp.clone();
+
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+
+                let new_code = auth
+                    .as_ref()
+                    .and_then(|a| a.current_code())
+                    .unwrap_or_default();
+
+                // Only re-register if the TOTP code actually changed.
+                {
+                    let mut last = last_totp.lock().unwrap();
+                    if *last == new_code {
+                        continue;
+                    }
+                    *last = new_code.clone();
+                }
+
+                let ip = match local_ip_address::local_ip() {
+                    Ok(ip) => ip.to_string(),
+                    Err(_) => continue,
+                };
+
+                let dn = display_name.lock().unwrap().clone();
+                let properties = [
+                    ("hostname", hostname.as_str()),
+                    ("display_name", dn.as_str()),
+                    ("sharing", "false"),
+                    ("cpu_limit", "0"),
+                    ("ram_limit", "0"),
+                    ("gpu_limit", "0"),
+                    ("totp", new_code.as_str()),
+                ];
+
+                if let Ok(service) = ServiceInfo::new(
+                    SERVICE_TYPE,
+                    &instance_name,
+                    &format!("{}.local.", hostname),
+                    &ip,
+                    SERVICE_PORT,
+                    &properties[..],
+                ) {
+                    let _ = daemon.register(service);
+                }
+            }
+        });
     }
 
     pub fn start_browsing(&self) -> Result<(), String> {
