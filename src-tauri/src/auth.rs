@@ -335,3 +335,47 @@ fn passphrase_to_secret(passphrase: &str) -> Result<String, String> {
 
     Ok(data_encoding::BASE32.encode(&secret_bytes))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passphrase_roundtrip() {
+        // Simulate create_room: random secret → passphrase → canonical secret
+        let secret = Secret::generate_secret();
+        let raw_b32 = secret.to_encoded().to_string();
+        let passphrase = secret_to_passphrase(&raw_b32);
+        let canonical_secret = passphrase_to_secret(&passphrase).unwrap();
+
+        // Simulate join_room: passphrase → secret → recovered passphrase
+        let recovered = secret_to_passphrase(&canonical_secret);
+
+        assert_eq!(passphrase, recovered, "passphrase roundtrip failed");
+
+        // The secrets must also match
+        let secret2 = passphrase_to_secret(&recovered).unwrap();
+        assert_eq!(canonical_secret, secret2, "secret roundtrip failed");
+    }
+
+    #[test]
+    fn passphrase_roundtrip_known() {
+        let input = "pomme-tigre-blanc-ocean";
+        let secret = passphrase_to_secret(input).unwrap();
+        let recovered = secret_to_passphrase(&secret);
+        assert_eq!(input, recovered);
+    }
+
+    #[test]
+    fn totp_codes_match() {
+        let passphrase = "arbre-coeur-lundi-verre";
+        let secret1 = passphrase_to_secret(passphrase).unwrap();
+        let secret2 = passphrase_to_secret(passphrase).unwrap();
+
+        let totp1 = build_totp(&secret1, "test").unwrap();
+        let totp2 = build_totp(&secret2, "test").unwrap();
+
+        let time = now_secs();
+        assert_eq!(totp1.generate(time), totp2.generate(time));
+    }
+}
