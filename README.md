@@ -36,7 +36,7 @@ Chaque poste peut choisir de mettre à disposition tout ou partie de ses ressour
 
 ## Installation
 
-### Option A : installer le .deb (recommandé)
+### Option A : installer le .deb (Ubuntu/Debian, recommandé)
 
 Téléchargez la dernière version depuis la [page des releases](https://github.com/cesar-lizurey/partagpu/releases) :
 
@@ -47,7 +47,18 @@ sudo dpkg -i partagpu_*_amd64.deb
 
 Le `.deb` installe tout automatiquement : l'application, le helper, et la règle PolicyKit. PartaGPU apparaît dans le menu d'applications.
 
-### Option B : depuis les sources (développement)
+### Option B : AppImage (toute distribution Linux)
+
+Téléchargez le `.AppImage` depuis la [page des releases](https://github.com/cesar-lizurey/partagpu/releases) :
+
+```bash
+chmod +x PartaGPU-*.AppImage
+./PartaGPU-*.AppImage
+```
+
+Aucune installation nécessaire — l'AppImage est un exécutable autonome.
+
+### Option C : depuis les sources (développement)
 
 ```bash
 git clone https://github.com/cesar-lizurey/partagpu.git
