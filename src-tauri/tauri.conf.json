@@ -40,7 +40,7 @@
       "deb": {
         "depends": ["policykit-1"],
         "desktopTemplate": null,
-        "postInstallScript": "#!/bin/bash\nmkdir -p /usr/local/lib/partagpu\ncp /usr/lib/partagpu/resources/partagpu-helper /usr/local/lib/partagpu/partagpu-helper\nchmod 755 /usr/local/lib/partagpu/partagpu-helper\nchown root:root /usr/local/lib/partagpu/partagpu-helper\ncp /usr/lib/partagpu/resources/com.partagpu.policy /usr/share/polkit-1/actions/com.partagpu.policy\nchmod 644 /usr/share/polkit-1/actions/com.partagpu.policy"
+        "postInstallScript": "scripts/postinstall.sh"
       }
     }
   }
