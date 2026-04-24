@@ -322,13 +322,16 @@ fn passphrase_to_secret(passphrase: &str) -> Result<String, String> {
         seed[i] = idx as u8;
     }
 
-    // Expand 4 bytes to 20 bytes deterministically using SHA1
+    // Build a 20-byte secret: the 4 seed bytes first (so secret_to_passphrase
+    // can recover the words), then 16 bytes of SHA1(seed) as padding.
     use sha1::Digest;
     let mut hasher = sha1::Sha1::new();
     hasher.update(&seed);
-    // Feed it multiple rounds for length
-    let hash1 = hasher.finalize();
-    let secret_bytes: Vec<u8> = hash1.iter().copied().take(20).collect();
+    let hash = hasher.finalize();
+
+    let mut secret_bytes = Vec::with_capacity(20);
+    secret_bytes.extend_from_slice(&seed);           // bytes 0..4: original words
+    secret_bytes.extend_from_slice(&hash[..16]);     // bytes 4..20: deterministic padding
 
     Ok(data_encoding::BASE32.encode(&secret_bytes))
 }
