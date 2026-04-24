@@ -52,10 +52,12 @@ pub fn run() {
 
     let sec_log = SecurityLog::new();
     let auth = AuthManager::new();
+    let sharing = SharingController::new();
 
     let mut discovery = Discovery::new(&hostname, &machine_id)
         .expect("Failed to initialize mDNS discovery");
     discovery.set_auth(auth.clone());
+    discovery.set_sharing(sharing.clone());
     discovery.set_security_log(sec_log.clone());
 
     if let Err(e) = discovery.register() {
@@ -64,10 +66,9 @@ pub fn run() {
     if let Err(e) = discovery.start_browsing() {
         eprintln!("Warning: could not start mDNS browsing: {e}");
     }
-    discovery.start_totp_refresh();
+    discovery.start_mdns_refresh();
     let sandbox = Sandbox::new();
     let monitor = ResourceMonitor::new();
-    let sharing = SharingController::new();
     let incoming = IncomingTasks::new(sandbox);
     let outgoing = OutgoingTasks::new();
 

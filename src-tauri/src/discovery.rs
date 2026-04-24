@@ -48,9 +48,10 @@ pub struct Discovery {
     hostname: String,
     display_name: Arc<Mutex<String>>,
     auth: Option<crate::auth::AuthManager>,
+    sharing: Option<crate::sharing::SharingController>,
     sec_log: Option<crate::security_log::SecurityLog>,
-    /// Cached last TOTP code to avoid re-registering when unchanged.
-    last_totp: Arc<Mutex<String>>,
+    /// Cached last announced state to avoid re-registering when unchanged.
+    last_announced: Arc<Mutex<String>>,
 }
 
 impl Discovery {
@@ -67,14 +68,20 @@ impl Discovery {
             hostname: hostname.to_string(),
             display_name: Arc::new(Mutex::new(hostname.to_string())),
             auth: None,
+            sharing: None,
             sec_log: None,
-            last_totp: Arc::new(Mutex::new(String::new())),
+            last_announced: Arc::new(Mutex::new(String::new())),
         })
     }
 
     /// Attach an AuthManager so peers can be verified via TOTP.
     pub fn set_auth(&mut self, auth: crate::auth::AuthManager) {
         self.auth = Some(auth);
+    }
+
+    /// Attach a SharingController so the mDNS service reflects the real sharing state.
+    pub fn set_sharing(&mut self, sharing: crate::sharing::SharingController) {
+        self.sharing = Some(sharing);
     }
 
     /// Attach a SecurityLog for event logging.
@@ -91,6 +98,28 @@ impl Discovery {
         let _ = self.register();
     }
 
+    /// Build the current sharing properties from the SharingController.
+    fn sharing_properties(&self) -> (String, String, String, String) {
+        match &self.sharing {
+            Some(sc) => {
+                let cfg = sc.get_config();
+                let active = cfg.status == crate::sharing::SharingStatus::Active;
+                (
+                    if active { "true" } else { "false" }.to_string(),
+                    cfg.cpu_limit_percent.to_string(),
+                    cfg.ram_limit_mb.to_string(),
+                    cfg.gpu_limit_percent.to_string(),
+                )
+            }
+            None => (
+                "false".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+            ),
+        }
+    }
+
     pub fn register(&self) -> Result<(), String> {
         let local_ip =
             local_ip_address::local_ip().map_err(|e| format!("Failed to get local IP: {e}"))?;
@@ -101,14 +130,15 @@ impl Discovery {
             .as_ref()
             .and_then(|a| a.current_code())
             .unwrap_or_default();
+        let (sharing, cpu_limit, ram_limit, gpu_limit) = self.sharing_properties();
 
         let properties = [
             ("hostname", self.hostname.as_str()),
             ("display_name", &display_name),
-            ("sharing", "false"),
-            ("cpu_limit", "0"),
-            ("ram_limit", "0"),
-            ("gpu_limit", "0"),
+            ("sharing", &sharing),
+            ("cpu_limit", &cpu_limit),
+            ("ram_limit", &ram_limit),
+            ("gpu_limit", &gpu_limit),
             ("totp", &totp_code),
         ];
 
@@ -130,31 +160,47 @@ impl Discovery {
         Ok(())
     }
 
-    /// Periodically re-register the mDNS service to refresh the TOTP code.
-    pub fn start_totp_refresh(&self) {
+    /// Periodically re-register the mDNS service to refresh TOTP and sharing state.
+    pub fn start_mdns_refresh(&self) {
         let daemon = self.daemon.clone();
         let auth = self.auth.clone();
+        let sharing = self.sharing.clone();
         let instance_name = self.instance_name.clone();
         let hostname = self.hostname.clone();
         let display_name = self.display_name.clone();
-        let last_totp = self.last_totp.clone();
+        let last_announced = self.last_announced.clone();
 
         std::thread::spawn(move || {
             loop {
-                std::thread::sleep(std::time::Duration::from_secs(10));
+                std::thread::sleep(std::time::Duration::from_secs(5));
 
-                let new_code = auth
+                let totp = auth
                     .as_ref()
                     .and_then(|a| a.current_code())
                     .unwrap_or_default();
 
-                // Only re-register if the TOTP code actually changed.
+                let (sharing_str, cpu, ram, gpu) = match &sharing {
+                    Some(sc) => {
+                        let cfg = sc.get_config();
+                        let active = cfg.status == crate::sharing::SharingStatus::Active;
+                        (
+                            if active { "true" } else { "false" }.to_string(),
+                            cfg.cpu_limit_percent.to_string(),
+                            cfg.ram_limit_mb.to_string(),
+                            cfg.gpu_limit_percent.to_string(),
+                        )
+                    }
+                    None => ("false".into(), "0".into(), "0".into(), "0".into()),
+                };
+
+                // Only re-register if something changed.
+                let state_key = format!("{totp}|{sharing_str}|{cpu}|{ram}|{gpu}");
                 {
-                    let mut last = last_totp.lock().unwrap();
-                    if *last == new_code {
+                    let mut last = last_announced.lock().unwrap();
+                    if *last == state_key {
                         continue;
                     }
-                    *last = new_code.clone();
+                    *last = state_key;
                 }
 
                 let ip = match local_ip_address::local_ip() {
@@ -166,11 +212,11 @@ impl Discovery {
                 let properties = [
                     ("hostname", hostname.as_str()),
                     ("display_name", dn.as_str()),
-                    ("sharing", "false"),
-                    ("cpu_limit", "0"),
-                    ("ram_limit", "0"),
-                    ("gpu_limit", "0"),
-                    ("totp", new_code.as_str()),
+                    ("sharing", &sharing_str),
+                    ("cpu_limit", &cpu),
+                    ("ram_limit", &ram),
+                    ("gpu_limit", &gpu),
+                    ("totp", totp.as_str()),
                 ];
 
                 if let Ok(service) = ServiceInfo::new(
