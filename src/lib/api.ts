@@ -12,6 +12,8 @@ export interface Peer {
   cpu_limit: number;
   ram_limit: number;
   gpu_limit: number;
+  /** Number of CUDA devices visible on this peer (0 if no GPU). */
+  gpu_count?: number;
   totp_code: string;
   verified: boolean;
   hostname_conflict: boolean;
@@ -143,6 +145,24 @@ export const submitTask = (
     timeoutSecs,
     networkEnabled,
     workspace,
+  });
+
+/** Dispatch a command to a peer from the UI. Blocks until the task ends. */
+export const dispatchTask = (
+  peerIp: string,
+  args: string[],
+  options: {
+    timeoutSecs?: number;
+    network?: boolean;
+    user?: string;
+  } = {},
+) =>
+  invoke<Task>("dispatch_task", {
+    peerIp,
+    args,
+    timeoutSecs: options.timeoutSecs,
+    network: options.network,
+    user: options.user,
   });
 
 export const cancelIncomingTask = (taskId: string) =>

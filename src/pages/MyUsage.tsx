@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { PeerTable } from "../components/PeerTable";
 import { TaskList } from "../components/TaskList";
+import { TaskDispatcher } from "../components/TaskDispatcher";
 import { getPeers, getOutgoingTasks } from "../lib/api";
 import type { Peer, Task } from "../lib/api";
 
@@ -48,6 +49,11 @@ export function MyUsage() {
       <section className="section">
         <h3>Toutes les machines détectées</h3>
         <PeerTable peers={peers} />
+      </section>
+
+      <section className="section">
+        <h3>Lancer une commande sur un pair</h3>
+        <TaskDispatcher peers={peers} onDispatched={refresh} />
       </section>
 
       <section className="section">

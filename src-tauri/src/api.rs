@@ -299,6 +299,35 @@ pub fn clear_security_log(sec_log: State<'_, SecurityLog>) {
     sec_log.clear();
 }
 
+// ── Dispatch (UI) ──────────────────────────────────────────────────────────
+
+/// Dispatcher une tâche sur un pair depuis l'UI. Bloquant : retourne le Task
+/// final quand la tâche se termine côté pair (succès, échec ou annulation).
+#[tauri::command]
+pub fn dispatch_task(
+    auth: State<'_, AuthManager>,
+    discovery: State<'_, Discovery>,
+    outgoing: State<'_, crate::task_runner::OutgoingTasks>,
+    peer_ip: String,
+    args: Vec<String>,
+    timeout_secs: Option<u64>,
+    network: Option<bool>,
+    user: Option<String>,
+) -> Result<Task, String> {
+    crate::http_api::dispatch_task_blocking(
+        auth.inner(),
+        discovery.inner(),
+        outgoing.inner(),
+        &peer_ip,
+        args,
+        user,
+        timeout_secs.unwrap_or(3600).min(24 * 3600),
+        network.unwrap_or(false),
+        Vec::new(),
+        None,
+    )
+}
+
 // ── Cancel ─────────────────────────────────────────────────────────────────
 
 /// Annule une tâche entrante (que la machine exécute pour un pair).

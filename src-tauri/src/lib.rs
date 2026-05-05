@@ -127,6 +127,7 @@ pub fn run() {
             api::submit_task,
             api::cancel_incoming_task,
             api::cancel_outgoing_task,
+            api::dispatch_task,
             api::get_allowlist,
             api::add_to_allowlist,
             api::remove_from_allowlist,

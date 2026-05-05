@@ -196,15 +196,9 @@ async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, Stri
     let body: DispatchBody = match serde_json::from_str(&req.body) {
         Ok(b) => b,
         Err(e) => {
-            return (
-                "400 Bad Request",
-                json_string(&ErrorResponse {
-                    error: format!("Corps JSON invalide : {e}"),
-                }),
-            );
+            return error_resp("400 Bad Request", &format!("Corps JSON invalide : {e}"));
         }
     };
-
     if body.peer_ip.trim().is_empty() {
         return error_resp("400 Bad Request", "Champ 'peer_ip' requis.");
     }
@@ -212,46 +206,99 @@ async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, Stri
         return error_resp("400 Bad Request", "Champ 'args' requis et non vide.");
     }
 
-    let totp = match state.auth.current_code() {
-        Some(c) if !c.is_empty() => c,
-        _ => {
-            return error_resp(
-                "412 Precondition Failed",
-                "Cette machine n'est dans aucune salle PartaGPU. Joignez une salle pour pouvoir dispatcher des tâches.",
-            );
-        }
-    };
+    let auth = state.auth.clone();
+    let discovery = state.discovery.clone();
+    let outgoing = state.outgoing.clone();
 
-    let user = body.user.clone().unwrap_or_else(|| {
-        std::env::var("USER").unwrap_or_else(|_| "local".into())
-    });
-    let timeout = body.timeout_secs.unwrap_or(3600).min(24 * 3600);
-    let peer_ip = body.peer_ip.trim().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        dispatch_task_blocking(
+            &auth,
+            &discovery,
+            &outgoing,
+            &body.peer_ip.trim().to_string(),
+            body.args,
+            body.user,
+            body.timeout_secs.unwrap_or(3600).min(24 * 3600),
+            body.network.unwrap_or(false),
+            body.workspace.unwrap_or_default(),
+            body.local_id,
+        )
+    })
+    .await;
+
+    match result {
+        Ok(Ok(task)) => (
+            "200 OK",
+            serde_json::to_string(&task).unwrap_or_default(),
+        ),
+        Ok(Err(e)) => {
+            // Map the most common error prefixes to dedicated status codes
+            // so the Python client can distinguish "no room" from "peer
+            // unreachable" without parsing the message.
+            let status = if e.contains("salle PartaGPU") {
+                "412 Precondition Failed"
+            } else {
+                "502 Bad Gateway"
+            };
+            error_resp(status, &e)
+        }
+        Err(e) => error_resp("500 Internal Server Error", &format!("interrompu : {e}")),
+    }
+}
+
+/// Dispatch a task to a peer and block until it reaches a terminal state.
+/// Reusable from any blocking context (HTTP handler via spawn_blocking, or a
+/// Tauri command on the worker thread). Mutates the OutgoingTasks map as the
+/// task progresses.
+pub fn dispatch_task_blocking(
+    auth: &AuthManager,
+    discovery: &Discovery,
+    outgoing: &OutgoingTasks,
+    peer_ip: &str,
+    args: Vec<String>,
+    user: Option<String>,
+    timeout_secs: u64,
+    network: bool,
+    workspace: Vec<WorkspaceFile>,
+    local_id_override: Option<String>,
+) -> Result<Task, String> {
+    if peer_ip.is_empty() {
+        return Err("peer_ip vide.".into());
+    }
+    if args.is_empty() {
+        return Err("args vide.".into());
+    }
+
+    let totp = auth
+        .current_code()
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| {
+            "Cette machine n'est dans aucune salle PartaGPU. Joignez une salle pour pouvoir dispatcher des tâches."
+                .to_string()
+        })?;
+
+    let user = user.unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "local".into()));
     let local_hostname = hostname::get()
         .map(|h: std::ffi::OsString| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "local".into());
 
-    // Display name for the peer (best effort).
-    // Loopback case (target = ourselves) is handled specially because we
-    // exclude our own announcement from `get_peers()`, so the lookup would
-    // fall back to the raw IP.
-    let local_lan_ip = local_ip_address::local_ip()
-        .map(|ip| ip.to_string())
-        .ok();
+    // Display name for the peer (best effort). Loopback case (target =
+    // ourselves) is handled specially because we exclude our own announcement
+    // from `get_peers()`, so the lookup would fall back to the raw IP.
+    let local_lan_ip = local_ip_address::local_ip().map(|ip| ip.to_string()).ok();
     let is_loopback_target = peer_ip == "127.0.0.1"
         || peer_ip == "0.0.0.0"
-        || local_lan_ip.as_deref() == Some(peer_ip.as_str());
+        || local_lan_ip.as_deref() == Some(peer_ip);
 
     let target_machine = if is_loopback_target {
-        let dn = state.discovery.get_display_name();
+        let dn = discovery.get_display_name();
         if !dn.is_empty() {
             format!("{dn} (local)")
         } else {
             "local".to_string()
         }
     } else {
-        state
-            .discovery
+        discovery
             .get_peers()
             .into_iter()
             .find(|p| p.ip == peer_ip)
@@ -262,73 +309,52 @@ async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, Stri
                     p.hostname
                 }
             })
-            .unwrap_or_else(|| peer_ip.clone())
+            .unwrap_or_else(|| peer_ip.to_string())
     };
 
-    let network = body.network.unwrap_or(false);
-    let workspace = body.workspace.unwrap_or_default();
-
-    // Reserve a local OutgoingTask entry immediately so the UI shows activity.
+    // Reserve the OutgoingTask entry immediately so the UI shows activity.
     let mut local_task = new_task(
-        body.args.clone(),
-        local_hostname.clone(),
+        args.clone(),
+        local_hostname,
         user.clone(),
-        target_machine.clone(),
+        target_machine,
     );
-    // If the client provided a local_id, use it (so it can cancel mid-flight).
-    if let Some(client_id) = body.local_id.as_ref().filter(|s| !s.is_empty()) {
+    if let Some(client_id) = local_id_override.as_ref().filter(|s| !s.is_empty()) {
         local_task.id = client_id.clone();
     }
     local_task.network_enabled = network;
-    state.outgoing.add(local_task.clone());
+    outgoing.add(local_task.clone());
     let local_id = local_task.id.clone();
 
-    let outgoing = state.outgoing.clone();
-    let args = body.args.clone();
-    let local_id_for_worker = local_id.clone();
+    let result = run_remote_blocking(
+        peer_ip,
+        &args,
+        &user,
+        timeout_secs,
+        &totp,
+        network,
+        workspace,
+        outgoing.clone(),
+        &local_id,
+    );
 
-    // Run the blocking peer call on a worker thread.
-    let result = tokio::task::spawn_blocking(move || {
-        run_remote_blocking(
-            &peer_ip,
-            &args,
-            &user,
-            timeout,
-            &totp,
-            network,
-            workspace,
-            outgoing,
-            &local_id_for_worker,
-        )
-    })
-    .await;
-
-    let final_task: Result<Task, String> = match result {
-        Ok(r) => r,
-        Err(e) => Err(format!("dispatch interrompu : {e}")),
-    };
-
-    match final_task {
+    match result {
         Ok(task) => {
-            // Mirror the final state into our OutgoingTasks under the local id.
             local_task.status = task.status;
-            // Don't force 100% on cancelled tasks — preserve the progress
-            // they had at the moment of cancellation.
             if task.status != TaskStatus::Cancelled {
                 local_task.progress = 100.0;
             }
             local_task.output = task.output.clone();
             local_task.error_output = task.error_output.clone();
             local_task.exit_code = task.exit_code;
-            state.outgoing.replace(local_task.clone());
-            (
-                "200 OK",
-                serde_json::to_string(&local_task).unwrap_or_default(),
-            )
+            outgoing.replace(local_task.clone());
+            outgoing.clear_remote_ref(&local_id);
+            Ok(local_task)
         }
         Err(e) => {
-            state.outgoing.set_failed(&local_id, &e);
-            error_resp("502 Bad Gateway", &e)
+            outgoing.set_failed(&local_id, &e);
+            outgoing.clear_remote_ref(&local_id);
+            Err(e)
         }
     }
 }
