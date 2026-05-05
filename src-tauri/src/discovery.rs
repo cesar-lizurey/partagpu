@@ -55,11 +55,36 @@ pub struct Discovery {
     last_announced: Arc<Mutex<String>>,
 }
 
+fn display_name_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join("partagpu").join("display-name")
+}
+
+fn load_display_name() -> Option<String> {
+    let content = std::fs::read_to_string(display_name_path()).ok()?;
+    let trimmed = content.trim().to_string();
+    if trimmed.is_empty() { None } else { Some(trimmed) }
+}
+
+fn save_display_name(name: &str) {
+    let path = display_name_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, name);
+}
+
 impl Discovery {
     pub fn new(hostname: &str, machine_id: &str) -> Result<Self, String> {
         let daemon =
             ServiceDaemon::new().map_err(|e| format!("Failed to create mDNS daemon: {e}"))?;
         let instance_name = format!("partagpu-{machine_id}");
+        let initial_display_name = load_display_name().unwrap_or_else(|| hostname.to_string());
 
         Ok(Self {
             daemon,
@@ -67,7 +92,7 @@ impl Discovery {
             peer_meta: Arc::new(Mutex::new(HashMap::new())),
             instance_name,
             hostname: hostname.to_string(),
-            display_name: Arc::new(Mutex::new(hostname.to_string())),
+            display_name: Arc::new(Mutex::new(initial_display_name)),
             auth: None,
             sharing: None,
             sec_log: None,
@@ -96,6 +121,7 @@ impl Discovery {
 
     pub fn set_display_name(&self, name: &str) {
         *self.display_name.lock().unwrap() = name.to_string();
+        save_display_name(name);
         let _ = self.register();
     }
 
