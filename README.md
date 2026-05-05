@@ -4,6 +4,13 @@ Application de partage de puissance de calcul (CPU/GPU/RAM) entre les ordinateur
 
 Chaque poste peut choisir de mettre à disposition tout ou partie de ses ressources. Un compte utilisateur dédié `partagpu` est créé sur chaque machine, ce qui permet à n'importe qui de se connecter sur un ordinateur libre (même celui d'un absent) pour activer le partage.
 
+Côté code, un package Python (`partagpu`) permet d'exécuter une commande sur un pair (`partagpu.run_remote`) ou de **lancer un entraînement PyTorch DDP en parallèle sur tous les GPU de la salle** (`partagpu.distribute`).
+
+**Documentation complémentaire** :
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — comment ça fonctionne en interne (les deux serveurs HTTP, l'auth TOTP, le sandbox, l'orchestration DDP)
+- [docs/PYTHON.md](docs/PYTHON.md) — guide utilisateur complet du package Python avec exemples et diagnostic
+- [SECURITY.md](SECURITY.md) — modèle de sécurité détaillé
+
 ---
 
 ## Table des matières
@@ -16,6 +23,7 @@ Chaque poste peut choisir de mettre à disposition tout ou partie de ses ressour
 - [Activer le partage sur l'ordinateur d'un absent](#activer-le-partage-sur-lordinateur-dun-absent)
 - [Découverte du réseau](#découverte-du-réseau)
 - [Architecture technique](#architecture-technique)
+- [Package Python — Entraînement distribué](#package-python--entraînement-distribué)
 - [Scripts disponibles](#scripts-disponibles)
 - [Sécurité](#sécurité)
 - [Prérequis](#prérequis)
@@ -28,9 +36,10 @@ Chaque poste peut choisir de mettre à disposition tout ou partie de ses ressour
 
 - Chaque poste fait tourner PartaGPU et s'annonce automatiquement sur le réseau local
 - Chaque utilisateur choisit **ce qu'il partage** et **combien** via des sliders
-- Les tâches de calcul reçues tournent sous un compte système isolé (`partagpu`)
+- Les tâches de calcul reçues tournent sous un compte système isolé (`partagpu`) dans un sandbox **bubblewrap** (FS read-only, /workspace tmpfs, network opt-in)
 - Un camarade absent ? On allume son PC, on se connecte en `partagpu`, et ses ressources sont disponibles
-- Une **salle virtuelle** protégée par un code d'accès garantit que seuls les postes autorisés peuvent communiquer
+- Une **salle virtuelle** protégée par un code d'accès garantit que seuls les postes autorisés peuvent communiquer (auth TOTP partagée)
+- Côté code, un package Python (`partagpu`) permet d'entraîner avec PyTorch DDP sur **tous les GPU de la salle** via un simple `partagpu.distribute("train.py")`
 
 ---
 
@@ -268,18 +277,24 @@ PartaGPU gère automatiquement le pare-feu via `ufw` ou `iptables` (ouverture à
 | Port | Protocole | Direction | Usage | Quand |
 |------|-----------|-----------|-------|-------|
 | 5353 | UDP | Entrant + Sortant | mDNS (découverte des pairs) | Toujours |
-| 7654 | TCP | Entrant | Communication entre pairs | Uniquement quand le partage est actif |
+| 7654 | TCP | Entrant (loopback) | API HTTP locale (clients Python, dispatch) | Toujours |
+| 7655 | TCP | Entrant | API pair-à-pair (réception de tâches d'autres machines) | Quand le partage est actif |
+| 29500–29510 | TCP | Entrant | Rendezvous DDP (NCCL/Gloo) entre pairs | Quand le partage est actif |
 
 Avec `ufw` :
 ```bash
 sudo ufw allow 5353/udp comment "PartaGPU mDNS"
-sudo ufw allow 7654/tcp comment "PartaGPU"
+sudo ufw allow 7654/tcp comment "PartaGPU local API"
+sudo ufw allow 7655/tcp comment "PartaGPU peer API"
+sudo ufw allow 29500:29510/tcp comment "PartaGPU DDP"
 ```
 
 Avec `iptables` :
 ```bash
 sudo iptables -A INPUT -p udp --dport 5353 -m comment --comment "PartaGPU mDNS" -j ACCEPT
-sudo iptables -A INPUT -p tcp --dport 7654 -m comment --comment "PartaGPU" -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 7654 -m comment --comment "PartaGPU local" -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 7655 -m comment --comment "PartaGPU peer" -j ACCEPT
+sudo iptables -A INPUT -p tcp -m multiport --dports 29500:29510 -m comment --comment "PartaGPU DDP" -j ACCEPT
 ```
 
 ---
@@ -290,44 +305,45 @@ sudo iptables -A INPUT -p tcp --dport 7654 -m comment --comment "PartaGPU" -j AC
 partagpu/
 ├── src-tauri/                   # Backend Rust (Tauri)
 │   ├── src/
-│   │   ├── main.rs              # Point d'entrée
-│   │   ├── lib.rs               # Initialisation Tauri, enregistre les commandes
-│   │   ├── auth.rs              # Système de salle : TOTP, passphrase, vérification
-│   │   ├── discovery.rs         # Découverte mDNS (mdns-sd) + vérification TOTP des pairs
+│   │   ├── main.rs              # Point d'entrée binaire
+│   │   ├── lib.rs               # Initialisation Tauri, démarrage des serveurs HTTP
+│   │   ├── auth.rs              # Salles : TOTP, passphrase 4 mots, vérification
+│   │   ├── discovery.rs         # Découverte mDNS + annonce gpu_count + vérif TOTP
 │   │   ├── user_manager.rs      # Création utilisateur, pkexec, cgroups
-│   │   ├── resource.rs          # Monitoring CPU/RAM (sysinfo) + GPU (nvidia-smi)
+│   │   ├── resource.rs          # CPU/RAM (sysinfo) + GPU (nvidia-smi multi-device)
 │   │   ├── sharing.rs           # État du partage (Active/Paused/Disabled) + limites
-│   │   ├── task_runner.rs       # Files de tâches entrantes/sortantes
-│   │   └── api.rs               # Commandes Tauri exposées au frontend
-│   ├── resources/
-│   │   ├── partagpu-helper      # Script bash exécuté via pkexec (root)
-│   │   └── com.partagpu.policy  # Règle PolicyKit
+│   │   ├── sandbox.rs           # bubblewrap : passthrough GPU, network opt-in, workspace
+│   │   ├── task_runner.rs       # Files de tâches entrantes/sortantes + create_and_run
+│   │   ├── http_api.rs          # API HTTP locale 127.0.0.1:7654 + POST /api/dispatch
+│   │   ├── peer_api.rs          # API HTTP pair-à-pair 0.0.0.0:7655 (auth TOTP header)
+│   │   ├── api.rs               # Commandes Tauri exposées au frontend
+│   │   └── security_log.rs      # Journal d'événements de sécurité (ring buffer)
+│   ├── helper/                  # Crate séparée : binaire Rust exécuté via pkexec
+│   │   └── src/main.rs          # create-user, set-password, setup-cgroup, open-port…
 │   └── Cargo.toml
 ├── scripts/
-│   ├── install-helper.sh        # sudo : installe helper + policy
+│   ├── install-helper.sh        # sudo : installe helper + policy PolicyKit
 │   └── uninstall-helper.sh      # sudo : désinstalle helper + policy
 ├── src/                         # Frontend React/TypeScript
-│   ├── main.tsx                 # Point d'entrée React
-│   ├── App.tsx                  # Header + salle + 3 onglets
-│   ├── styles.css               # Theme dark complet
-│   ├── pages/
-│   │   ├── MySharing.tsx        # Mon partage : jauges, sliders, répartition, tâches
-│   │   ├── MyUsage.tsx          # Mon utilisation : pairs, tâches soumises
-│   │   └── Guide.tsx            # Tutoriel intégré
-│   ├── components/
-│   │   ├── RoomSetup.tsx        # Créer / rejoindre / quitter une salle
-│   │   ├── ResourceGauge.tsx    # Barre de progression avec indicateur de limite
-│   │   ├── ResourceSliders.tsx  # Sliders CPU/RAM/GPU avec debounce 300ms
-│   │   ├── SharingToggle.tsx    # Boutons Activer/Pause/Désactiver
-│   │   ├── PeerTable.tsx        # Tableau des machines (avec colonne Auth)
-│   │   ├── TaskList.tsx         # Tableau des tâches entrantes/sortantes
-│   │   └── UsageBreakdown.tsx   # Barres empilées par utilisateur (8 couleurs)
-│   └── lib/
-│       └── api.ts               # Types TypeScript + appels invoke
-├── package.json
-├── tsconfig.json
-├── vite.config.ts
-├── SECURITY.md                  # Documentation détaillée de la sécurité
+│   ├── main.tsx, App.tsx        # Entrée React + header + onglets
+│   ├── pages/                   # MySharing, MyUsage, Guide
+│   ├── components/              # RoomSetup, gauges, sliders, tableaux
+│   └── lib/api.ts               # Types + appels invoke()
+├── python/                      # Package partagpu pour clients Python
+│   └── src/partagpu/
+│       ├── __init__.py          # Exporte discover, run_remote, distribute, TaskResult
+│       ├── discover.py          # GPUResource (host, ip, device_index) + Peer
+│       ├── remote.py            # run_remote(peer, args, network=, workspace=, …)
+│       └── distributed.py       # distribute() orchestrateur DDP multi-GPU multi-host
+├── examples/                    # Notebook + scripts d'exemple + smoke tests
+│   ├── decouverte_gpu.ipynb
+│   ├── ddp_train_demo.py
+│   └── smoke_*.py
+├── docs/
+│   ├── ARCHITECTURE.md          # Comment ça fonctionne en détail
+│   └── images/                  # Schémas SVG
+├── package.json, tsconfig.json, vite.config.ts
+├── SECURITY.md                  # Détail des mesures de sécurité
 ├── TODO.md                      # Plan de sécurité restant
 └── README.md
 ```
@@ -408,71 +424,88 @@ Le pipeline construit le `.deb` et le publie automatiquement dans une release Gi
 
 ## Package Python — Entraînement distribué
 
-PartaGPU fournit un package Python pour exploiter les GPU partagés directement depuis un notebook Jupyter ou un script.
+PartaGPU fournit un package Python (`partagpu`) qui transforme l'application en une plateforme de calcul distribuée. Tout passe par l'app locale (`localhost:7654`) : c'est elle qui authentifie les requêtes via TOTP et les transmet aux pairs. Vous n'avez **rien à configurer côté réseau** — pas de SSH, pas de keys.
 
 ### Installation
 
+Le package n'est **pas encore publié sur PyPI**. Installez-le en mode éditable depuis le clone du repo (le package suit l'état du checkout) :
+
 ```bash
-pip install partagpu
+git clone https://github.com/cesar-lizurey/partagpu.git
+cd partagpu
+python3 -m venv venv && source venv/bin/activate
+pip install -e python/
 ```
 
-### Découverte des GPU disponibles
+Pour les exemples du dossier [examples/](examples/), il y a déjà tout un setup `requirements.txt` + kernel Jupyter — voir [examples/decouverte_gpu.ipynb](examples/decouverte_gpu.ipynb).
+
+### Trois APIs, trois niveaux
+
+| API | Quand l'utiliser |
+|---|---|
+| `partagpu.discover()` | Lister les GPU dispo dans la salle (local + pairs vérifiés qui partagent). Une entrée par CUDA device. |
+| `partagpu.run_remote(peer, args, …)` | Exécuter **une commande** sur **un pair** (le local app fait broker). Bloquant, retourne `TaskResult`. |
+| `partagpu.distribute(script, args=, …)` | Entraîner avec **PyTorch DDP** sur **tous les GPU de la salle**. Multi-GPU **par machine** géré automatiquement. |
+
+### Découverte des GPU
 
 ```python
 import partagpu
 
-# Liste tous les GPU disponibles (local + pairs vérifiés)
 gpus = partagpu.discover()
-# → [GPU('local', ip='192.168.70.103', limit=100%, verified),
-#    GPU('César 2', ip='192.168.70.105', limit=50%, verified)]
+# Une entrée par GPU physique. Un PC avec 4 GPU produit 4 entrées.
+# [GPU('local',   ip='192.168.70.103', dev=0, limit=100%, verified),
+#  GPU('local',   ip='192.168.70.103', dev=1, limit=100%, verified),
+#  GPU('César 2', ip='192.168.70.105', dev=0, limit=50%,  verified)]
 ```
 
-L'application PartaGPU doit tourner sur la machine locale — le package Python communique avec elle via une API HTTP sur `localhost:7654`.
-
-### Utilisation dans un Jupyter notebook
+### Exécution distante (`run_remote`)
 
 ```python
-# Cellule 1 — Découvrir les GPU
 import partagpu
-gpus = partagpu.discover()
-print(f"{len(gpus)} GPU disponible(s) :")
-for g in gpus:
-    print(f"  {g}")
+
+peer = next(g for g in partagpu.discover() if g.host != "local")
+
+result = partagpu.run_remote(
+    peer,
+    ["python3", "-c", "import torch; print(torch.cuda.get_device_name(0))"],
+    timeout=30,
+)
+print(result.stdout)
+result.check()  # raise RemoteTaskError si exit != 0
 ```
+
+Options utiles :
+- `network=True` : le sandbox du pair garde l'accès réseau (requis pour DDP rendezvous).
+- `workspace={"train.py": "<contenu>"}` ou `workspace=[Path("./train.py")]` : pousse des fichiers dans le `/workspace` du sandbox (jusqu'à 16 Mo total).
+- `timeout=int` : secondes (défaut 300).
+
+### Entraînement DDP (`distribute`)
 
 ```python
-# Cellule 2 — Entraînement distribué
-import torch
-import torch.nn as nn
-from torch.nn.parallel import DistributedDataParallel as DDP
-from partagpu.distributed import distribute
+import partagpu
 
-with distribute() as gpus:
-    print(f"Entraînement sur {len(gpus)} GPU")
-
-    model = nn.Linear(784, 10).cuda()
-    model = DDP(model)
-
-    # ... votre boucle d'entraînement habituelle
-    # Le modèle est automatiquement synchronisé entre les GPU
+results = partagpu.distribute(
+    "train.py",
+    args=["--epochs", "10"],
+    extra_files=["config.yaml", "model.py"],
+    timeout=1800,
+)
+for r in results:
+    print(r.target_machine, "exit", r.exit_code)
+    print(r.stdout[-500:])
 ```
 
-### Entraînement distribué avec un script
+`distribute` :
+- découvre tous les GPU de la salle (sauf si `gpus=` est passé) ;
+- gère le **multi-GPU par machine** : un PC avec 4 GPU contribue 4 workers ;
+- pousse `train.py` (et `extra_files`) dans le sandbox de chaque pair ;
+- définit `MASTER_ADDR`, `MASTER_PORT`, `RANK`, `WORLD_SIZE`, `LOCAL_RANK`, `CUDA_VISIBLE_DEVICES`, `PARTAGPU_LOCAL_RANK`, `BACKEND` sur chaque worker ;
+- isole chaque worker à son GPU via `CUDA_VISIBLE_DEVICES` (le script utilise `cuda:0` quoi qu'il arrive) ;
+- ouvre l'isolation réseau du sandbox de chaque pair pour le rendezvous NCCL/Gloo ;
+- lance les workers en parallèle, attend tous les résultats.
 
-Pour un script `train.py` classique, lancez un worker par GPU :
-
-```python
-from partagpu.distributed import launch_workers
-
-# Lance un worker par GPU disponible (local + distant)
-workers = launch_workers("train.py", args=["--epochs", "10"])
-
-# Attendre la fin de l'entraînement
-for w in workers:
-    w.wait()
-```
-
-Dans `train.py`, utilisez les variables d'environnement standard PyTorch DDP :
+Côté `train.py`, init DDP standard :
 
 ```python
 import os
@@ -480,23 +513,62 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-dist.init_process_group("nccl")
+dist.init_process_group(backend=os.environ["BACKEND"], init_method="env://")
 rank = int(os.environ["RANK"])
-model = MyModel().cuda(rank)
+device = torch.device("cuda:0")  # CUDA_VISIBLE_DEVICES isole déjà au bon GPU
+
+model = MyModel().to(device)
 model = DDP(model)
 # ... entraînement normal
 dist.destroy_process_group()
 ```
 
-### API locale
+**Pré-requis sur chaque machine cible** (pas seulement la machine de lancement) :
+- `bubblewrap` installé (`sudo apt install bubblewrap`)
+- `torch` installé en **Python système** (le sandbox tourne sous l'utilisateur `partagpu`, pas sous le vôtre, donc ne voit pas votre venv) :
+  ```bash
+  sudo apt install -y python3-pip
+  sudo /usr/bin/python3 -m pip install --break-system-packages torch numpy
+  ```
 
-L'application PartaGPU expose une API HTTP sur `127.0.0.1:7654` :
+### API HTTP
 
-| Route | Description |
-|-------|-------------|
-| `GET /api/peers` | Liste de tous les pairs découverts (JSON) |
-| `GET /api/gpu` | Liste des GPU disponibles — local + pairs vérifiés qui partagent (JSON) |
-| `GET /api/status` | Statut de partage local (JSON) |
+L'application expose deux serveurs HTTP :
+
+**API locale** sur `127.0.0.1:7654` (pour les clients Python et l'introspection) :
+
+| Route | Méthode | Description |
+|---|---|---|
+| `/api/peers` | GET | Liste de tous les pairs découverts |
+| `/api/gpu` | GET | Liste des GPU dispo, **une entrée par device** (champ `device_index`) |
+| `/api/status` | GET | Statut de partage local |
+| `/api/dispatch` | POST | Soumet une tâche à un pair, **bloque** jusqu'à completion. Body : `{"peer_ip", "args", "timeout_secs", "network", "workspace", "user"}` |
+
+**API pair-à-pair** sur `0.0.0.0:7655` (utilisée par les autres pairs PartaGPU, auth via header `X-PartaGPU-TOTP`) :
+
+| Route | Méthode | Description |
+|---|---|---|
+| `/peer/v1/health` | GET | Liveness + état (no auth) |
+| `/peer/v1/tasks` | POST | Reçoit une tâche d'un pair vérifié, la lance dans le sandbox |
+| `/peer/v1/tasks/<id>` | GET | Status / output d'une tâche |
+
+Pour le détail technique du flux et des protocoles, voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+### Smoke tests
+
+Trois scripts dans [examples/](examples/) pour valider l'installation pas à pas :
+
+| Script | Ce qu'il teste | Pré-requis |
+|---|---|---|
+| `smoke_run_remote.py` | Dispatch d'une commande loopback | App lancée + dans une salle + partage actif |
+| `smoke_ddp.py` | DDP `world_size=1` puis multi-machine | + `torch` en system Python sur les pairs |
+| `smoke_multi_gpu.py` | Logique multi-GPU par machine | + `PARTAGPU_FORCE_GPU_COUNT=N` au lancement de l'app |
+
+```bash
+cd examples
+./venv/bin/python smoke_run_remote.py
+PARTAGPU_TEST_MULTI=1 ./venv/bin/python smoke_ddp.py
+```
 
 ---
 

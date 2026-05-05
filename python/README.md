@@ -104,6 +104,8 @@ cleanup_ddp()
 
 ## Voir aussi
 
-- [README principal du projet](https://github.com/cesar-lizurey/partagpu)
+- [README principal](https://github.com/cesar-lizurey/partagpu) — installation de l'app, gestion de salle, UI
+- [Guide Python complet](../docs/PYTHON.md) — diagnostic, exemples détaillés, référence des paramètres
+- [Architecture](../docs/ARCHITECTURE.md) — comment fonctionne le dispatch pair-à-pair, le sandbox, DDP
 - Notebook d'exemples : `examples/decouverte_gpu.ipynb`
-- Smoke tests : `examples/smoke_run_remote.py`, `examples/smoke_ddp.py`
+- Smoke tests : `examples/smoke_run_remote.py`, `examples/smoke_ddp.py`, `examples/smoke_multi_gpu.py`
