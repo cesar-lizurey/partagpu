@@ -231,20 +231,39 @@ async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, Stri
         .map(|h: std::ffi::OsString| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "local".into());
 
-    // Display name for the peer (best effort)
-    let target_machine = state
-        .discovery
-        .get_peers()
-        .into_iter()
-        .find(|p| p.ip == peer_ip)
-        .map(|p| {
-            if !p.display_name.is_empty() {
-                p.display_name
-            } else {
-                p.hostname
-            }
-        })
-        .unwrap_or_else(|| peer_ip.clone());
+    // Display name for the peer (best effort).
+    // Loopback case (target = ourselves) is handled specially because we
+    // exclude our own announcement from `get_peers()`, so the lookup would
+    // fall back to the raw IP.
+    let local_lan_ip = local_ip_address::local_ip()
+        .map(|ip| ip.to_string())
+        .ok();
+    let is_loopback_target = peer_ip == "127.0.0.1"
+        || peer_ip == "0.0.0.0"
+        || local_lan_ip.as_deref() == Some(peer_ip.as_str());
+
+    let target_machine = if is_loopback_target {
+        let dn = state.discovery.get_display_name();
+        if !dn.is_empty() {
+            format!("{dn} (local)")
+        } else {
+            "local".to_string()
+        }
+    } else {
+        state
+            .discovery
+            .get_peers()
+            .into_iter()
+            .find(|p| p.ip == peer_ip)
+            .map(|p| {
+                if !p.display_name.is_empty() {
+                    p.display_name
+                } else {
+                    p.hostname
+                }
+            })
+            .unwrap_or_else(|| peer_ip.clone())
+    };
 
     let network = body.network.unwrap_or(false);
     let workspace = body.workspace.unwrap_or_default();
@@ -293,7 +312,11 @@ async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, Stri
         Ok(task) => {
             // Mirror the final state into our OutgoingTasks under the local id.
             local_task.status = task.status;
-            local_task.progress = 100.0;
+            // Don't force 100% on cancelled tasks — preserve the progress
+            // they had at the moment of cancellation.
+            if task.status != TaskStatus::Cancelled {
+                local_task.progress = 100.0;
+            }
             local_task.output = task.output.clone();
             local_task.error_output = task.error_output.clone();
             local_task.exit_code = task.exit_code;

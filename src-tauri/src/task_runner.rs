@@ -184,14 +184,16 @@ impl IncomingTasks {
                         task.output = stdout;
                         task.error_output = stderr;
                         task.exit_code = Some(exit_code);
-                        task.progress = 100.0;
                         if !already_cancelled {
+                            task.progress = 100.0;
                             task.status = if exit_code == 0 {
                                 TaskStatus::Completed
                             } else {
                                 TaskStatus::Failed
                             };
                         }
+                        // For cancelled tasks, keep the progress at whatever
+                        // value was set when cancellation arrived.
                     }
                     Err(e) => {
                         if !already_cancelled {
