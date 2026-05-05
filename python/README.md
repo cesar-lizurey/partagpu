@@ -24,8 +24,11 @@ sudo pip install --break-system-packages torch
 import partagpu
 
 gpus = partagpu.discover()
-# [GPU('local',  ip='192.168.70.103', limit=100%, verified),
-#  GPU('César 2', ip='192.168.70.105', limit=50%,  verified)]
+# Une entree par CUDA device. Un PC avec 2 GPU produit 2 entrees,
+# meme `host` / `ip`, `device_index` distinct.
+# [GPU('local',  ip='192.168.70.103', dev=0, limit=100%, verified),
+#  GPU('local',  ip='192.168.70.103', dev=1, limit=100%, verified),
+#  GPU('César 2', ip='192.168.70.105', dev=0, limit=50%,  verified)]
 ```
 
 ## Exécuter une commande sur un pair (`run_remote`)
@@ -67,11 +70,12 @@ for r in results:
 ```
 
 `distribute` :
-- découvre tous les GPU de la salle (sauf si `gpus=` est passé) ;
+- découvre tous les GPU de la salle (sauf si `gpus=` est passé). **Multi-GPU par machine** géré : un PC avec 4 GPU contribue 4 workers ;
 - pousse `train.py` (et `extra_files`) dans le sandbox de chaque pair ;
-- définit `MASTER_ADDR`, `MASTER_PORT`, `RANK`, `WORLD_SIZE`, `LOCAL_RANK`, `BACKEND` sur chaque worker ;
+- définit `MASTER_ADDR`, `MASTER_PORT`, `RANK`, `WORLD_SIZE`, `LOCAL_RANK`, `CUDA_VISIBLE_DEVICES`, `PARTAGPU_LOCAL_RANK`, `BACKEND` sur chaque worker ;
+- isole chaque worker à un seul GPU physique via `CUDA_VISIBLE_DEVICES` (le script utilise toujours `cuda:0`, peu importe l'index physique) ;
 - ouvre l'isolation réseau du sandbox de chaque pair (NCCL/Gloo rendezvous) ;
-- lance les `world_size` workers en parallèle, attend tous les résultats.
+- lance les `world_size` workers en parallèle (sur les machines respectives), attend tous les résultats.
 
 Côté `train.py`, vous initialisez DDP standard :
 

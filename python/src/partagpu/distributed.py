@@ -107,6 +107,19 @@ def _build_workspace_files(paths: Sequence[Path]) -> dict[str, bytes]:
     return out
 
 
+def _local_rank_map(gpus: Sequence[GPUResource]) -> list[int]:
+    """For each entry in ``gpus``, return its index among entries sharing the
+    same host (by IP). Used to assign LOCAL_RANK when several workers run on
+    the same machine."""
+    counts: dict[str, int] = {}
+    out: list[int] = []
+    for g in gpus:
+        local = counts.get(g.ip, 0)
+        out.append(local)
+        counts[g.ip] = local + 1
+    return out
+
+
 def distribute(
     script: str | Path,
     args: Sequence[str] = (),
@@ -187,7 +200,16 @@ def distribute(
     # Effective user label for the incoming-task panel on each peer.
     label = user or os.environ.get("USER", "partagpu")
 
+    # Position of each worker among workers on the SAME host (LOCAL_RANK).
+    local_ranks = _local_rank_map(gpus)
+
     def _launch(rank: int, gpu: GPUResource) -> TaskResult:
+        # CUDA_VISIBLE_DEVICES filters the worker's view to its assigned
+        # physical GPU. Inside the script that GPU is reachable as cuda:0
+        # regardless of its physical index. LOCAL_RANK stays 0 to match
+        # the filtered view (avoids `set_device(LOCAL_RANK)` crashing).
+        # The host-relative position (useful for logging) is exposed as
+        # PARTAGPU_LOCAL_RANK.
         env_prefix = [
             "env",
             f"MASTER_ADDR={master_addr}",
@@ -195,6 +217,8 @@ def distribute(
             f"RANK={rank}",
             f"WORLD_SIZE={world_size}",
             "LOCAL_RANK=0",
+            f"PARTAGPU_LOCAL_RANK={local_ranks[rank]}",
+            f"CUDA_VISIBLE_DEVICES={gpu.device_index}",
             f"BACKEND={backend}",
         ]
         cmd = [*env_prefix, "python3", script_name, *args]
@@ -202,7 +226,7 @@ def distribute(
             gpu,
             cmd,
             timeout=timeout,
-            user=f"{label} (rank {rank}/{world_size})",
+            user=f"{label} (rank {rank}/{world_size}, dev {gpu.device_index})",
             network=True,
             workspace=workspace,
             api_base=api_base,

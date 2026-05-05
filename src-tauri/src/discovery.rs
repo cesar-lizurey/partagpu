@@ -26,6 +26,10 @@ pub struct Peer {
     pub cpu_limit: f32,
     pub ram_limit: f32,
     pub gpu_limit: f32,
+    /// Number of CUDA devices visible on this peer (announced via mDNS).
+    /// 0 if no GPU or no driver.
+    #[serde(default)]
+    pub gpu_count: u32,
     /// TOTP code announced by this peer (for verification).
     pub totp_code: String,
     /// Whether this peer's TOTP code has been verified.
@@ -147,6 +151,11 @@ impl Discovery {
         }
     }
 
+    /// Number of GPUs visible on this host (queried fresh; ~50 ms when GPU present).
+    fn local_gpu_count(&self) -> u32 {
+        crate::resource::list_gpus().len() as u32
+    }
+
     /// Force an immediate mDNS re-announcement (unregister + register).
     /// Used after the auth state changes (join/create/leave room) so peers
     /// pick up the new TOTP without waiting for the periodic refresh.
@@ -169,6 +178,7 @@ impl Discovery {
             .and_then(|a| a.current_code())
             .unwrap_or_default();
         let (sharing, cpu_limit, ram_limit, gpu_limit) = self.sharing_properties();
+        let gpu_count = self.local_gpu_count().to_string();
 
         let properties = [
             ("hostname", self.hostname.as_str()),
@@ -177,6 +187,7 @@ impl Discovery {
             ("cpu_limit", &cpu_limit),
             ("ram_limit", &ram_limit),
             ("gpu_limit", &gpu_limit),
+            ("gpu_count", &gpu_count),
             ("totp", &totp_code),
         ];
 
@@ -231,8 +242,10 @@ impl Discovery {
                     None => ("false".into(), "0".into(), "0".into(), "0".into()),
                 };
 
+                let gpu_count = crate::resource::list_gpus().len().to_string();
+
                 // Only re-register if something changed.
-                let state_key = format!("{totp}|{sharing_str}|{cpu}|{ram}|{gpu}");
+                let state_key = format!("{totp}|{sharing_str}|{cpu}|{ram}|{gpu}|{gpu_count}");
                 {
                     let mut last = last_announced.lock().unwrap();
                     if *last == state_key {
@@ -254,6 +267,7 @@ impl Discovery {
                     ("cpu_limit", &cpu),
                     ("ram_limit", &ram),
                     ("gpu_limit", &gpu),
+                    ("gpu_count", &gpu_count),
                     ("totp", totp.as_str()),
                 ];
 
@@ -355,6 +369,11 @@ impl Discovery {
                                 .unwrap_or("0")
                                 .parse()
                                 .unwrap_or(0.0);
+                            let gpu_count: u32 = props
+                                .get_property_val_str("gpu_count")
+                                .unwrap_or("0")
+                                .parse()
+                                .unwrap_or(0);
                             let totp_code = props
                                 .get_property_val_str("totp")
                                 .unwrap_or("")
@@ -394,6 +413,7 @@ impl Discovery {
                                 cpu_limit,
                                 ram_limit,
                                 gpu_limit,
+                                gpu_count,
                                 totp_code,
                                 verified,
                                 hostname_conflict,

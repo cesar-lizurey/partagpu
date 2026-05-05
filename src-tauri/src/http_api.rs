@@ -28,11 +28,14 @@ const PEER_PORT: u16 = 7655;
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// A GPU resource advertised by a peer (or local).
+/// A GPU resource advertised by a peer (or local). One entry per physical
+/// CUDA device — a peer with N GPUs produces N entries (same host, different
+/// device_index).
 #[derive(Serialize)]
 struct GpuInfo {
     host: String,
     ip: String,
+    device_index: u32,
     gpu_limit_percent: f32,
     verified: bool,
 }
@@ -382,28 +385,37 @@ fn run_remote_blocking(
     }
 }
 
-fn build_gpu_list(discovery: &Discovery, monitor: &Arc<Mutex<ResourceMonitor>>) -> Vec<GpuInfo> {
+fn build_gpu_list(discovery: &Discovery, _monitor: &Arc<Mutex<ResourceMonitor>>) -> Vec<GpuInfo> {
     let mut gpus = Vec::new();
 
-    if let Ok(mut mon) = monitor.lock() {
-        let snap = mon.snapshot();
-        if snap.gpu_available {
-            gpus.push(GpuInfo {
-                host: "local".to_string(),
-                ip: local_ip_address::local_ip()
-                    .map(|ip| ip.to_string())
-                    .unwrap_or_else(|_| "127.0.0.1".into()),
-                gpu_limit_percent: 100.0,
-                verified: true,
-            });
-        }
+    // Local: one entry per visible CUDA device (avoids snapshot lock contention).
+    let local_ip = local_ip_address::local_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|_| "127.0.0.1".into());
+    for d in crate::resource::list_gpus() {
+        gpus.push(GpuInfo {
+            host: "local".to_string(),
+            ip: local_ip.clone(),
+            device_index: d.index,
+            gpu_limit_percent: 100.0,
+            verified: true,
+        });
     }
 
+    // Remote peers: expand peer.gpu_count into N entries with synthetic
+    // device indices 0..gpu_count. The peer announces its actual GPU count
+    // via mDNS; we don't know each device's name from here, only the count.
     for peer in discovery.get_verified_peers() {
-        if peer.sharing_enabled && peer.gpu_limit > 0.0 {
+        if !peer.sharing_enabled || peer.gpu_limit <= 0.0 {
+            continue;
+        }
+        let count = peer.gpu_count.max(1); // backwards compat: if peer
+        // doesn't announce gpu_count (older app), assume 1 GPU.
+        for idx in 0..count {
             gpus.push(GpuInfo {
                 host: peer.display_name.clone(),
                 ip: peer.ip.clone(),
+                device_index: idx,
                 gpu_limit_percent: peer.gpu_limit,
                 verified: peer.verified,
             });
