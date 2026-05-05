@@ -1,6 +1,15 @@
 """PartaGPU — Client Python pour l'entraînement distribué multi-GPU sur réseau local."""
 
-from partagpu.discover import discover, GPUResource
+from partagpu.discover import GPUResource, discover
+from partagpu.distributed import distribute
+from partagpu.remote import RemoteTaskError, TaskResult, run_remote
 
-__version__ = "1.0.0"
-__all__ = ["discover", "GPUResource"]
+__version__ = "1.2.0"
+__all__ = [
+    "GPUResource",
+    "RemoteTaskError",
+    "TaskResult",
+    "discover",
+    "distribute",
+    "run_remote",
+]

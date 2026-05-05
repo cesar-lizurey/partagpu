@@ -1,0 +1,16 @@
+# Dependances pour les notebooks d'exemple PartaGPU
+# Reinstaller : pip install -r requirements.txt
+
+ipykernel
+requests
+numpy
+
+# PyTorch — installe la build CUDA par defaut sur Linux (~2 Go)
+# Pour forcer une variante specifique :
+#   CPU-only :   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   CUDA 12.4 :  pip install torch --index-url https://download.pytorch.org/whl/cu124
+torch
+
+# partagpu : decommentez quand le package sera publie sur PyPI
+# (en attendant, install local : pip install -e ../python si vous avez les sources)
+partagpu

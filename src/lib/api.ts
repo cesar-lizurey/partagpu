@@ -57,6 +57,11 @@ export type TaskStatus =
   | "Failed"
   | "Cancelled";
 
+export interface WorkspaceFile {
+  path: string;
+  content_b64: string;
+}
+
 export interface Task {
   id: string;
   command: string;
@@ -73,6 +78,8 @@ export interface Task {
   error_output: string;
   exit_code: number | null;
   created_at: number;
+  /** True when the sandbox kept host network access (DDP rendezvous). */
+  network_enabled?: boolean;
 }
 
 export interface MachineInfo {
@@ -126,8 +133,17 @@ export const submitTask = (
   sourceMachine: string,
   sourceUser: string,
   timeoutSecs?: number,
+  networkEnabled?: boolean,
+  workspace?: WorkspaceFile[],
 ) =>
-  invoke<Task>("submit_task", { args, sourceMachine, sourceUser, timeoutSecs });
+  invoke<Task>("submit_task", {
+    args,
+    sourceMachine,
+    sourceUser,
+    timeoutSecs,
+    networkEnabled,
+    workspace,
+  });
 
 export const getAllowlist = () => invoke<string[]>("get_allowlist");
 

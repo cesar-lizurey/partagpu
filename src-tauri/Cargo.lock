@@ -2524,7 +2524,7 @@ dependencies = [
 
 [[package]]
 name = "partagpu"
-version = "1.0.4"
+version = "1.1.0"
 dependencies = [
  "base32",
  "data-encoding",
@@ -2543,12 +2543,13 @@ dependencies = [
  "tauri-plugin-shell",
  "tokio",
  "totp-rs",
+ "ureq",
  "uuid",
 ]
 
 [[package]]
 name = "partagpu-helper"
-version = "1.0.4"
+version = "1.1.0"
 
 [[package]]
 name = "pathdiff"
@@ -4553,6 +4554,20 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "ureq"
+version = "2.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d"
+dependencies = [
+ "base64 0.22.1",
+ "log",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "url",
+]
 
 [[package]]
 name = "url"

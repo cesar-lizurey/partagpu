@@ -1,24 +1,35 @@
-//! Minimal HTTP API server on localhost:7654.
+//! Local HTTP API on 127.0.0.1:7654.
 //!
-//! Exposes the peer list and GPU availability so that the `partagpu`
-//! Python package can discover available resources without touching mDNS.
+//! Used by the `partagpu` Python package and any local client that wants
+//! to introspect peers, GPUs, or dispatch a task to a peer.
 //!
 //! Routes:
-//!   GET /api/peers   → list of discovered peers (JSON)
-//!   GET /api/gpu     → list of available GPUs across verified peers (JSON)
-//!   GET /api/status  → local sharing status (JSON)
+//!   GET  /api/peers     → list of discovered peers (JSON)
+//!   GET  /api/gpu       → list of available GPUs across verified peers (JSON)
+//!   GET  /api/status    → local sharing status (JSON)
+//!   POST /api/dispatch  → run a task on a remote peer, blocks until completion
+//!
+//! /api/dispatch body: { "peer_ip": "192.168.x.y", "args": [...], "timeout_secs": 60, "user": "alice" }
 
+use crate::auth::AuthManager;
 use crate::discovery::Discovery;
 use crate::resource::ResourceMonitor;
+use crate::sandbox::WorkspaceFile;
 use crate::sharing::SharingController;
+use crate::task_runner::{new_task, OutgoingTasks, Task, TaskStatus};
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpListener;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 const LISTEN_ADDR: &str = "127.0.0.1:7654";
+const PEER_PORT: u16 = 7655;
+const MAX_REQUEST_BYTES: usize = 256 * 1024;
+const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// A GPU resource advertised by a peer (or local).
-#[derive(serde::Serialize)]
+#[derive(Serialize)]
 struct GpuInfo {
     host: String,
     ip: String,
@@ -26,13 +37,54 @@ struct GpuInfo {
     verified: bool,
 }
 
+#[derive(Deserialize)]
+struct DispatchBody {
+    peer_ip: String,
+    args: Vec<String>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    #[serde(default)]
+    user: Option<String>,
+    /// Drop sandbox network isolation on the peer (DDP rendezvous, etc.).
+    #[serde(default)]
+    network: Option<bool>,
+    /// Files to push to the peer's sandbox workspace before exec.
+    #[serde(default)]
+    workspace: Option<Vec<WorkspaceFile>>,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+#[derive(Clone)]
+struct ApiState {
+    discovery: Discovery,
+    sharing: SharingController,
+    monitor: Arc<Mutex<ResourceMonitor>>,
+    auth: AuthManager,
+    outgoing: OutgoingTasks,
+}
+
 pub fn start(
     discovery: Discovery,
     sharing: SharingController,
     monitor: Arc<Mutex<ResourceMonitor>>,
+    auth: AuthManager,
+    outgoing: OutgoingTasks,
 ) {
+    let state = ApiState {
+        discovery,
+        sharing,
+        monitor,
+        auth,
+        outgoing,
+    };
+
     std::thread::spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
         {
@@ -53,65 +105,286 @@ pub fn start(
             };
 
             loop {
-                let (mut stream, _) = match listener.accept().await {
+                let (stream, _) = match listener.accept().await {
                     Ok(conn) => conn,
                     Err(_) => continue,
                 };
-
-                let discovery = &discovery;
-                let sharing = &sharing;
-                let monitor = &monitor;
-
-                // Read the request (we only need the first line)
-                let mut buf = [0u8; 1024];
-                let n = match tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await {
-                    Ok(n) if n > 0 => n,
-                    _ => continue,
-                };
-
-                let request = String::from_utf8_lossy(&buf[..n]);
-                let first_line = request.lines().next().unwrap_or("");
-                let path = first_line.split_whitespace().nth(1).unwrap_or("");
-
-                let (status, body) = match path {
-                    "/api/peers" => {
-                        let peers = discovery.get_peers();
-                        ("200 OK", serde_json::to_string_pretty(&peers).unwrap_or_default())
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_connection(stream, state).await {
+                        eprintln!("HTTP API: connection error: {e}");
                     }
-                    "/api/gpu" => {
-                        let gpus = build_gpu_list(discovery, monitor);
-                        ("200 OK", serde_json::to_string_pretty(&gpus).unwrap_or_default())
-                    }
-                    "/api/status" => {
-                        let config = sharing.get_config();
-                        ("200 OK", serde_json::to_string_pretty(&config).unwrap_or_default())
-                    }
-                    _ => {
-                        ("404 Not Found", r#"{"error":"Not found"}"#.to_string())
-                    }
-                };
-
-                let response = format!(
-                    "HTTP/1.1 {status}\r\n\
-                     Content-Type: application/json\r\n\
-                     Access-Control-Allow-Origin: *\r\n\
-                     Content-Length: {}\r\n\
-                     Connection: close\r\n\
-                     \r\n\
-                     {body}",
-                    body.len()
-                );
-
-                let _ = stream.write_all(response.as_bytes()).await;
+                });
             }
         });
     });
 }
 
+async fn handle_connection(mut stream: TcpStream, state: ApiState) -> Result<(), String> {
+    let req = read_request(&mut stream).await?;
+
+    let (status, body) = match (req.method.as_str(), req.path.as_str()) {
+        ("GET", "/api/peers") => {
+            let peers = state.discovery.get_peers();
+            (
+                "200 OK",
+                serde_json::to_string_pretty(&peers).unwrap_or_default(),
+            )
+        }
+        ("GET", "/api/gpu") => {
+            let gpus = build_gpu_list(&state.discovery, &state.monitor);
+            (
+                "200 OK",
+                serde_json::to_string_pretty(&gpus).unwrap_or_default(),
+            )
+        }
+        ("GET", "/api/status") => {
+            let config = state.sharing.get_config();
+            (
+                "200 OK",
+                serde_json::to_string_pretty(&config).unwrap_or_default(),
+            )
+        }
+        ("POST", "/api/dispatch") => handle_dispatch(&req, &state).await,
+        ("OPTIONS", _) => ("204 No Content", String::new()),
+        _ => (
+            "404 Not Found",
+            r#"{"error":"Not found"}"#.to_string(),
+        ),
+    };
+
+    let response = format!(
+        "HTTP/1.1 {status}\r\n\
+         Content-Type: application/json\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         Access-Control-Allow-Headers: Content-Type\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .await
+        .map_err(|e| format!("write: {e}"))?;
+    let _ = stream.shutdown().await;
+    Ok(())
+}
+
+// ── Dispatch handler ───────────────────────────────────────────────────────
+
+async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, String) {
+    let body: DispatchBody = match serde_json::from_str(&req.body) {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                "400 Bad Request",
+                json_string(&ErrorResponse {
+                    error: format!("Corps JSON invalide : {e}"),
+                }),
+            );
+        }
+    };
+
+    if body.peer_ip.trim().is_empty() {
+        return error_resp("400 Bad Request", "Champ 'peer_ip' requis.");
+    }
+    if body.args.is_empty() {
+        return error_resp("400 Bad Request", "Champ 'args' requis et non vide.");
+    }
+
+    let totp = match state.auth.current_code() {
+        Some(c) if !c.is_empty() => c,
+        _ => {
+            return error_resp(
+                "412 Precondition Failed",
+                "Cette machine n'est dans aucune salle PartaGPU. Joignez une salle pour pouvoir dispatcher des tâches.",
+            );
+        }
+    };
+
+    let user = body.user.clone().unwrap_or_else(|| {
+        std::env::var("USER").unwrap_or_else(|_| "local".into())
+    });
+    let timeout = body.timeout_secs.unwrap_or(3600).min(24 * 3600);
+    let peer_ip = body.peer_ip.trim().to_string();
+    let local_hostname = hostname::get()
+        .map(|h: std::ffi::OsString| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "local".into());
+
+    // Display name for the peer (best effort)
+    let target_machine = state
+        .discovery
+        .get_peers()
+        .into_iter()
+        .find(|p| p.ip == peer_ip)
+        .map(|p| {
+            if !p.display_name.is_empty() {
+                p.display_name
+            } else {
+                p.hostname
+            }
+        })
+        .unwrap_or_else(|| peer_ip.clone());
+
+    let network = body.network.unwrap_or(false);
+    let workspace = body.workspace.unwrap_or_default();
+
+    // Reserve a local OutgoingTask entry immediately so the UI shows activity.
+    let mut local_task = new_task(
+        body.args.clone(),
+        local_hostname.clone(),
+        user.clone(),
+        target_machine.clone(),
+    );
+    local_task.network_enabled = network;
+    state.outgoing.add(local_task.clone());
+    let local_id = local_task.id.clone();
+
+    let outgoing = state.outgoing.clone();
+    let args = body.args.clone();
+    let local_id_for_worker = local_id.clone();
+
+    // Run the blocking peer call on a worker thread.
+    let result = tokio::task::spawn_blocking(move || {
+        run_remote_blocking(
+            &peer_ip,
+            &args,
+            &user,
+            timeout,
+            &totp,
+            network,
+            workspace,
+            outgoing,
+            &local_id_for_worker,
+        )
+    })
+    .await;
+
+    let final_task: Result<Task, String> = match result {
+        Ok(r) => r,
+        Err(e) => Err(format!("dispatch interrompu : {e}")),
+    };
+
+    match final_task {
+        Ok(task) => {
+            // Mirror the final state into our OutgoingTasks under the local id.
+            local_task.status = task.status;
+            local_task.progress = 100.0;
+            local_task.output = task.output.clone();
+            local_task.error_output = task.error_output.clone();
+            local_task.exit_code = task.exit_code;
+            state.outgoing.replace(local_task.clone());
+            (
+                "200 OK",
+                serde_json::to_string(&local_task).unwrap_or_default(),
+            )
+        }
+        Err(e) => {
+            state.outgoing.set_failed(&local_id, &e);
+            error_resp("502 Bad Gateway", &e)
+        }
+    }
+}
+
+/// Submit + poll a task on a remote peer. Blocking. Updates the matching
+/// OutgoingTask entry as it progresses.
+fn run_remote_blocking(
+    peer_ip: &str,
+    args: &[String],
+    user: &str,
+    timeout_secs: u64,
+    totp: &str,
+    network_enabled: bool,
+    workspace: Vec<WorkspaceFile>,
+    outgoing: OutgoingTasks,
+    local_id: &str,
+) -> Result<Task, String> {
+    let url_submit = format!("http://{peer_ip}:{PEER_PORT}/peer/v1/tasks");
+    let body = serde_json::json!({
+        "args": args,
+        "source_user": user,
+        "timeout_secs": timeout_secs,
+        "network_enabled": network_enabled,
+        "workspace": workspace,
+    });
+
+    let resp = ureq::post(&url_submit)
+        .set("X-PartaGPU-TOTP", totp)
+        .set("Content-Type", "application/json")
+        .timeout(Duration::from_secs(15))
+        .send_json(body)
+        .map_err(|e| format!("connexion au pair {peer_ip} échouée : {e}"))?;
+
+    if resp.status() < 200 || resp.status() >= 300 {
+        let status = resp.status();
+        let text = resp.into_string().unwrap_or_default();
+        return Err(format!(
+            "Le pair {peer_ip} a refusé la tâche (HTTP {status}) : {text}"
+        ));
+    }
+
+    #[derive(Deserialize)]
+    struct SubmitResp {
+        task_id: String,
+    }
+    let submit: SubmitResp = resp
+        .into_json()
+        .map_err(|e| format!("réponse du pair invalide : {e}"))?;
+
+    outgoing.update_progress(local_id, 5.0, TaskStatus::Running);
+
+    // Poll until terminal state, with a wall-clock budget = task timeout + grace.
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs.saturating_add(30));
+    let url_get = format!("http://{peer_ip}:{PEER_PORT}/peer/v1/tasks/{}", submit.task_id);
+
+    loop {
+        if Instant::now() > deadline {
+            return Err("dépassement du délai d'attente côté local".into());
+        }
+        std::thread::sleep(POLL_INTERVAL);
+
+        let r = match ureq::get(&url_get)
+            .set("X-PartaGPU-TOTP", totp)
+            .timeout(Duration::from_secs(10))
+            .call()
+        {
+            Ok(r) => r,
+            Err(ureq::Error::Status(404, _)) => {
+                return Err("le pair a perdu la tâche (404)".into());
+            }
+            Err(e) => {
+                // Transient network error — retry next poll.
+                eprintln!("dispatch poll: {e}");
+                continue;
+            }
+        };
+
+        let task: Task = match r.into_json() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("dispatch poll decode: {e}");
+                continue;
+            }
+        };
+
+        match task.status {
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
+                return Ok(task);
+            }
+            TaskStatus::Running => {
+                outgoing.update_progress(local_id, 50.0, TaskStatus::Running);
+            }
+            TaskStatus::Queued => {}
+        }
+    }
+}
+
 fn build_gpu_list(discovery: &Discovery, monitor: &Arc<Mutex<ResourceMonitor>>) -> Vec<GpuInfo> {
     let mut gpus = Vec::new();
 
-    // Local GPU
     if let Ok(mut mon) = monitor.lock() {
         let snap = mon.snapshot();
         if snap.gpu_available {
@@ -126,7 +399,6 @@ fn build_gpu_list(discovery: &Discovery, monitor: &Arc<Mutex<ResourceMonitor>>) 
         }
     }
 
-    // Remote GPUs from verified peers that are sharing
     for peer in discovery.get_verified_peers() {
         if peer.sharing_enabled && peer.gpu_limit > 0.0 {
             gpus.push(GpuInfo {
@@ -139,4 +411,99 @@ fn build_gpu_list(discovery: &Discovery, monitor: &Arc<Mutex<ResourceMonitor>>) 
     }
 
     gpus
+}
+
+fn error_resp(status: &'static str, msg: &str) -> (&'static str, String) {
+    (
+        status,
+        json_string(&ErrorResponse {
+            error: msg.to_string(),
+        }),
+    )
+}
+
+fn json_string<T: Serialize>(v: &T) -> String {
+    serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string())
+}
+
+// ── HTTP request reader ────────────────────────────────────────────────────
+
+struct Request {
+    method: String,
+    path: String,
+    body: String,
+    #[allow(dead_code)]
+    headers: Vec<(String, String)>,
+}
+
+async fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 4096];
+    let header_end;
+
+    loop {
+        let n = stream
+            .read(&mut tmp)
+            .await
+            .map_err(|e| format!("read: {e}"))?;
+        if n == 0 {
+            return Err("connexion fermée".into());
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.len() > MAX_REQUEST_BYTES {
+            return Err("requête trop volumineuse".into());
+        }
+        if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            header_end = p;
+            break;
+        }
+    }
+
+    let header_part = std::str::from_utf8(&buf[..header_end])
+        .map_err(|_| "en-têtes non UTF-8".to_string())?;
+    let mut lines = header_part.split("\r\n");
+    let first = lines.next().ok_or("requête vide".to_string())?;
+    let mut parts = first.split_whitespace();
+    let method = parts.next().ok_or("méthode manquante")?.to_string();
+    let path = parts.next().ok_or("chemin manquant")?.to_string();
+
+    let mut headers = Vec::new();
+    let mut content_length: usize = 0;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            let key = k.trim().to_string();
+            let val = v.trim().to_string();
+            if key.eq_ignore_ascii_case("content-length") {
+                content_length = val.parse().unwrap_or(0);
+            }
+            headers.push((key, val));
+        }
+    }
+
+    let mut body_bytes = buf[header_end + 4..].to_vec();
+    while body_bytes.len() < content_length {
+        let n = stream
+            .read(&mut tmp)
+            .await
+            .map_err(|e| format!("read body: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        body_bytes.extend_from_slice(&tmp[..n]);
+        if body_bytes.len() > MAX_REQUEST_BYTES {
+            return Err("corps trop volumineux".into());
+        }
+    }
+    body_bytes.truncate(content_length);
+    let body = String::from_utf8(body_bytes).map_err(|_| "corps non UTF-8".to_string())?;
+
+    Ok(Request {
+        method,
+        path,
+        body,
+        headers,
+    })
 }

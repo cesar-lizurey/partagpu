@@ -8,28 +8,98 @@ Client Python pour [PartaGPU](https://github.com/cesar-lizurey/partagpu) — uti
 pip install partagpu
 ```
 
-## Utilisation
+## Pré-requis
 
-L'application PartaGPU doit tourner sur votre machine.
+L'application PartaGPU doit tourner sur votre machine *et* sur chaque pair, toutes dans la **même salle** (même code d'accès), avec le **partage activé** sur les pairs cibles.
 
-### Lister les GPU disponibles
+Pour DDP : `torch` doit être installé dans le **Python système** (`/usr/bin/python3`) de chaque pair — un venv utilisateur ne suffit pas (le sandbox tourne sous l'utilisateur `partagpu` et ne voit pas votre `$HOME`). Sur Ubuntu :
+
+```bash
+sudo pip install --break-system-packages torch
+```
+
+## Découvrir les GPU
 
 ```python
 import partagpu
 
 gpus = partagpu.discover()
-# [GPU('local', ip='192.168.70.103', limit=100%, verified),
-#  GPU('César 2', ip='192.168.70.105', limit=50%, verified)]
+# [GPU('local',  ip='192.168.70.103', limit=100%, verified),
+#  GPU('César 2', ip='192.168.70.105', limit=50%,  verified)]
 ```
 
-### Lancer un entraînement distribué
+## Exécuter une commande sur un pair (`run_remote`)
 
 ```python
-from partagpu.distributed import launch_workers
+import partagpu
 
-workers = launch_workers("train.py", args=["--epochs", "10"])
-for w in workers:
-    w.wait()
+peer = next(g for g in partagpu.discover() if g.host != "local")
+
+result = partagpu.run_remote(
+    peer,
+    ["python3", "-c", "import torch; print(torch.cuda.get_device_name(0))"],
+    timeout=30,
+)
+print(result.stdout)
+result.check()  # raise si exit != 0
 ```
 
-Voir le [README principal](https://github.com/cesar-lizurey/partagpu#package-python--entraînement-distribué) pour la documentation complète.
+`run_remote` accepte aussi :
+- `network=True` — laisse le sandbox accéder au réseau (requis pour DDP)
+- `workspace={path: content}` ou `workspace=[Path, ...]` — pousse des fichiers dans le `/workspace` du sandbox avant exécution
+- `timeout=int` — secondes (défaut 300)
+- `user="alice"` — label informatif côté pair
+
+## Entraînement distribué (`distribute`)
+
+```python
+import partagpu
+
+results = partagpu.distribute(
+    "train.py",
+    args=["--epochs", "10"],
+    extra_files=["config.yaml", "utils.py"],
+    timeout=1800,
+)
+for r in results:
+    print(r.target_machine, r.exit_code)
+    print(r.stdout[-500:])
+```
+
+`distribute` :
+- découvre tous les GPU de la salle (sauf si `gpus=` est passé) ;
+- pousse `train.py` (et `extra_files`) dans le sandbox de chaque pair ;
+- définit `MASTER_ADDR`, `MASTER_PORT`, `RANK`, `WORLD_SIZE`, `LOCAL_RANK`, `BACKEND` sur chaque worker ;
+- ouvre l'isolation réseau du sandbox de chaque pair (NCCL/Gloo rendezvous) ;
+- lance les `world_size` workers en parallèle, attend tous les résultats.
+
+Côté `train.py`, vous initialisez DDP standard :
+
+```python
+import os
+import torch.distributed as dist
+
+dist.init_process_group(backend=os.environ["BACKEND"], init_method="env://")
+rank = int(os.environ["RANK"])
+world_size = int(os.environ["WORLD_SIZE"])
+# ... votre training ...
+dist.destroy_process_group()
+```
+
+## Configurer le backend manuellement (`setup_ddp` / `cleanup_ddp`)
+
+Si vous voulez orchestrer DDP par vous-même (autre que `distribute`), les helpers minimaux sont disponibles :
+
+```python
+from partagpu.distributed import setup_ddp, cleanup_ddp
+
+setup_ddp(rank=0, world_size=2, master_addr="192.168.70.103", backend="nccl")
+# ... votre code DDP ...
+cleanup_ddp()
+```
+
+## Voir aussi
+
+- [README principal du projet](https://github.com/cesar-lizurey/partagpu)
+- Notebook d'exemples : `examples/decouverte_gpu.ipynb`
+- Smoke tests : `examples/smoke_run_remote.py`, `examples/smoke_ddp.py`

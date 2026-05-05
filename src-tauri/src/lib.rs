@@ -2,6 +2,7 @@ pub mod api;
 pub mod auth;
 pub mod discovery;
 pub mod http_api;
+pub mod peer_api;
 pub mod resource;
 pub mod sandbox;
 pub mod security_log;
@@ -70,11 +71,28 @@ pub fn run() {
     discovery.start_mdns_refresh();
     let sandbox = Sandbox::new();
     let monitor = Arc::new(Mutex::new(ResourceMonitor::new()));
-
-    // Start the local HTTP API for the Python package
-    http_api::start(discovery.clone(), sharing.clone(), monitor.clone());
     let incoming = IncomingTasks::new(sandbox);
     let outgoing = OutgoingTasks::new();
+
+    // Local HTTP API on 127.0.0.1:7654 — used by the Python package to
+    // discover peers/GPUs and dispatch tasks to a remote peer.
+    http_api::start(
+        discovery.clone(),
+        sharing.clone(),
+        monitor.clone(),
+        auth.clone(),
+        outgoing.clone(),
+    );
+
+    // Peer-to-peer HTTP API on 0.0.0.0:7655 — receives task submissions from
+    // verified peers (auth via shared TOTP secret) and runs them in the sandbox.
+    peer_api::start(
+        incoming.clone(),
+        auth.clone(),
+        discovery.clone(),
+        sharing.clone(),
+        sec_log.clone(),
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

@@ -186,6 +186,8 @@ pub fn submit_task(
     source_machine: String,
     source_user: String,
     timeout_secs: Option<u64>,
+    network_enabled: Option<bool>,
+    workspace: Option<Vec<crate::sandbox::WorkspaceFile>>,
 ) -> Result<Task, String> {
     if args.is_empty() {
         return Err("La commande ne peut pas être vide.".into());
@@ -235,36 +237,23 @@ pub fn submit_task(
         Some(&source_machine), None,
     );
 
-    let task = Task {
-        id: uuid::Uuid::new_v4().to_string(),
-        command: cmd_str,
+    let target_machine = hostname::get()
+        .map(|h: std::ffi::OsString| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "local".into());
+
+    let options = crate::sandbox::SandboxOptions {
+        network_enabled: network_enabled.unwrap_or(false),
+        workspace: workspace.unwrap_or_default(),
+    };
+
+    tasks.create_and_run(
         args,
         source_machine,
         source_user,
-        target_machine: hostname::get()
-            .map(|h: std::ffi::OsString| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "local".into()),
-        status: crate::task_runner::TaskStatus::Queued,
-        progress: 0.0,
-        cpu_usage: 0.0,
-        ram_usage_mb: 0,
-        gpu_usage: 0.0,
-        output: String::new(),
-        error_output: String::new(),
-        exit_code: None,
-        created_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    };
-
-    let task_id = task.id.clone();
-    let task_clone = task.clone();
-    tasks.add(task);
-
-    tasks.execute(&task_id, timeout_secs.unwrap_or(3600))?;
-
-    Ok(task_clone)
+        target_machine,
+        timeout_secs.unwrap_or(3600),
+        options,
+    )
 }
 
 // ── Sandbox allowlist ─────────────────────────────────────

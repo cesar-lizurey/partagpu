@@ -24,7 +24,11 @@ const SSHD_DENY_FILE: &str = "/etc/ssh/sshd_config.d/partagpu-deny.conf";
 const PASSWORD_MAX_DAYS: u32 = 90;
 const CGROUP_PATH: &str = "/sys/fs/cgroup/partagpu";
 const APP_PORT: u16 = 7654;
+const PEER_PORT: u16 = 7655;
 const MDNS_PORT: u16 = 5353;
+/// Rendezvous range for distributed training (NCCL/Gloo). Default torch.distributed
+/// uses 29500; we open a small range so concurrent jobs don't collide.
+const RENDEZVOUS_RANGE: &str = "29500:29510";
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -433,18 +437,42 @@ fn cmd_remove_cgroup() {
 
 fn cmd_open_port() {
     let app_tcp = format!("{APP_PORT}/tcp");
+    let peer_tcp = format!("{PEER_PORT}/tcp");
+    let rdv_tcp = format!("{RENDEZVOUS_RANGE}/tcp");
     let mdns_udp = format!("{MDNS_PORT}/udp");
 
     if which("ufw") {
         let _ = run_silent("ufw", &["allow", &app_tcp, "comment", "PartaGPU"]);
+        let _ = run_silent("ufw", &["allow", &peer_tcp, "comment", "PartaGPU peer"]);
+        let _ = run_silent("ufw", &["allow", &rdv_tcp, "comment", "PartaGPU DDP"]);
         let _ = run_silent("ufw", &["allow", &mdns_udp, "comment", "PartaGPU mDNS"]);
-        println!("Firewall opened (ufw): TCP {APP_PORT}, UDP {MDNS_PORT}");
+        println!(
+            "Firewall opened (ufw): TCP {APP_PORT}, TCP {PEER_PORT}, TCP {RENDEZVOUS_RANGE}, UDP {MDNS_PORT}"
+        );
     } else if which("iptables") {
-        // Remove first to avoid duplicates, then add
+        for port in [APP_PORT, PEER_PORT] {
+            let comment = if port == APP_PORT { "PartaGPU" } else { "PartaGPU peer" };
+            let _ = run_silent(
+                "iptables",
+                &["-D", "INPUT", "-p", "tcp", "--dport", &port.to_string(),
+                  "-m", "comment", "--comment", comment, "-j", "ACCEPT"],
+            );
+            run(
+                "iptables",
+                &["-A", "INPUT", "-p", "tcp", "--dport", &port.to_string(),
+                  "-m", "comment", "--comment", comment, "-j", "ACCEPT"],
+            );
+        }
+        // Rendezvous range for distributed training
         let _ = run_silent(
             "iptables",
-            &["-D", "INPUT", "-p", "tcp", "--dport", &APP_PORT.to_string(),
-              "-m", "comment", "--comment", "PartaGPU", "-j", "ACCEPT"],
+            &["-D", "INPUT", "-p", "tcp", "-m", "multiport", "--dports", RENDEZVOUS_RANGE,
+              "-m", "comment", "--comment", "PartaGPU DDP", "-j", "ACCEPT"],
+        );
+        run(
+            "iptables",
+            &["-A", "INPUT", "-p", "tcp", "-m", "multiport", "--dports", RENDEZVOUS_RANGE,
+              "-m", "comment", "--comment", "PartaGPU DDP", "-j", "ACCEPT"],
         );
         let _ = run_silent(
             "iptables",
@@ -453,15 +481,12 @@ fn cmd_open_port() {
         );
         run(
             "iptables",
-            &["-A", "INPUT", "-p", "tcp", "--dport", &APP_PORT.to_string(),
-              "-m", "comment", "--comment", "PartaGPU", "-j", "ACCEPT"],
-        );
-        run(
-            "iptables",
             &["-A", "INPUT", "-p", "udp", "--dport", &MDNS_PORT.to_string(),
               "-m", "comment", "--comment", "PartaGPU mDNS", "-j", "ACCEPT"],
         );
-        println!("Firewall opened (iptables): TCP {APP_PORT}, UDP {MDNS_PORT}");
+        println!(
+            "Firewall opened (iptables): TCP {APP_PORT}, TCP {PEER_PORT}, TCP {RENDEZVOUS_RANGE}, UDP {MDNS_PORT}"
+        );
     } else {
         println!("No firewall detected, skipping");
     }
@@ -469,17 +494,28 @@ fn cmd_open_port() {
 
 fn cmd_close_port() {
     let app_tcp = format!("{APP_PORT}/tcp");
+    let peer_tcp = format!("{PEER_PORT}/tcp");
+    let rdv_tcp = format!("{RENDEZVOUS_RANGE}/tcp");
 
     if which("ufw") {
         let _ = run_silent("ufw", &["delete", "allow", &app_tcp]);
-        println!("Firewall closed (ufw): TCP {APP_PORT}");
+        let _ = run_silent("ufw", &["delete", "allow", &peer_tcp]);
+        let _ = run_silent("ufw", &["delete", "allow", &rdv_tcp]);
+        println!("Firewall closed (ufw): TCP {APP_PORT}, TCP {PEER_PORT}, TCP {RENDEZVOUS_RANGE}");
     } else if which("iptables") {
+        for (port, comment) in [(APP_PORT, "PartaGPU"), (PEER_PORT, "PartaGPU peer")] {
+            let _ = run_silent(
+                "iptables",
+                &["-D", "INPUT", "-p", "tcp", "--dport", &port.to_string(),
+                  "-m", "comment", "--comment", comment, "-j", "ACCEPT"],
+            );
+        }
         let _ = run_silent(
             "iptables",
-            &["-D", "INPUT", "-p", "tcp", "--dport", &APP_PORT.to_string(),
-              "-m", "comment", "--comment", "PartaGPU", "-j", "ACCEPT"],
+            &["-D", "INPUT", "-p", "tcp", "-m", "multiport", "--dports", RENDEZVOUS_RANGE,
+              "-m", "comment", "--comment", "PartaGPU DDP", "-j", "ACCEPT"],
         );
-        println!("Firewall closed (iptables): TCP {APP_PORT}");
+        println!("Firewall closed (iptables): TCP {APP_PORT}, TCP {PEER_PORT}, TCP {RENDEZVOUS_RANGE}");
     } else {
         println!("No firewall detected, skipping");
     }

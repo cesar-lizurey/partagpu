@@ -1,52 +1,66 @@
-"""Helpers for distributed PyTorch training across PartaGPU peers.
+"""Distributed training orchestrator for PartaGPU.
 
-Usage in a Jupyter notebook:
+The high-level entry point is :func:`distribute`. It takes a Python script
+and a list of GPUs (defaults to all GPUs in the room) and runs the script
+as a PyTorch DDP job — one process per GPU, all coordinating via NCCL/Gloo
+on the LAN.
 
-    import partagpu
-    gpus = partagpu.discover()
-    # → [GPU('local', ip='192.168.70.103', limit=100%, verified),
-    #    GPU('César 2', ip='192.168.70.105', limit=50%, verified)]
+What it does for you:
 
-    from partagpu.distributed import setup_ddp, cleanup_ddp
+- Discovers GPUs via :func:`partagpu.discover` if you don't pass them.
+- Picks rank 0 (the first GPU's host) as the master / rendezvous endpoint.
+- Sets ``MASTER_ADDR``, ``MASTER_PORT``, ``RANK``, ``WORLD_SIZE``,
+  ``LOCAL_RANK`` env vars on each worker.
+- Pushes your script (and any extra files) to each peer's sandbox workspace.
+- Lifts the sandbox network isolation on each peer (``network=True``) so the
+  rendezvous socket can be reached.
+- Dispatches all workers in parallel and returns once all of them are in a
+  terminal state.
 
-    # On each node, call setup_ddp with the appropriate rank
-    setup_ddp(rank=0, world_size=len(gpus), master_addr=gpus[0].ip)
-    ...
-    cleanup_ddp()
+Inside your training script, just initialize DDP the standard way::
 
-For single-machine multi-GPU or simple remote offloading, use the
-higher-level `distribute` context manager.
+    import os
+    import torch.distributed as dist
+
+    dist.init_process_group(
+        backend=os.environ.get("BACKEND", "nccl"),
+        init_method="env://",
+    )
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    # ... train ...
+    dist.destroy_process_group()
 """
 
 from __future__ import annotations
 
+import base64
+import concurrent.futures
 import os
-import subprocess
-import sys
-from contextlib import contextmanager
-from typing import TYPE_CHECKING
+import socket
+from pathlib import Path
+from typing import Sequence
 
-from partagpu.discover import GPUResource, discover
+from partagpu.discover import API_BASE, GPUResource, discover
+from partagpu.remote import RemoteTaskError, TaskResult, run_remote
 
-if TYPE_CHECKING:
-    pass
+
+DEFAULT_MASTER_PORT = 29500
 
 
 def setup_ddp(
     rank: int,
     world_size: int,
     master_addr: str = "127.0.0.1",
-    master_port: int = 29500,
+    master_port: int = DEFAULT_MASTER_PORT,
     backend: str = "nccl",
 ) -> None:
-    """Initialize a PyTorch Distributed Data Parallel process group.
+    """Initialize a PyTorch DDP process group from the current process.
 
-    Args:
-        rank: Global rank of this process.
-        world_size: Total number of processes (= number of GPUs).
-        master_addr: IP of the rank-0 node.
-        master_port: Port for the rendezvous.
-        backend: Communication backend ('nccl' for GPU, 'gloo' for CPU).
+    This is the manual building block used inside the training script when
+    you don't want to use :func:`distribute`. ``RANK``/``WORLD_SIZE``/
+    ``MASTER_ADDR``/``MASTER_PORT`` are set in the environment first so
+    PyTorch sees them.
     """
     import torch.distributed as dist
 
@@ -59,108 +73,164 @@ def setup_ddp(
 
 
 def cleanup_ddp() -> None:
-    """Destroy the PyTorch distributed process group."""
+    """Destroy the PyTorch distributed process group, if any."""
     import torch.distributed as dist
 
     if dist.is_initialized():
         dist.destroy_process_group()
 
 
-def launch_workers(
-    script: str,
-    gpus: list[GPUResource] | None = None,
-    master_port: int = 29500,
-    args: list[str] | None = None,
-) -> list[subprocess.Popen]:
-    """Launch distributed training workers on available GPUs.
+def _local_lan_ip() -> str:
+    """Best-effort LAN IP of this machine (the one peers can reach)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return "127.0.0.1"
 
-    This starts one subprocess per GPU. The local GPU gets rank 0,
-    remote GPUs get subsequent ranks. Each worker receives RANK,
-    WORLD_SIZE, MASTER_ADDR, and MASTER_PORT as environment variables.
+
+def _build_workspace_files(paths: Sequence[Path]) -> list[dict]:
+    """Read files from disk and produce the wire-format workspace payload."""
+    out = []
+    seen = set()
+    for p in paths:
+        path = Path(p).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"fichier introuvable : {p}")
+        name = path.name
+        if name in seen:
+            raise ValueError(f"deux fichiers de workspace ont le même nom : {name}")
+        seen.add(name)
+        out.append(
+            {
+                "path": name,
+                "content_b64": base64.b64encode(path.read_bytes()).decode("ascii"),
+            }
+        )
+    return out
+
+
+def distribute(
+    script: str | Path,
+    args: Sequence[str] = (),
+    *,
+    gpus: list[GPUResource] | None = None,
+    extra_files: Sequence[str | Path] = (),
+    master_port: int = DEFAULT_MASTER_PORT,
+    backend: str = "nccl",
+    timeout: int = 3600,
+    user: str | None = None,
+    api_base: str = API_BASE,
+) -> list[TaskResult]:
+    """Run ``script`` as a DDP training across ``gpus``.
+
+    One process per GPU, env-based rendezvous. The local app brokers the
+    transport; you don't manage SSH or any low-level launch.
 
     Args:
-        script: Path to the training script.
-        gpus: List of GPUResource (defaults to partagpu.discover()).
-        master_port: Port for the rendezvous server.
-        args: Additional arguments to pass to the training script.
+        script: Python file to run. Pushed to each peer's sandbox workspace.
+        args: Extra CLI args appended to ``python3 <script>``.
+        gpus: GPUs to use. Defaults to :func:`partagpu.discover()` (all GPUs
+            in the room).
+        extra_files: Additional files to ship into each peer's workspace
+            alongside the script.
+        master_port: TCP port for the rendezvous (must be in 29500-29510 to
+            be reachable through the host firewall configured by PartaGPU).
+        backend: ``"nccl"`` (GPU) or ``"gloo"`` (CPU/GPU). Default NCCL.
+        timeout: Per-worker wall-clock cap, in seconds.
+        user: Optional label propagated to every peer's incoming-task panel.
+        api_base: Override the local app URL.
 
     Returns:
-        List of Popen objects for each worker.
+        A list of :class:`partagpu.TaskResult`, one per rank, in rank order.
+        Each ``.stdout`` / ``.stderr`` / ``.exit_code`` reflects what that
+        worker produced.
+
+    Raises:
+        RuntimeError: If no GPUs are available.
+        RemoteTaskError: If the dispatch is refused outright (network/auth).
+
+    Example::
+
+        results = partagpu.distribute(
+            "train_ddp.py",
+            args=["--epochs", "10"],
+            timeout=1800,
+        )
+        for r in results:
+            print(r.target_machine, r.exit_code)
+            print(r.stdout[-500:])
     """
+    if backend not in ("nccl", "gloo"):
+        raise ValueError(f"backend doit être 'nccl' ou 'gloo', reçu {backend!r}")
+
     if gpus is None:
-        gpus = discover()
-
+        gpus = discover(api_base=api_base)
     if not gpus:
-        raise RuntimeError("Aucun GPU disponible. Verifiez PartaGPU.")
+        raise RuntimeError(
+            "Aucun GPU disponible. Verifiez que PartaGPU tourne, que vous etes "
+            "dans une salle, et qu'au moins un pair partage ses ressources."
+        )
 
-    master_addr = gpus[0].ip
     world_size = len(gpus)
-    workers = []
+    script_path = Path(script).expanduser().resolve()
+    if not script_path.is_file():
+        raise FileNotFoundError(f"script introuvable : {script}")
 
-    for rank, gpu in enumerate(gpus):
-        env = os.environ.copy()
-        env["MASTER_ADDR"] = master_addr
-        env["MASTER_PORT"] = str(master_port)
-        env["RANK"] = str(rank)
-        env["WORLD_SIZE"] = str(world_size)
-        env["LOCAL_RANK"] = "0"  # one GPU per process
+    files = [script_path] + [Path(p) for p in extra_files]
+    workspace = _build_workspace_files(files)
+    script_name = script_path.name
 
-        cmd = [sys.executable, script] + (args or [])
-
-        if gpu.host == "local" or gpu.ip == master_addr:
-            # Local worker
-            proc = subprocess.Popen(cmd, env=env)
-        else:
-            # Remote worker via SSH to the partagpu account
-            remote_cmd = " ".join(
-                [f"{k}={v}" for k, v in env.items()
-                 if k in ("MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE", "LOCAL_RANK")]
-                + cmd
-            )
-            proc = subprocess.Popen(
-                ["ssh", f"partagpu@{gpu.ip}", remote_cmd],
-                env=env,
-            )
-
-        workers.append(proc)
-
-    return workers
-
-
-@contextmanager
-def distribute(
-    gpus: list[GPUResource] | None = None,
-    master_port: int = 29500,
-    backend: str = "nccl",
-):
-    """Context manager for distributed training.
-
-    Discovers GPUs, sets up the DDP process group for rank 0, and
-    provides the list of GPUs. Cleans up on exit.
-
-    Usage:
-        with partagpu.distributed.distribute() as gpus:
-            model = DDP(model)
-            train(model)
-    """
-    if gpus is None:
-        gpus = discover()
-
-    if not gpus:
-        raise RuntimeError("Aucun GPU disponible. Verifiez PartaGPU.")
-
+    # Master address: rank 0's machine. If rank 0 is "local" with a loopback
+    # IP, replace by the actual LAN IP so other ranks can connect.
     master_addr = gpus[0].ip
-    world_size = len(gpus)
+    if master_addr in ("127.0.0.1", "0.0.0.0", ""):
+        master_addr = _local_lan_ip()
 
-    setup_ddp(
-        rank=0,
-        world_size=world_size,
-        master_addr=master_addr,
-        master_port=master_port,
-        backend=backend,
-    )
+    # Effective user label for the incoming-task panel on each peer.
+    label = user or os.environ.get("USER", "partagpu")
 
-    try:
-        yield gpus
-    finally:
-        cleanup_ddp()
+    def _launch(rank: int, gpu: GPUResource) -> TaskResult:
+        env_prefix = [
+            "env",
+            f"MASTER_ADDR={master_addr}",
+            f"MASTER_PORT={master_port}",
+            f"RANK={rank}",
+            f"WORLD_SIZE={world_size}",
+            "LOCAL_RANK=0",
+            f"BACKEND={backend}",
+        ]
+        cmd = [*env_prefix, "python3", script_name, *args]
+        return run_remote(
+            gpu,
+            cmd,
+            timeout=timeout,
+            user=f"{label} (rank {rank}/{world_size})",
+            network=True,
+            workspace=workspace,
+            api_base=api_base,
+        )
+
+    # Run all workers concurrently. They all need to be alive at roughly the
+    # same time for NCCL's rendezvous to converge.
+    results: list[TaskResult | Exception] = [None] * world_size  # type: ignore[list-item]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=world_size) as ex:
+        futures = {ex.submit(_launch, i, g): i for i, g in enumerate(gpus)}
+        for fut in concurrent.futures.as_completed(futures):
+            i = futures[fut]
+            try:
+                results[i] = fut.result()
+            except Exception as e:  # noqa: BLE001 — propagated below
+                results[i] = e
+
+    # Surface the first error if any.
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            raise RemoteTaskError(
+                f"Rank {i} a échoué avant de produire un résultat : {r}"
+            ) from r
+
+    return results  # type: ignore[return-value]

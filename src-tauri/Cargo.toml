@@ -3,7 +3,7 @@ members = [".", "helper"]
 
 [package]
 name = "partagpu"
-version = "1.0.4"
+version = "1.1.0"
 description = "Partage de ressources de calcul sur réseau local"
 authors = ["César Lizurey"]
 homepage = "https://cesar.lizurey.fr"
@@ -36,3 +36,5 @@ hmac = "0.12"
 sha1 = "0.10"
 log = "0.4"
 env_logger = "0.11"
+# HTTP client used to dispatch tasks to remote peers (no TLS needed on LAN).
+ureq = { version = "2", default-features = false, features = ["json"] }
