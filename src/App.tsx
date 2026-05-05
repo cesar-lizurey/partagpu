@@ -101,7 +101,10 @@ export default function App() {
   return (
     <div className="app">
       <header className="app__header">
-        <h1 className="app__title">PartaGPU</h1>
+        <h1 className="app__title">
+          <img src="/favicon.png" alt="PartaGPU" className="app__logo" />
+          PartaGPU
+        </h1>
         {machineInfo && (
           <EditableName
             displayName={machineInfo.display_name}
