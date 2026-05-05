@@ -31,67 +31,80 @@ pub fn start(
     sharing: SharingController,
     monitor: Arc<Mutex<ResourceMonitor>>,
 ) {
-    tokio::spawn(async move {
-        let listener = match TcpListener::bind(LISTEN_ADDR).await {
-            Ok(l) => l,
+    std::thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
             Err(e) => {
-                eprintln!("HTTP API: failed to bind {LISTEN_ADDR}: {e}");
+                eprintln!("HTTP API: failed to build tokio runtime: {e}");
                 return;
             }
         };
 
-        loop {
-            let (mut stream, _) = match listener.accept().await {
-                Ok(conn) => conn,
-                Err(_) => continue,
-            };
-
-            let discovery = &discovery;
-            let sharing = &sharing;
-            let monitor = &monitor;
-
-            // Read the request (we only need the first line)
-            let mut buf = [0u8; 1024];
-            let n = match tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await {
-                Ok(n) if n > 0 => n,
-                _ => continue,
-            };
-
-            let request = String::from_utf8_lossy(&buf[..n]);
-            let first_line = request.lines().next().unwrap_or("");
-            let path = first_line.split_whitespace().nth(1).unwrap_or("");
-
-            let (status, body) = match path {
-                "/api/peers" => {
-                    let peers = discovery.get_peers();
-                    ("200 OK", serde_json::to_string_pretty(&peers).unwrap_or_default())
-                }
-                "/api/gpu" => {
-                    let gpus = build_gpu_list(discovery, monitor);
-                    ("200 OK", serde_json::to_string_pretty(&gpus).unwrap_or_default())
-                }
-                "/api/status" => {
-                    let config = sharing.get_config();
-                    ("200 OK", serde_json::to_string_pretty(&config).unwrap_or_default())
-                }
-                _ => {
-                    ("404 Not Found", r#"{"error":"Not found"}"#.to_string())
+        runtime.block_on(async move {
+            let listener = match TcpListener::bind(LISTEN_ADDR).await {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("HTTP API: failed to bind {LISTEN_ADDR}: {e}");
+                    return;
                 }
             };
 
-            let response = format!(
-                "HTTP/1.1 {status}\r\n\
-                 Content-Type: application/json\r\n\
-                 Access-Control-Allow-Origin: *\r\n\
-                 Content-Length: {}\r\n\
-                 Connection: close\r\n\
-                 \r\n\
-                 {body}",
-                body.len()
-            );
+            loop {
+                let (mut stream, _) = match listener.accept().await {
+                    Ok(conn) => conn,
+                    Err(_) => continue,
+                };
 
-            let _ = stream.write_all(response.as_bytes()).await;
-        }
+                let discovery = &discovery;
+                let sharing = &sharing;
+                let monitor = &monitor;
+
+                // Read the request (we only need the first line)
+                let mut buf = [0u8; 1024];
+                let n = match tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await {
+                    Ok(n) if n > 0 => n,
+                    _ => continue,
+                };
+
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let first_line = request.lines().next().unwrap_or("");
+                let path = first_line.split_whitespace().nth(1).unwrap_or("");
+
+                let (status, body) = match path {
+                    "/api/peers" => {
+                        let peers = discovery.get_peers();
+                        ("200 OK", serde_json::to_string_pretty(&peers).unwrap_or_default())
+                    }
+                    "/api/gpu" => {
+                        let gpus = build_gpu_list(discovery, monitor);
+                        ("200 OK", serde_json::to_string_pretty(&gpus).unwrap_or_default())
+                    }
+                    "/api/status" => {
+                        let config = sharing.get_config();
+                        ("200 OK", serde_json::to_string_pretty(&config).unwrap_or_default())
+                    }
+                    _ => {
+                        ("404 Not Found", r#"{"error":"Not found"}"#.to_string())
+                    }
+                };
+
+                let response = format!(
+                    "HTTP/1.1 {status}\r\n\
+                     Content-Type: application/json\r\n\
+                     Access-Control-Allow-Origin: *\r\n\
+                     Content-Length: {}\r\n\
+                     Connection: close\r\n\
+                     \r\n\
+                     {body}",
+                    body.len()
+                );
+
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
     });
 }
 
