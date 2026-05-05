@@ -139,23 +139,39 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
   return (
     <div className="task-dispatcher">
       <div className="task-dispatcher__form">
-        <label className="task-dispatcher__field">
-          <span>Pair cible</span>
-          <select
-            value={selectedIp}
-            onChange={(e) => setSelectedIp(e.target.value)}
-            disabled={isLaunching}
-          >
-            {targets.map((p) => (
-              <option key={p.id} value={p.ip}>
-                {p.display_name || p.hostname} ({p.ip}) — {p.gpu_count ?? 1} GPU
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="task-dispatcher__row">
+          <label className="task-dispatcher__field">
+            <span className="task-dispatcher__label">Pair cible</span>
+            <select
+              value={selectedIp}
+              onChange={(e) => setSelectedIp(e.target.value)}
+              disabled={isLaunching}
+              className="task-dispatcher__input"
+            >
+              {targets.map((p) => (
+                <option key={p.id} value={p.ip}>
+                  {p.display_name || p.hostname} ({p.ip}) — {p.gpu_count ?? 1} GPU
+                </option>
+              ))}
+            </select>
+          </label>
 
-        <label className="task-dispatcher__field task-dispatcher__field--wide">
-          <span>Commande</span>
+          <label className="task-dispatcher__field task-dispatcher__field--narrow">
+            <span className="task-dispatcher__label">Timeout (s)</span>
+            <input
+              type="number"
+              min={5}
+              max={86400}
+              value={timeoutSecs}
+              onChange={(e) => setTimeoutSecs(Number(e.target.value))}
+              disabled={isLaunching}
+              className="task-dispatcher__input"
+            />
+          </label>
+        </div>
+
+        <label className="task-dispatcher__field">
+          <span className="task-dispatcher__label">Commande</span>
           <input
             type="text"
             value={commandInput}
@@ -164,6 +180,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
             placeholder='python3 -c "print(42)"'
             spellCheck={false}
             autoComplete="off"
+            className="task-dispatcher__input task-dispatcher__input--mono"
           />
           {parsedArgs.length > 0 ? (
             <small className="task-dispatcher__parsed">
@@ -172,39 +189,35 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
           ) : null}
         </label>
 
-        <label className="task-dispatcher__field task-dispatcher__field--narrow">
-          <span>Timeout (s)</span>
-          <input
-            type="number"
-            min={5}
-            max={86400}
-            value={timeoutSecs}
-            onChange={(e) => setTimeoutSecs(Number(e.target.value))}
-            disabled={isLaunching}
-          />
-        </label>
+        <div className="task-dispatcher__network">
+          <label className="task-dispatcher__checkbox">
+            <input
+              type="checkbox"
+              checked={networkEnabled}
+              onChange={(e) => setNetworkEnabled(e.target.checked)}
+              disabled={isLaunching}
+            />
+            <span>Autoriser l'accès réseau dans le sandbox du pair</span>
+          </label>
+          <p className="task-dispatcher__help">
+            Par défaut, la tâche tourne sans accès réseau (isolation maximale).
+            Cochez cette case si votre commande a besoin de :{" "}
+            <strong>télécharger des données</strong> (HTTP, HuggingFace…),
+            joindre un autre service du LAN, ou faire du{" "}
+            <strong>DDP / NCCL</strong> (rendezvous entre rangs).
+          </p>
+        </div>
 
-        <label className="task-dispatcher__field task-dispatcher__field--checkbox">
-          <input
-            type="checkbox"
-            checked={networkEnabled}
-            onChange={(e) => setNetworkEnabled(e.target.checked)}
-            disabled={isLaunching}
-          />
-          <span>
-            Réseau autorisé{" "}
-            <small style={{ opacity: 0.7 }}>(requis pour DDP)</small>
-          </span>
-        </label>
-
-        <button
-          type="button"
-          onClick={handleLaunch}
-          disabled={isLaunching || !selectedIp || parsedArgs.length === 0}
-          className="btn btn--primary"
-        >
-          {isLaunching ? "Exécution..." : "Lancer"}
-        </button>
+        <div className="task-dispatcher__actions">
+          <button
+            type="button"
+            onClick={handleLaunch}
+            disabled={isLaunching || !selectedIp || parsedArgs.length === 0}
+            className="btn btn--primary"
+          >
+            {isLaunching ? "Exécution..." : "Lancer"}
+          </button>
+        </div>
       </div>
 
       {error ? <div className="alert alert--error">{error}</div> : null}
