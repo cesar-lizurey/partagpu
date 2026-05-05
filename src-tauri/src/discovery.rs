@@ -121,6 +121,17 @@ impl Discovery {
         }
     }
 
+    /// Force an immediate mDNS re-announcement (unregister + register).
+    /// Used after the auth state changes (join/create/leave room) so peers
+    /// pick up the new TOTP without waiting for the periodic refresh.
+    pub fn force_refresh_announcement(&self) {
+        let fullname = format!("{}.{}", self.instance_name, SERVICE_TYPE);
+        let _ = self.daemon.unregister(&fullname);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let _ = self.register();
+        *self.last_announced.lock().unwrap() = String::new();
+    }
+
     pub fn register(&self) -> Result<(), String> {
         let local_ip =
             local_ip_address::local_ip().map_err(|e| format!("Failed to get local IP: {e}"))?;

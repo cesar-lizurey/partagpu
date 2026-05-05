@@ -2524,7 +2524,7 @@ dependencies = [
 
 [[package]]
 name = "partagpu"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "base32",
  "data-encoding",
@@ -2548,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "partagpu-helper"
-version = "1.0.2"
+version = "1.0.3"
 
 [[package]]
 name = "pathdiff"

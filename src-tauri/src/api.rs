@@ -46,12 +46,17 @@ pub struct CreateRoomResult {
 }
 
 #[tauri::command]
-pub fn create_room(auth: State<'_, AuthManager>, room_name: String) -> Result<CreateRoomResult, String> {
+pub fn create_room(
+    auth: State<'_, AuthManager>,
+    discovery: State<'_, Discovery>,
+    room_name: String,
+) -> Result<CreateRoomResult, String> {
     let name = room_name.trim();
     if name.is_empty() {
         return Err("Le nom de la salle est requis.".into());
     }
     let output = auth.create_room(name)?;
+    discovery.force_refresh_announcement();
     Ok(CreateRoomResult {
         passphrase: output.passphrase,
         secret_base32: output.secret_base32,
@@ -59,7 +64,12 @@ pub fn create_room(auth: State<'_, AuthManager>, room_name: String) -> Result<Cr
 }
 
 #[tauri::command]
-pub fn join_room(auth: State<'_, AuthManager>, room_name: String, passphrase: String) -> Result<(), String> {
+pub fn join_room(
+    auth: State<'_, AuthManager>,
+    discovery: State<'_, Discovery>,
+    room_name: String,
+    passphrase: String,
+) -> Result<(), String> {
     let name = room_name.trim();
     if name.is_empty() {
         return Err("Le nom de la salle est requis.".into());
@@ -69,12 +79,14 @@ pub fn join_room(auth: State<'_, AuthManager>, room_name: String, passphrase: St
         return Err("Le code d'accès est requis.".into());
     }
     auth.join_room(name, p)?;
+    discovery.force_refresh_announcement();
     Ok(())
 }
 
 #[tauri::command]
-pub fn leave_room(auth: State<'_, AuthManager>) {
+pub fn leave_room(auth: State<'_, AuthManager>, discovery: State<'_, Discovery>) {
     auth.leave_room();
+    discovery.force_refresh_announcement();
 }
 
 #[tauri::command]

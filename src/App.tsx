@@ -5,6 +5,7 @@ import { Guide } from "./pages/Guide";
 import { RoomSetup } from "./components/RoomSetup";
 import { getMachineInfo, setDisplayName } from "./lib/api";
 import type { MachineInfo } from "./lib/api";
+import { version as APP_VERSION } from "../package.json";
 import "./styles.css";
 
 type Tab = "sharing" | "usage" | "guide";
@@ -104,6 +105,7 @@ export default function App() {
         <h1 className="app__title">
           <img src="/favicon.png" alt="PartaGPU" className="app__logo" />
           PartaGPU
+          <span className="app__version">v{APP_VERSION}</span>
         </h1>
         {machineInfo && (
           <EditableName
