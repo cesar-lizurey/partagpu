@@ -263,36 +263,32 @@ impl Drop for TempWorkspace {
 }
 
 fn prepare_workspace(files: &[WorkspaceFile]) -> Result<TempWorkspace, String> {
-    // /var/lib/partagpu is owned by the partagpu user and gets the right perms;
-    // fall back to /tmp if that doesn't work in dev mode.
-    let base = if Path::new("/var/lib/partagpu").is_dir() {
-        PathBuf::from("/var/lib/partagpu")
-    } else {
-        std::env::temp_dir()
-    };
+    use std::os::unix::fs::PermissionsExt;
 
-    let dir = base.join(format!("task-{}", uuid::Uuid::new_v4()));
+    // We always create the workspace dir under /tmp (or whatever
+    // std::env::temp_dir() returns). The app runs as the regular user (e.g.
+    // `cesar`), the sandbox runs as the `partagpu` UID, so the directory
+    // needs to be world-writable for the sandbox to create output files.
+    // /var/lib/partagpu would be more elegant but its mode 700 + ownership
+    // by the partagpu user blocks creation from the app process.
+    let base = std::env::temp_dir();
+    let dir = base.join(format!("partagpu-task-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("création workspace : {e}"))?;
 
-    // Make it writable by the partagpu user (the sandbox runs as that uid).
-    let _ = Command::new("chown")
-        .args([
-            "-R",
-            &format!("{PARTAGPU_USER}:{PARTAGPU_USER}"),
-            dir.to_str().unwrap_or("."),
-        ])
-        .status();
-    let _ = Command::new("chmod")
-        .args(["770", dir.to_str().unwrap_or(".")])
-        .status();
+    // 0o777: anyone (including the partagpu UID inside the sandbox) can
+    // create / delete files in this dir. The dir itself is in /tmp so it
+    // benefits from /tmp's sticky bit when applicable.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777))
+        .map_err(|e| format!("chmod workspace : {e}"))?;
 
     let mut total_bytes: u64 = 0;
-
     for f in files {
         let safe = sanitize_relative_path(&f.path)?;
         let full = dir.join(&safe);
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", f.path))?;
+            // Sub-dirs created here also need to be writable by the sandbox UID.
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o777));
         }
         let bytes = data_encoding::BASE64
             .decode(f.content_b64.as_bytes())
@@ -305,12 +301,10 @@ fn prepare_workspace(files: &[WorkspaceFile]) -> Result<TempWorkspace, String> {
             ));
         }
         std::fs::write(&full, &bytes).map_err(|e| format!("écriture {}: {e}", f.path))?;
-        let _ = Command::new("chown")
-            .args([
-                &format!("{PARTAGPU_USER}:{PARTAGPU_USER}"),
-                full.to_str().unwrap_or("."),
-            ])
-            .status();
+        // Make the file world-readable so the sandbox UID can read it,
+        // and writable so a training script can overwrite a config in place
+        // if needed.
+        let _ = std::fs::set_permissions(&full, std::fs::Permissions::from_mode(0o666));
     }
 
     Ok(TempWorkspace { path: dir })
