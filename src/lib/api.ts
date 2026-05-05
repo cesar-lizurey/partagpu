@@ -145,6 +145,14 @@ export const submitTask = (
     workspace,
   });
 
+export const cancelIncomingTask = (taskId: string) =>
+  invoke<void>("cancel_incoming_task", { taskId });
+
+/** Cancel an outgoing task. Returns true if the peer acknowledged the cancel,
+ *  false if only local state was updated (peer unreachable). */
+export const cancelOutgoingTask = (localId: string) =>
+  invoke<boolean>("cancel_outgoing_task", { localId });
+
 export const getAllowlist = () => invoke<string[]>("get_allowlist");
 
 export const addToAllowlist = (command: string) =>

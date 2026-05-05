@@ -246,7 +246,7 @@ export function MySharing() {
 
       <section className="section">
         <h3>Qui utilise mes ressources ?</h3>
-        <TaskList tasks={tasks} direction="incoming" />
+        <TaskList tasks={tasks} direction="incoming" onCancelled={refresh} />
       </section>
 
       <SecurityLogPanel />

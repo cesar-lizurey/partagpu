@@ -54,6 +54,19 @@ struct DispatchBody {
     /// Files to push to the peer's sandbox workspace before exec.
     #[serde(default)]
     workspace: Option<Vec<WorkspaceFile>>,
+    /// Optional client-supplied local task id. Lets the client know the id
+    /// before the dispatch returns, so it can cancel mid-flight (e.g. on
+    /// KeyboardInterrupt). If absent, the app generates a UUID.
+    #[serde(default)]
+    local_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CancelBody {
+    /// Local outgoing-task id returned by /api/dispatch (in the `id` field of
+    /// the returned Task). Accepts either spelling for ergonomics.
+    #[serde(default, alias = "task_id")]
+    local_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -149,6 +162,7 @@ async fn handle_connection(mut stream: TcpStream, state: ApiState) -> Result<(),
             )
         }
         ("POST", "/api/dispatch") => handle_dispatch(&req, &state).await,
+        ("POST", "/api/cancel") => handle_cancel(&req, &state).await,
         ("OPTIONS", _) => ("204 No Content", String::new()),
         _ => (
             "404 Not Found",
@@ -242,6 +256,10 @@ async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, Stri
         user.clone(),
         target_machine.clone(),
     );
+    // If the client provided a local_id, use it (so it can cancel mid-flight).
+    if let Some(client_id) = body.local_id.as_ref().filter(|s| !s.is_empty()) {
+        local_task.id = client_id.clone();
+    }
     local_task.network_enabled = network;
     state.outgoing.add(local_task.clone());
     let local_id = local_task.id.clone();
@@ -292,6 +310,93 @@ async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, Stri
     }
 }
 
+// ── Cancel handler ─────────────────────────────────────────────────────────
+
+/// Cancel an outgoing task by its local id. Blocks (calls ureq).
+/// Result.0 = "remote cancellation acknowledged by peer" (true) or "only
+/// local state updated, peer was unreachable" (false).
+pub fn cancel_outgoing_task(
+    auth: &AuthManager,
+    outgoing: &OutgoingTasks,
+    local_id: &str,
+) -> Result<bool, String> {
+    let remote = match outgoing.get_remote_ref(local_id) {
+        Some(r) => r,
+        None => {
+            // Either never reached the peer, or already finished. Mark
+            // locally regardless.
+            outgoing.set_cancelled(local_id);
+            return Ok(false);
+        }
+    };
+    let totp = auth
+        .current_code()
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| "Cette machine n'est dans aucune salle PartaGPU.".to_string())?;
+
+    let url = format!(
+        "http://{}:{PEER_PORT}/peer/v1/tasks/{}",
+        remote.peer_ip, remote.remote_task_id
+    );
+    let resp = ureq::delete(&url)
+        .set("X-PartaGPU-TOTP", &totp)
+        .timeout(Duration::from_secs(10))
+        .call();
+
+    let acknowledged = match resp {
+        Ok(r) if r.status() >= 200 && r.status() < 300 => true,
+        Ok(r) => return Err(format!("le pair a répondu HTTP {}", r.status())),
+        Err(ureq::Error::Status(s, _)) => {
+            return Err(format!("le pair a répondu HTTP {s}"))
+        }
+        Err(e) => return Err(format!("erreur de connexion au pair : {e}")),
+    };
+
+    outgoing.set_cancelled(local_id);
+    outgoing.clear_remote_ref(local_id);
+    Ok(acknowledged)
+}
+
+async fn handle_cancel(req: &Request, state: &ApiState) -> (&'static str, String) {
+    let body: CancelBody = match serde_json::from_str(&req.body) {
+        Ok(b) => b,
+        Err(e) => {
+            return error_resp(
+                "400 Bad Request",
+                &format!("Corps JSON invalide : {e}"),
+            );
+        }
+    };
+    let local_id = match body.local_id {
+        Some(s) if !s.is_empty() => s,
+        _ => return error_resp("400 Bad Request", "Champ 'local_id' (ou 'task_id') requis."),
+    };
+
+    let auth = state.auth.clone();
+    let outgoing = state.outgoing.clone();
+    let local_id_for_worker = local_id.clone();
+    let result =
+        tokio::task::spawn_blocking(move || cancel_outgoing_task(&auth, &outgoing, &local_id_for_worker))
+            .await;
+
+    match result {
+        Ok(Ok(remote)) => (
+            "200 OK",
+            json_string(&serde_json::json!({"cancelled": true, "remote": remote})),
+        ),
+        Ok(Err(e)) => {
+            // Couldn't reach the peer, but mark locally so the user sees the
+            // intent reflected.
+            state.outgoing.set_cancelled(&local_id);
+            (
+                "502 Bad Gateway",
+                json_string(&serde_json::json!({"cancelled": true, "remote": false, "error": e})),
+            )
+        }
+        Err(e) => error_resp("500 Internal Server Error", &format!("interrompu : {e}")),
+    }
+}
+
 /// Submit + poll a task on a remote peer. Blocking. Updates the matching
 /// OutgoingTask entry as it progresses.
 fn run_remote_blocking(
@@ -337,6 +442,9 @@ fn run_remote_blocking(
         .into_json()
         .map_err(|e| format!("réponse du pair invalide : {e}"))?;
 
+    // Remember which peer task corresponds to this local id, so a future
+    // cancel can be propagated.
+    outgoing.set_remote_ref(local_id, peer_ip, &submit.task_id);
     outgoing.update_progress(local_id, 5.0, TaskStatus::Running);
 
     // Poll until terminal state, with a wall-clock budget = task timeout + grace.

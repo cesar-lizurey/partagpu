@@ -37,11 +37,12 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import socket
+import uuid
 from pathlib import Path
 from typing import Sequence
 
 from partagpu.discover import API_BASE, GPUResource, discover
-from partagpu.remote import RemoteTaskError, TaskResult, run_remote
+from partagpu.remote import RemoteTaskError, TaskResult, _try_cancel, run_remote
 
 
 DEFAULT_MASTER_PORT = 29500
@@ -203,13 +204,11 @@ def distribute(
     # Position of each worker among workers on the SAME host (LOCAL_RANK).
     local_ranks = _local_rank_map(gpus)
 
+    # Pre-allocate one local task id per rank, so we can cancel siblings on
+    # failure without waiting for run_remote to return.
+    local_ids = [str(uuid.uuid4()) for _ in gpus]
+
     def _launch(rank: int, gpu: GPUResource) -> TaskResult:
-        # CUDA_VISIBLE_DEVICES filters the worker's view to its assigned
-        # physical GPU. Inside the script that GPU is reachable as cuda:0
-        # regardless of its physical index. LOCAL_RANK stays 0 to match
-        # the filtered view (avoids `set_device(LOCAL_RANK)` crashing).
-        # The host-relative position (useful for logging) is exposed as
-        # PARTAGPU_LOCAL_RANK.
         env_prefix = [
             "env",
             f"MASTER_ADDR={master_addr}",
@@ -230,21 +229,60 @@ def distribute(
             network=True,
             workspace=workspace,
             api_base=api_base,
+            local_id=local_ids[rank],
         )
+
+    def _cancel_siblings(except_rank: int, results: list) -> None:
+        """Cancel all ranks that haven't produced a result yet. Best effort."""
+        for j, lid in enumerate(local_ids):
+            if j == except_rank or results[j] is not None:
+                continue
+            _try_cancel(api_base, lid)
 
     # Run all workers concurrently. They all need to be alive at roughly the
     # same time for NCCL's rendezvous to converge.
-    results: list[TaskResult | Exception] = [None] * world_size  # type: ignore[list-item]
+    results: list[TaskResult | Exception | None] = [None] * world_size
+    errored_rank: int | None = None
+    interrupted = False
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=world_size) as ex:
         futures = {ex.submit(_launch, i, g): i for i, g in enumerate(gpus)}
-        for fut in concurrent.futures.as_completed(futures):
-            i = futures[fut]
-            try:
-                results[i] = fut.result()
-            except Exception as e:  # noqa: BLE001 — propagated below
-                results[i] = e
+        try:
+            for fut in concurrent.futures.as_completed(futures):
+                i = futures[fut]
+                try:
+                    r = fut.result()
+                    results[i] = r
+                    # If this rank failed and we haven't started cancelling
+                    # siblings yet, do it now (the others are likely waiting
+                    # for an NCCL rendezvous that won't complete).
+                    if not r.ok and errored_rank is None:
+                        errored_rank = i
+                        _cancel_siblings(i, results)
+                except Exception as e:  # noqa: BLE001
+                    results[i] = e
+                    if errored_rank is None:
+                        errored_rank = i
+                        _cancel_siblings(i, results)
+        except KeyboardInterrupt:
+            interrupted = True
+            for lid in local_ids:
+                _try_cancel(api_base, lid)
+            # Let workers settle into Cancelled state before re-raising.
+            for fut in futures:
+                try:
+                    fut.result(timeout=10)
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
 
-    # Surface the first error if any.
+    if interrupted:
+        # Defensive: should already be re-raised above.
+        raise KeyboardInterrupt()
+
+    # Surface the first transport-level exception if any (a non-zero exit_code
+    # is reported via TaskResult.ok, not raised — the caller can inspect each
+    # result individually).
     for i, r in enumerate(results):
         if isinstance(r, Exception):
             raise RemoteTaskError(

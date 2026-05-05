@@ -132,6 +132,22 @@ impl Sandbox {
         timeout_secs: u64,
         opts: &SandboxOptions,
     ) -> Result<SandboxResult, String> {
+        self.execute_with_callbacks(args, timeout_secs, opts, |_| {})
+    }
+
+    /// Same as `execute_with_options`, but invokes `on_pid` with the bwrap
+    /// PID as soon as the child is spawned. Used by the task runner to
+    /// register the PID for cancellation.
+    pub fn execute_with_callbacks<F>(
+        &self,
+        args: &[String],
+        timeout_secs: u64,
+        opts: &SandboxOptions,
+        on_pid: F,
+    ) -> Result<SandboxResult, String>
+    where
+        F: FnOnce(u32),
+    {
         if args.is_empty() {
             return Err("Commande vide.".into());
         }
@@ -208,6 +224,7 @@ impl Sandbox {
         let mut child = cmd.spawn().map_err(|e| format!("Impossible de lancer bwrap : {e}"))?;
 
         let pid = child.id();
+        on_pid(pid);
         let procs_path = format!("{CGROUP_PATH}/cgroup.procs");
         let _ = std::fs::write(&procs_path, pid.to_string());
 

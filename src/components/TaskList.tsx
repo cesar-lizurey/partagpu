@@ -1,8 +1,15 @@
-import type { Task } from "../lib/api";
+import { useState } from "react";
+import {
+  cancelIncomingTask,
+  cancelOutgoingTask,
+  type Task,
+} from "../lib/api";
 
 interface TaskListProps {
   tasks: Task[];
   direction: "incoming" | "outgoing";
+  /** Called after a successful cancel so the parent can refresh the list. */
+  onCancelled?: () => void;
 }
 
 const STATUS_LABELS: Record<string, { label: string; className: string }> = {
@@ -13,7 +20,11 @@ const STATUS_LABELS: Record<string, { label: string; className: string }> = {
   Cancelled: { label: "Annulée", className: "badge--disabled" },
 };
 
-export function TaskList({ tasks, direction }: TaskListProps) {
+const CANCELLABLE = new Set(["Queued", "Running"]);
+
+export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+
   if (tasks.length === 0) {
     return (
       <p className="empty-state">
@@ -23,6 +34,24 @@ export function TaskList({ tasks, direction }: TaskListProps) {
       </p>
     );
   }
+
+  const handleCancel = async (taskId: string) => {
+    setCancellingId(taskId);
+    try {
+      if (direction === "incoming") {
+        await cancelIncomingTask(taskId);
+      } else {
+        await cancelOutgoingTask(taskId);
+      }
+      onCancelled?.();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("Cancel failed:", err);
+      alert(`Annulation refusée : ${String(err)}`);
+    } finally {
+      setCancellingId(null);
+    }
+  };
 
   return (
     <table className="peer-table">
@@ -35,6 +64,7 @@ export function TaskList({ tasks, direction }: TaskListProps) {
           <th>CPU</th>
           <th>RAM</th>
           <th>GPU</th>
+          <th>Action</th>
         </tr>
       </thead>
       <tbody>
@@ -43,9 +73,22 @@ export function TaskList({ tasks, direction }: TaskListProps) {
             label: task.status,
             className: "",
           };
+          const canCancel = CANCELLABLE.has(task.status);
+          const isCancelling = cancellingId === task.id;
           return (
             <tr key={task.id}>
-              <td className="task-command">{task.command}</td>
+              <td className="task-command">
+                {task.command}
+                {task.network_enabled ? (
+                  <span
+                    className="badge badge--running"
+                    style={{ marginLeft: 8, fontSize: "0.75em" }}
+                    title="Sandbox avec accès réseau (DDP rendezvous)"
+                  >
+                    réseau
+                  </span>
+                ) : null}
+              </td>
               <td>
                 {direction === "incoming"
                   ? task.source_machine
@@ -70,6 +113,20 @@ export function TaskList({ tasks, direction }: TaskListProps) {
               <td>{task.cpu_usage.toFixed(0)}%</td>
               <td>{task.ram_usage_mb} Mo</td>
               <td>{task.gpu_usage.toFixed(0)}%</td>
+              <td>
+                {canCancel ? (
+                  <button
+                    type="button"
+                    onClick={() => handleCancel(task.id)}
+                    disabled={isCancelling}
+                    title="Arrêter cette tâche"
+                  >
+                    {isCancelling ? "…" : "Stop"}
+                  </button>
+                ) : (
+                  <span style={{ opacity: 0.4 }}>—</span>
+                )}
+              </td>
             </tr>
           );
         })}

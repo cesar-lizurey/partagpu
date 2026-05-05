@@ -299,6 +299,28 @@ pub fn clear_security_log(sec_log: State<'_, SecurityLog>) {
     sec_log.clear();
 }
 
+// ── Cancel ─────────────────────────────────────────────────────────────────
+
+/// Annule une tâche entrante (que la machine exécute pour un pair).
+#[tauri::command]
+pub fn cancel_incoming_task(
+    tasks: State<'_, IncomingTasks>,
+    task_id: String,
+) -> Result<(), String> {
+    tasks.inner().cancel(&task_id)
+}
+
+/// Annule une tâche sortante (que la machine a soumise à un pair).
+/// Propage l'annulation au pair via `DELETE /peer/v1/tasks/<id>`.
+#[tauri::command]
+pub fn cancel_outgoing_task(
+    auth: State<'_, AuthManager>,
+    outgoing: State<'_, crate::task_runner::OutgoingTasks>,
+    local_id: String,
+) -> Result<bool, String> {
+    crate::http_api::cancel_outgoing_task(auth.inner(), outgoing.inner(), &local_id)
+}
+
 #[tauri::command]
 pub fn get_machine_info(discovery: State<'_, Discovery>) -> Result<MachineInfo, String> {
     let hostname = hostname::get()

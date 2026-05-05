@@ -134,6 +134,10 @@ async fn handle_connection(
             let id = &path["/peer/v1/tasks/".len()..];
             handle_get_task(id, &req, &incoming, &auth, &sharing)
         }
+        ("DELETE", path) if path.starts_with("/peer/v1/tasks/") => {
+            let id = &path["/peer/v1/tasks/".len()..];
+            handle_cancel_task(id, &req, &addr, &incoming, &auth, &sharing, &sec_log)
+        }
         _ => (
             "404 Not Found",
             json_string(&ErrorResponse {
@@ -279,6 +283,35 @@ fn handle_get_task(
             json_string(&ErrorResponse {
                 error: "Tâche introuvable.".into(),
             }),
+        ),
+    }
+}
+
+fn handle_cancel_task(
+    id: &str,
+    req: &Request,
+    addr: &SocketAddr,
+    incoming: &IncomingTasks,
+    auth: &AuthManager,
+    sharing: &SharingController,
+    sec_log: &SecurityLog,
+) -> (&'static str, String) {
+    if let Err((code, msg)) = check_auth(req, auth, sharing) {
+        return (code, json_string(&ErrorResponse { error: msg }));
+    }
+    match incoming.cancel(id) {
+        Ok(()) => {
+            sec_log.peer_event(
+                EventCategory::TaskRejected,
+                &format!("Tâche {id} annulée à la demande du pair {}", addr.ip()),
+                &addr.ip().to_string(),
+                "",
+            );
+            ("200 OK", "{\"cancelled\":true}".to_string())
+        }
+        Err(e) => (
+            "404 Not Found",
+            json_string(&ErrorResponse { error: e }),
         ),
     }
 }

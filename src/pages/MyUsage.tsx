@@ -52,7 +52,7 @@ export function MyUsage() {
 
       <section className="section">
         <h3>Mes tâches en cours</h3>
-        <TaskList tasks={tasks} direction="outgoing" />
+        <TaskList tasks={tasks} direction="outgoing" onCancelled={refresh} />
       </section>
     </div>
   );

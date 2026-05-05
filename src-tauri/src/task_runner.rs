@@ -76,6 +76,9 @@ pub fn new_task(
 #[derive(Clone)]
 pub struct IncomingTasks {
     tasks: Arc<Mutex<HashMap<String, Task>>>,
+    /// PID of the bwrap process per running task. Populated when the task
+    /// transitions to Running, removed when the wait loop returns.
+    pids: Arc<Mutex<HashMap<String, u32>>>,
     sandbox: Sandbox,
 }
 
@@ -83,6 +86,7 @@ impl IncomingTasks {
     pub fn new(sandbox: Sandbox) -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
+            pids: Arc::new(Mutex::new(HashMap::new())),
             sandbox,
         }
     }
@@ -138,6 +142,7 @@ impl IncomingTasks {
     /// Updates the task status and output when done.
     fn spawn_execution(&self, task_id: &str, timeout_secs: u64, options: SandboxOptions) {
         let tasks = self.tasks.clone();
+        let pids = self.pids.clone();
         let sandbox = self.sandbox.clone();
         let id = task_id.to_string();
 
@@ -157,28 +162,85 @@ impl IncomingTasks {
         }
 
         std::thread::spawn(move || {
-            let result = sandbox.execute_with_options(&args, timeout_secs, &options);
+            let pids_for_callback = pids.clone();
+            let id_for_callback = id.clone();
+            let result = sandbox.execute_with_callbacks(
+                &args,
+                timeout_secs,
+                &options,
+                move |pid| {
+                    pids_for_callback.lock().unwrap().insert(id_for_callback, pid);
+                },
+            );
+
+            // Always remove the PID entry when the wait loop exits (process is dead).
+            pids.lock().unwrap().remove(&id);
+
             let mut map = tasks.lock().unwrap();
             if let Some(task) = map.get_mut(&id) {
+                let already_cancelled = task.status == TaskStatus::Cancelled;
                 match result {
                     Ok(SandboxResult { exit_code, stdout, stderr }) => {
                         task.output = stdout;
                         task.error_output = stderr;
                         task.exit_code = Some(exit_code);
                         task.progress = 100.0;
-                        task.status = if exit_code == 0 {
-                            TaskStatus::Completed
-                        } else {
-                            TaskStatus::Failed
-                        };
+                        if !already_cancelled {
+                            task.status = if exit_code == 0 {
+                                TaskStatus::Completed
+                            } else {
+                                TaskStatus::Failed
+                            };
+                        }
                     }
                     Err(e) => {
-                        task.error_output = e;
-                        task.status = TaskStatus::Failed;
+                        if !already_cancelled {
+                            task.error_output = e;
+                            task.status = TaskStatus::Failed;
+                        }
                     }
                 }
             }
         });
+    }
+
+    /// Mark a task as Cancelled and SIGTERM its bwrap process (then SIGKILL after 2 s).
+    /// Returns Err if the task doesn't exist or has already finished.
+    pub fn cancel(&self, task_id: &str) -> Result<(), String> {
+        // Mark Cancelled first so the wait-loop completion handler doesn't
+        // overwrite the status with Failed.
+        {
+            let mut map = self.tasks.lock().unwrap();
+            match map.get_mut(task_id) {
+                None => return Err("Tâche introuvable.".into()),
+                Some(task) => match task.status {
+                    TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
+                        return Err("Tâche déjà terminée.".into());
+                    }
+                    _ => task.status = TaskStatus::Cancelled,
+                },
+            }
+        }
+
+        let pid = self.pids.lock().unwrap().get(task_id).copied();
+        if let Some(pid) = pid {
+            let pid_str = pid.to_string();
+            // Best effort: TERM, then KILL after 2 s if still alive.
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &pid_str])
+                .status();
+            let pids = self.pids.clone();
+            let id = task_id.to_string();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                if pids.lock().unwrap().contains_key(&id) {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-KILL", &pid_str])
+                        .status();
+                }
+            });
+        }
+        Ok(())
     }
 
     pub fn get_sandbox(&self) -> &Sandbox {
@@ -190,12 +252,22 @@ impl IncomingTasks {
 #[derive(Clone)]
 pub struct OutgoingTasks {
     tasks: Arc<Mutex<HashMap<String, Task>>>,
+    /// For each local outgoing task id, the (peer_ip, remote_task_id) on the
+    /// peer that runs it. Used to propagate cancellation via DELETE.
+    remote_refs: Arc<Mutex<HashMap<String, RemoteRef>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteRef {
+    pub peer_ip: String,
+    pub remote_task_id: String,
 }
 
 impl OutgoingTasks {
     pub fn new() -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
+            remote_refs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -234,7 +306,33 @@ impl OutgoingTasks {
         }
     }
 
+    pub fn set_cancelled(&self, id: &str) {
+        let mut map = self.tasks.lock().unwrap();
+        if let Some(task) = map.get_mut(id) {
+            task.status = TaskStatus::Cancelled;
+        }
+    }
+
+    pub fn set_remote_ref(&self, local_id: &str, peer_ip: &str, remote_task_id: &str) {
+        self.remote_refs.lock().unwrap().insert(
+            local_id.to_string(),
+            RemoteRef {
+                peer_ip: peer_ip.to_string(),
+                remote_task_id: remote_task_id.to_string(),
+            },
+        );
+    }
+
+    pub fn get_remote_ref(&self, local_id: &str) -> Option<RemoteRef> {
+        self.remote_refs.lock().unwrap().get(local_id).cloned()
+    }
+
+    pub fn clear_remote_ref(&self, local_id: &str) {
+        self.remote_refs.lock().unwrap().remove(local_id);
+    }
+
     pub fn remove(&self, id: &str) {
         self.tasks.lock().unwrap().remove(id);
+        self.remote_refs.lock().unwrap().remove(id);
     }
 }
