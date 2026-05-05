@@ -203,8 +203,9 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
             Par défaut, la tâche tourne sans accès réseau (isolation maximale).
             Cochez cette case si votre commande a besoin de :{" "}
             <strong>télécharger des données</strong> (HTTP, HuggingFace…),
-            joindre un autre service du LAN, ou faire du{" "}
-            <strong>DDP / NCCL</strong> (rendezvous entre rangs).
+            joindre un autre service du réseau local, ou faire un{" "}
+            <strong>entraînement DDP</strong> (les processus parallèles
+            doivent se synchroniser via le réseau).
           </p>
         </div>
 
