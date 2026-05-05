@@ -220,7 +220,7 @@ L'application a **3 onglets** :
   ![Répartition par utilisateur](docs/images/usage-breakdown.svg)
 
   Chaque segment a la couleur de l'utilisateur. Survolez pour voir le détail.
-- **Tableau détaillé** : commande, source, statut, progression, CPU/RAM/GPU par tâche
+- **Tableau détaillé** : commande, source, statut, progression, CPU/RAM/GPU par tâche, **bouton Stop** pour annuler une tâche entrante en cours (utile si vous pensez qu'un camarade pousse n'importe quoi)
 
 ### Onglet « Mon utilisation »
 
@@ -228,7 +228,8 @@ L'application a **3 onglets** :
 
 - **Machines disponibles** : liste des postes qui partagent, avec leur capacité et leur statut d'authentification (colonne **Auth**)
 - **Toutes les machines** : y compris celles qui ne partagent pas encore
-- **Mes tâches en cours** : progression en temps réel de ce que j'ai soumis
+- **Lancer une commande sur un pair** : formulaire pour dispatcher une commande sur un pair sans passer par Python (sélection du pair, commande avec parsing shell, timeout, accès réseau opt-in, panneau résultat avec stdout/stderr)
+- **Mes tâches en cours** : progression en temps réel de ce que j'ai soumis. Bouton **Stop** sur les tâches Queued/Running pour les annuler proprement (SIGTERM côté pair, propagation aux rangs siblings dans un DDP).
 
 ### Onglet « Guide »
 
@@ -439,13 +440,14 @@ pip install -e python/
 
 Pour les exemples du dossier [examples/](examples/), il y a déjà tout un setup `requirements.txt` + kernel Jupyter — voir [examples/decouverte_gpu.ipynb](examples/decouverte_gpu.ipynb).
 
-### Trois APIs, trois niveaux
+### Quatre APIs, par ordre d'usage
 
 | API | Quand l'utiliser |
 |---|---|
 | `partagpu.discover()` | Lister les GPU dispo dans la salle (local + pairs vérifiés qui partagent). Une entrée par CUDA device. |
 | `partagpu.run_remote(peer, args, …)` | Exécuter **une commande** sur **un pair** (le local app fait broker). Bloquant, retourne `TaskResult`. |
 | `partagpu.distribute(script, args=, …)` | Entraîner avec **PyTorch DDP** sur **tous les GPU de la salle**. Multi-GPU **par machine** géré automatiquement. |
+| `partagpu.cancel(local_id)` | Annuler une tâche en cours par programme (depuis un autre notebook par ex.). Le `local_id` vient de `TaskResult.id`. `Ctrl+C` dans `run_remote`/`distribute` propage automatiquement le cancel au pair. |
 
 ### Découverte des GPU
 
@@ -542,7 +544,8 @@ L'application expose deux serveurs HTTP :
 | `/api/peers` | GET | Liste de tous les pairs découverts |
 | `/api/gpu` | GET | Liste des GPU dispo, **une entrée par device** (champ `device_index`) |
 | `/api/status` | GET | Statut de partage local |
-| `/api/dispatch` | POST | Soumet une tâche à un pair, **bloque** jusqu'à completion. Body : `{"peer_ip", "args", "timeout_secs", "network", "workspace", "user"}` |
+| `/api/dispatch` | POST | Soumet une tâche à un pair, **bloque** jusqu'à completion. Body : `{"peer_ip", "args", "timeout_secs", "network", "workspace", "user", "local_id"}` (le `local_id` est optionnel — sert à pré-allouer un id côté client pour pouvoir annuler mid-flight) |
+| `/api/cancel` | POST | Annule une tâche sortante par son `local_id`. Propage en `DELETE` au pair. Body : `{"local_id"}` |
 
 **API pair-à-pair** sur `0.0.0.0:7655` (utilisée par les autres pairs PartaGPU, auth via header `X-PartaGPU-TOTP`) :
 
@@ -551,6 +554,7 @@ L'application expose deux serveurs HTTP :
 | `/peer/v1/health` | GET | Liveness + état (no auth) |
 | `/peer/v1/tasks` | POST | Reçoit une tâche d'un pair vérifié, la lance dans le sandbox |
 | `/peer/v1/tasks/<id>` | GET | Status / output d'une tâche |
+| `/peer/v1/tasks/<id>` | DELETE | Annule la tâche (SIGTERM puis SIGKILL après 2 s sur le bwrap) |
 
 Pour le détail technique du flux et des protocoles, voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

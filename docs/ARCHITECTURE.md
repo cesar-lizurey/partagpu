@@ -13,9 +13,11 @@ Ce document explique **comment PartaGPU fonctionne en interne** : les composants
 5. [Flux d'une tâche `run_remote`](#flux-dune-tâche-run_remote)
 6. [Orchestration DDP avec `distribute`](#orchestration-ddp-avec-distribute)
 7. [Multi-GPU par machine](#multi-gpu-par-machine)
-8. [Découverte mDNS](#découverte-mdns)
-9. [Privilèges et helper](#privilèges-et-helper)
-10. [Modèle de sécurité](#modèle-de-sécurité)
+8. [Annulation des tâches](#annulation-des-tâches)
+9. [UI dispatcher](#ui-dispatcher)
+10. [Découverte mDNS](#découverte-mdns)
+11. [Privilèges et helper](#privilèges-et-helper)
+12. [Modèle de sécurité](#modèle-de-sécurité)
 
 ---
 
@@ -73,19 +75,24 @@ L'app expose **deux** serveurs HTTP, écrits à la main en Rust avec `tokio` (pa
     "args": ["python3", "-c", "..."],
     "timeout_secs": 60,
     "network": true,
-    "workspace": [{"path": "train.py", "content_b64": "..."}]
+    "workspace": [{"path": "train.py", "content_b64": "..."}],
+    "local_id": "uuid-fourni-par-le-client"
   }
   ```
   Le handler :
   1. Récupère le code TOTP courant de l'AuthManager local
-  2. Crée une entrée `OutgoingTasks` avec status `Queued` (UI visible immédiatement)
+  2. Crée une entrée `OutgoingTasks` avec status `Queued` (UI visible immédiatement). Si `local_id` est fourni, c'est lui qui est utilisé comme id ; sinon UUID généré.
   3. Sur un thread `spawn_blocking` : POST vers `<peer_ip>:7655/peer/v1/tasks` avec header `X-PartaGPU-TOTP`
-  4. Récupère `task_id`, met l'OutgoingTask en `Running`
+  4. Récupère `task_id` (du pair), enregistre `(peer_ip, remote_task_id)` dans `OutgoingTasks::remote_refs[local_id]` pour permettre une annulation ultérieure, met l'OutgoingTask en `Running`
   5. Poll `<peer_ip>:7655/peer/v1/tasks/<task_id>` toutes les 500 ms
-  6. Quand la tâche atteint un état terminal (`Completed`/`Failed`), met à jour OutgoingTasks et **retourne le `Task` complet** au client
+  6. Quand la tâche atteint un état terminal (`Completed`/`Failed`/`Cancelled`), met à jour OutgoingTasks et **retourne le `Task` complet** au client
   7. Si timeout : marque comme failed et retourne 502.
 
   Cet endpoint est **bloquant** par design : le notebook Python attend simplement le résultat. Pour des tâches longues, on pourrait passer en async (Phase 4 du roadmap).
+
+  La logique de dispatch est extraite en `pub fn dispatch_task_blocking()` réutilisable depuis n'importe quel contexte sync (HTTP handler via spawn_blocking, ou commande Tauri `dispatch_task` appelée par l'UI dispatcher).
+
+- `POST /api/cancel` — **annulation d'une tâche sortante**. Body : `{"local_id": "..."}`. Look up le `remote_ref` correspondant, récupère le code TOTP courant, fait `DELETE http://<peer_ip>:7655/peer/v1/tasks/<remote_id>` puis marque l'OutgoingTask `Cancelled`. Si le pair est injoignable, marque quand même Cancelled localement et retourne 502 avec `remote: false`.
 
 ### `0.0.0.0:7655` — API pair-à-pair
 
@@ -110,6 +117,7 @@ L'app expose **deux** serveurs HTTP, écrits à la main en Rust avec `tokio` (pa
   ```
   Auth → résolution du `source_machine` depuis l'IP TCP source (lookup dans `discovery.get_peers()`) → `IncomingTasks::create_and_run(...)` qui lance le sandbox dans un thread, retourne immédiatement un `task_id`.
 - `GET /peer/v1/tasks/<id>` — auth idem, retourne la struct `Task` complète (status, output, error_output, exit_code).
+- `DELETE /peer/v1/tasks/<id>` — **annulation** d'une tâche en cours. Auth idem. Marque la tâche `Cancelled` côté `IncomingTasks`, envoie `SIGTERM` au PID du bwrap, puis `SIGKILL` après 2 s si toujours en vie. Logged dans le `SecurityLog` avec `EventCategory::TaskRejected`.
 
 Pourquoi un serveur séparé du 7654 ? Parce que 7654 est **loopback** (sécurité : pas exposé au réseau) tandis que 7655 doit être joignable depuis le LAN. Mélanger les deux dans un même serveur compliquerait l'auth (lecture seule sans auth d'un côté, écriture avec auth TOTP de l'autre).
 
@@ -311,6 +319,101 @@ Côté Python (`distributed.py::distribute`) :
 ### Pourquoi `LOCAL_RANK = 0` et pas la position-on-host ?
 
 Si on filtrait CVD à un seul GPU **et** qu'on mettait `LOCAL_RANK = N`, un script qui fait `torch.cuda.set_device(LOCAL_RANK)` planterait (essaie de set device N alors qu'un seul est visible). En forçant `LOCAL_RANK = 0`, tous les patterns torchrun-compatibles fonctionnent. La vraie position-on-host reste accessible via `PARTAGPU_LOCAL_RANK` pour les besoins de logging.
+
+---
+
+## Annulation des tâches
+
+Une tâche en cours peut être annulée à tout moment, et l'annulation se propage proprement bout-à-bout : du client qui demande au sandbox du pair qui doit s'arrêter.
+
+### Tracking des PIDs côté pair
+
+`IncomingTasks` maintient un map `pids: HashMap<task_id, u32>` des PIDs des bwrap en cours. Le PID est enregistré via le callback `on_pid` de `Sandbox::execute_with_callbacks` (appelé juste après le `spawn`), et retiré quand le wait loop se termine (process mort).
+
+### `IncomingTasks::cancel(task_id)`
+
+```
+1. Marque la tâche `Cancelled` AVANT le SIGTERM (ordre important — voir
+   ci-dessous).
+2. Envoie `kill -TERM <pid>` (commande shell, pas libc — évite la
+   dépendance directe à libc).
+3. Spawn un thread qui dort 2 s puis fait `kill -KILL <pid>` si la tâche
+   est toujours dans le map de PIDs (cas où SIGTERM est ignoré, ex:
+   tâche avec un handler de signal).
+4. Le wait loop dans le thread d'exécution voit le bwrap mourir,
+   capture stdout/stderr/exit_code (typiquement exit 143 = 128+SIGTERM),
+   appelle le completion handler.
+5. Le completion handler détecte `task.status == Cancelled` (déjà mis
+   en (1)) et n'override PAS le status avec Failed. Il met juste à
+   jour les outputs et exit_code.
+```
+
+L'ordre (1)→(2) est crucial : si on faisait SIGTERM avant de marquer Cancelled, le wait loop pourrait revenir AVANT qu'on ait écrit Cancelled, et le completion handler écrirait `Failed` (puisqu'exit != 0).
+
+### Annulation côté client
+
+`OutgoingTasks::remote_refs: HashMap<local_id, RemoteRef>` où `RemoteRef = { peer_ip, remote_task_id }`. Renseigné par `dispatch_task_blocking` après que le pair a accepté la tâche.
+
+`http_api::cancel_outgoing_task(auth, outgoing, local_id)` (fonction sync, réutilisable) :
+1. Look up `remote_ref` ; si absent → la tâche n'a jamais atteint le pair (ou est déjà terminée), juste marquer `Cancelled` localement et retourner.
+2. Récupérer le code TOTP courant.
+3. `ureq::delete("http://<peer_ip>:7655/peer/v1/tasks/<remote_id>", X-PartaGPU-TOTP: code)`.
+4. Si le pair répond 2xx → marquer `Cancelled` côté local, retourner `Ok(true)`.
+5. Si erreur réseau → marquer `Cancelled` localement quand même (le user a exprimé son intent), retourner `Err`.
+
+### Propagation depuis Python
+
+Pour que `Ctrl+C` dans un notebook annule la tâche distante, le client Python doit savoir le `local_id` AVANT que `requests.post(/api/dispatch)` ne retourne. Solution : le client **pré-alloue** un UUID côté Python et le passe dans le body de dispatch :
+
+```python
+local_id = str(uuid.uuid4())
+try:
+    requests.post("/api/dispatch", json={..., "local_id": local_id})
+except KeyboardInterrupt:
+    requests.post("/api/cancel", json={"local_id": local_id})
+    raise
+```
+
+`partagpu.run_remote()` fait exactement ça en interne. Si `local_id` est fourni dans le body, l'app utilise cet id pour l'OutgoingTask au lieu d'en générer un.
+
+### Annulation des rangs siblings dans `distribute()`
+
+Quand un rang plante au milieu d'un entraînement DDP, les autres restent bloqués sur l'`init_process_group` ou un `all-reduce`, en attente du rang mort, jusqu'à atteindre le timeout NCCL (~30 min par défaut). Pour éviter ça, `distribute()` :
+
+1. Pré-alloue un `local_id` par rang.
+2. Lance les workers en parallèle via `ThreadPoolExecutor`.
+3. Sur le **premier** rang qui retourne avec `TaskResult.ok == False` ou qui lève une exception, appelle `partagpu.cancel(local_id)` sur tous les autres rangs encore en cours.
+4. Sur `KeyboardInterrupt` dans le main thread : annule **tous** les rangs avant de re-raise.
+
+Les rangs annulés retournent un `TaskResult` avec `status="Cancelled"`. Le caller voit donc tous les résultats (un Failed, plusieurs Cancelled), pas une exception.
+
+### Bouton Stop dans l'UI
+
+Le composant `TaskList` rend un bouton **Stop** sur chaque tâche en `Queued` ou `Running`. Selon `direction`:
+- `incoming` → appelle la commande Tauri `cancel_incoming_task(task_id)` qui invoque `IncomingTasks::cancel()`.
+- `outgoing` → appelle `cancel_outgoing_task(local_id)` qui invoque `http_api::cancel_outgoing_task()` (la même fonction que `POST /api/cancel`, juste appelée directement sans HTTP).
+
+---
+
+## UI dispatcher
+
+`src/components/TaskDispatcher.tsx` est un formulaire React qui permet de dispatcher une commande sur un pair sans passer par le package Python. Visible dans l'onglet *Mon utilisation*.
+
+### Flux
+
+1. L'utilisateur sélectionne un pair (dropdown peuplé depuis `getPeers`, filtré sur `verified && sharing_enabled`), tape une commande (parsée en argv via un mini-parseur shell qui gère `'…'`, `"…"`, `\\`), choisit un timeout, optionnellement coche "réseau autorisé".
+2. Click sur **Lancer** → invoke `dispatch_task` (commande Tauri).
+3. La commande Tauri appelle `http_api::dispatch_task_blocking()` (la même fonction que `POST /api/dispatch`, juste sans la couche HTTP). C'est sync (s'exécute sur le thread pool Tauri), donc le `await` côté JS attend la fin réelle de la tâche côté pair.
+4. Le `Task` final est rendu dans le panneau résultat : badge status, exit_code, stdout/stderr en `<pre>` collapsibles.
+
+### Pourquoi un Tauri command et pas un fetch direct vers /api/dispatch ?
+
+Pour éviter une self-loopback HTTP qui ajouterait une latence et une surface d'erreur inutile. Comme l'UI tourne dans le même process que `dispatch_task_blocking`, l'invoke direct est plus propre.
+
+### Limites volontaires
+
+- **Pas d'upload workspace** dans l'UI (plus complexe : drag-drop, gestion d'erreurs). Pour les tâches qui ont besoin de fichiers, utilisez `partagpu.run_remote(..., workspace=...)` côté Python.
+- **Pas de DDP**. L'UI dispatcher est pour des tâches single-worker. DDP reste l'API Python `partagpu.distribute(...)`.
 
 ---
 

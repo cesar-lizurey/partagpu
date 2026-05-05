@@ -48,10 +48,22 @@ result.check()  # raise si exit != 0
 ```
 
 `run_remote` accepte aussi :
-- `network=True` — laisse le sandbox accéder au réseau (requis pour DDP)
+- `network=True` — laisse le sandbox accéder au réseau (téléchargement de données, DDP, etc.)
 - `workspace={path: content}` ou `workspace=[Path, ...]` — pousse des fichiers dans le `/workspace` du sandbox avant exécution
 - `timeout=int` — secondes (défaut 300)
 - `user="alice"` — label informatif côté pair
+- `local_id="..."` — id pré-alloué pour pouvoir annuler la tâche par programme avant qu'elle ne retourne
+
+`Ctrl+C` dans le notebook propage automatiquement le cancel au pair.
+
+## Annuler une tâche
+
+```python
+# Par programme, depuis un autre notebook ou cellule
+partagpu.cancel(local_id)
+```
+
+Le `local_id` vient de `TaskResult.id` (retourné par `run_remote`/`distribute`), ou que vous avez vous-même fixé via le kwarg `local_id=`.
 
 ## Entraînement distribué (`distribute`)
 

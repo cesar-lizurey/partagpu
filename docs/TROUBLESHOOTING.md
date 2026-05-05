@@ -183,6 +183,42 @@ Si l'un échoue, la cause est généralement listée dans une des sections ci-de
 
 ---
 
+## Annuler une tâche en cours
+
+Trois façons, par ordre d'usage :
+
+1. **Bouton Stop dans l'UI** : sur chaque ligne du tableau *Mes tâches en cours* (sortantes) ou *Qui utilise mes ressources ?* (entrantes), un bouton **Stop** apparaît tant que la tâche est `Queued` ou `Running`. Click → annulation immédiate, propagée au pair (SIGTERM côté sandbox, SIGKILL après 2 s si pas de réponse).
+
+2. **`Ctrl+C` dans un notebook** : `partagpu.run_remote(...)` et `partagpu.distribute(...)` interceptent `KeyboardInterrupt`, envoient un `POST /api/cancel` à l'app locale (qui propage en `DELETE` au pair) puis re-raise. Pour `distribute`, **tous** les rangs sont annulés.
+
+3. **Par programme** : `partagpu.cancel(local_id)` où `local_id` est l'`id` retourné dans `TaskResult`. Pratique pour annuler depuis un autre notebook ou un script.
+
+```python
+import partagpu, threading
+
+def long_task():
+    partagpu.run_remote(peer, ["python3", "-c", "import time; time.sleep(3600)"],
+                        timeout=3600, local_id="ma-tache-de-test")
+
+t = threading.Thread(target=long_task)
+t.start()
+
+# Plus tard, depuis un autre cellule ou autre code :
+partagpu.cancel("ma-tache-de-test")
+```
+
+### `distribute()` : pourquoi mes rangs traînent quand un plante ?
+
+Bug fixé en `1.4.0+`. Avant : si rang 0 mourait, les autres restaient bloqués sur `init_process_group` ou un `all-reduce` jusqu'au timeout NCCL (~30 min). Maintenant : `distribute()` cancel automatiquement les rangs encore en cours dès qu'un échoue. `git pull` côté machine de lancement pour récupérer le fix.
+
+### Une tâche est marquée `Cancelled` côté UI mais semble continuer
+
+Le SIGTERM peut être ignoré par certains scripts (handler de signal Python qui ne passe pas en kill -9). Le timer 2 s envoie alors `SIGKILL`. Si après 5 s la tâche apparaît encore "Running" :
+- Vérifier que le helper est à jour (`npm run helper:build && sudo bash scripts/install-helper.sh`)
+- Logs côté pair : voir le terminal de `npm run tauri:dev`. Si `kill: pas trouvé` ou erreur similaire, le helper n'a pas l'outil `kill` accessible — corriger le PATH du compte `partagpu` ou installer `procps`.
+
+---
+
 ## Logs et observabilité
 
 ### Logs de l'app
