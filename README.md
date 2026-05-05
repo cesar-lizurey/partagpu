@@ -8,7 +8,7 @@ Côté code, un package Python (`partagpu`) permet d'exécuter une commande sur 
 
 **Documentation complémentaire** :
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — comment ça fonctionne en interne (les deux serveurs HTTP, l'auth TOTP, le sandbox, l'orchestration DDP)
-- [docs/PYTHON.md](docs/PYTHON.md) — guide utilisateur complet du package Python avec exemples et diagnostic
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — diagnostic des erreurs courantes (TOTP mismatch, NCCL hang, sandbox plante, etc.)
 - [SECURITY.md](SECURITY.md) — modèle de sécurité détaillé
 
 ---
