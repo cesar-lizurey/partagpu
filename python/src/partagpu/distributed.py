@@ -34,7 +34,6 @@ Inside your training script, just initialize DDP the standard way::
 
 from __future__ import annotations
 
-import base64
 import concurrent.futures
 import os
 import socket
@@ -92,24 +91,19 @@ def _local_lan_ip() -> str:
         return "127.0.0.1"
 
 
-def _build_workspace_files(paths: Sequence[Path]) -> list[dict]:
-    """Read files from disk and produce the wire-format workspace payload."""
-    out = []
-    seen = set()
+def _build_workspace_files(paths: Sequence[Path]) -> dict[str, bytes]:
+    """Read files from disk into a {basename: bytes} mapping ready to be passed
+    as `workspace=` to :func:`run_remote`. The conversion to wire format
+    (base64-encoded JSON payload) happens inside `run_remote`."""
+    out: dict[str, bytes] = {}
     for p in paths:
         path = Path(p).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f"fichier introuvable : {p}")
         name = path.name
-        if name in seen:
+        if name in out:
             raise ValueError(f"deux fichiers de workspace ont le même nom : {name}")
-        seen.add(name)
-        out.append(
-            {
-                "path": name,
-                "content_b64": base64.b64encode(path.read_bytes()).decode("ascii"),
-            }
-        )
+        out[name] = path.read_bytes()
     return out
 
 
