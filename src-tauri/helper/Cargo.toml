@@ -1,6 +1,6 @@
 [package]
 name = "partagpu-helper"
-version = "1.0.0"
+version = "1.0.1"
 description = "PartaGPU privilege helper — runs via pkexec as root"
 authors = ["César Lizurey"]
 homepage = "https://cesar.lizurey.fr"
