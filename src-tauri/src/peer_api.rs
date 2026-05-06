@@ -204,13 +204,24 @@ fn handle_submit(
     }
 
     // Resolve a friendly source name from the peer list (best effort).
+    // Prefer the user-chosen display_name (e.g. "César 1") over the system
+    // hostname (e.g. "cesar-Precision-3650-Tower"), falling back to the
+    // hostname then the IP if neither is available.
     let peer_ip = addr.ip().to_string();
     let source_machine = discovery
         .get_peers()
         .into_iter()
         .find(|p| p.ip == peer_ip)
-        .map(|p| p.hostname)
-        .unwrap_or(peer_ip.clone());
+        .map(|p| {
+            if !p.display_name.is_empty() {
+                p.display_name
+            } else if !p.hostname.is_empty() {
+                p.hostname
+            } else {
+                peer_ip.clone()
+            }
+        })
+        .unwrap_or_else(|| peer_ip.clone());
 
     let source_user = if body.source_user.is_empty() {
         "remote".into()

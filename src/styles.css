@@ -649,58 +649,111 @@ body {
   color: var(--color-text-muted);
 }
 
+/* The track is taller when interactive (room for the draggable limit thumb). */
 .resource-gauge__track {
   position: relative;
   height: 8px;
   background: var(--color-border);
+  border-radius: 4px;
   overflow: visible;
+}
+
+.resource-gauge__track--interactive {
+  height: 14px;
+  cursor: pointer;
 }
 
 .resource-gauge__fill {
   height: 100%;
+  border-radius: 4px;
   transition: width 0.5s ease;
 }
 
+/* Visual marker of the limit position. Always rendered when limit is set,
+   serves as the visual cursor (the actual <input type="range"> overlay
+   provides the interaction). */
 .resource-gauge__limit {
   position: absolute;
-  top: -3px;
-  width: 2px;
-  height: 14px;
-  background: var(--color-text-muted);
-  border-radius: 1px;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 4px;
+  height: calc(100% + 8px);
+  background: var(--color-danger);
+  border-radius: 2px;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.18);
 }
 
-/* ── Resource sliders ──────────────────────────────────── */
-
-.resource-sliders {
-  background: var(--color-surface);
-  padding: 16px 20px;
-  border-radius: var(--radius);
-}
-
-.resource-sliders h3 {
-  margin-bottom: 16px;
-}
-
-.slider-group {
-  margin-bottom: 14px;
-}
-
-.slider-group label {
-  display: block;
-  font-size: 0.85rem;
-  margin-bottom: 4px;
-}
-
-.slider-group__hint {
-  color: var(--color-text-muted);
-  font-weight: 400;
-}
-
-.slider-group input[type="range"] {
+/* Transparent <input type="range"> stretched over the gauge. We hide its
+   default track and style the thumb as a wider draggable handle that
+   visually aligns with the .resource-gauge__limit marker. */
+.resource-gauge__limit-input {
+  position: absolute;
+  inset: -8px 0;
   width: 100%;
-  accent-color: var(--color-primary);
-  cursor: pointer;
+  height: calc(100% + 16px);
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+
+.resource-gauge__limit-input:disabled {
+  cursor: not-allowed;
+}
+
+.resource-gauge__limit-input::-webkit-slider-runnable-track,
+.resource-gauge__limit-input::-moz-range-track {
+  background: transparent;
+  border: none;
+  height: 100%;
+}
+
+/* Thumb: wider invisible hit area, drawn graphically by the .__limit
+   marker behind. Browsers each need their own selector. */
+.resource-gauge__limit-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 30px;
+  background: transparent;
+  border: none;
+  cursor: ew-resize;
+}
+
+.resource-gauge__limit-input::-moz-range-thumb {
+  width: 18px;
+  height: 30px;
+  background: transparent;
+  border: none;
+  cursor: ew-resize;
+}
+
+.resource-gauge__limit-input:focus {
+  outline: none;
+}
+
+.resource-gauge__limit-input:focus + .resource-gauge__limit,
+.resource-gauge__track:hover .resource-gauge__limit {
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.32);
+}
+
+.resource-gauge__limit-input:disabled ~ .resource-gauge__limit {
+  background: var(--color-text-muted);
+  box-shadow: none;
+}
+
+.resource-gauge__limit-label {
+  margin-top: 8px;
+  font-size: 0.78em;
+  color: var(--color-text-muted);
+}
+
+.resource-gauge__limit-label strong {
+  color: var(--color-danger);
+  font-weight: 600;
 }
 
 /* ── Tables ────────────────────────────────────────────── */
@@ -1369,4 +1422,10 @@ select.task-dispatcher__input option {
   border-left: 3px solid var(--color-primary);
   border-radius: 4px;
   line-height: 1.5;
+}
+
+.section__hint {
+  margin: -8px 0 12px 0;
+  font-size: 0.85em;
+  color: var(--color-text-muted);
 }

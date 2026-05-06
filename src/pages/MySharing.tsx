@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { ManagedVenvPanel } from "../components/ManagedVenvPanel";
 import { ResourceGauge } from "../components/ResourceGauge";
-import { ResourceSliders } from "../components/ResourceSliders";
 import { SharingToggle } from "../components/SharingToggle";
 import { TaskList } from "../components/TaskList";
 import { UsageBreakdown } from "../components/UsageBreakdown";
@@ -166,6 +165,16 @@ export function MySharing() {
     }
   };
 
+  // Per-resource limit setter used by the gauges. Reads the latest config so
+  // changing one limit doesn't reset the others.
+  const setLimit = (field: "cpu" | "ram" | "gpu", value: number) => {
+    if (!config) return;
+    const cpu = field === "cpu" ? value : config.cpu_limit_percent;
+    const ram = field === "ram" ? value : config.ram_limit_mb;
+    const gpu = field === "gpu" ? value : config.gpu_limit_percent;
+    void handleLimitsChange(cpu, ram, gpu);
+  };
+
   return (
     <div className="page">
       <h2>Mon partage</h2>
@@ -195,40 +204,70 @@ export function MySharing() {
       {resources && (
         <section className="section">
           <h3>Ressources de cette machine</h3>
+          {config && config.status !== "Disabled" && (
+            <p className="section__hint">
+              Faites glisser le curseur rouge sur chaque jauge pour ajuster
+              la limite que vous partagez aux autres.
+            </p>
+          )}
           <div className="gauges">
             <ResourceGauge
               label="CPU"
               percent={resources.cpu_percent}
               detail={`${resources.cpu_cores} cœurs`}
-              limit={config?.cpu_limit_percent}
+              limit={
+                config && config.status !== "Disabled"
+                  ? config.cpu_limit_percent
+                  : undefined
+              }
+              limitMax={100}
+              limitStep={5}
+              limitUnit="%"
+              onLimitChange={
+                config && config.status !== "Disabled"
+                  ? (v) => setLimit("cpu", v)
+                  : undefined
+              }
             />
             <ResourceGauge
               label="RAM"
               percent={resources.ram_percent}
               detail={`${resources.ram_used_mb} / ${resources.ram_total_mb} Mo`}
+              limit={
+                config && config.status !== "Disabled"
+                  ? config.ram_limit_mb
+                  : undefined
+              }
+              limitMax={resources.ram_total_mb}
+              limitStep={256}
+              limitUnit="Mo"
+              onLimitChange={
+                config && config.status !== "Disabled"
+                  ? (v) => setLimit("ram", v)
+                  : undefined
+              }
             />
             {resources.gpu_available && (
               <ResourceGauge
                 label={`GPU (${resources.gpu_name})`}
                 percent={resources.gpu_percent}
                 detail={`${resources.gpu_memory_used_mb} / ${resources.gpu_memory_total_mb} Mo`}
-                limit={config?.gpu_limit_percent}
+                limit={
+                  config && config.status !== "Disabled"
+                    ? config.gpu_limit_percent
+                    : undefined
+                }
+                limitMax={100}
+                limitStep={5}
+                limitUnit="%"
+                onLimitChange={
+                  config && config.status !== "Disabled"
+                    ? (v) => setLimit("gpu", v)
+                    : undefined
+                }
               />
             )}
           </div>
-        </section>
-      )}
-
-      {config && config.status !== "Disabled" && resources && (
-        <section className="section">
-          <ResourceSliders
-            cpuLimit={config.cpu_limit_percent}
-            ramLimitMb={config.ram_limit_mb}
-            gpuLimit={config.gpu_limit_percent}
-            ramTotalMb={resources.ram_total_mb}
-            gpuAvailable={resources.gpu_available}
-            onChange={handleLimitsChange}
-          />
         </section>
       )}
 
