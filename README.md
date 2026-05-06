@@ -210,7 +210,10 @@ L'application a **3 onglets** :
 
 *Ce que les autres utilisent sur ma machine.*
 
-- **Statut** : Actif / En pause / Désactivé — avec boutons pour changer
+- **Statut** : Actif / En pause / Désactivé. Trois actions distinctes :
+  - **Pause** (depuis Actif) : arrêt **temporaire**. Ferme le pare-feu, refuse les tâches entrantes. Le compte `partagpu`, le cgroup, le venv géré, tout reste en place. Cliquer **Reprendre** redémarre instantanément, sans pkexec.
+  - **Désactiver** (depuis Actif ou Paused) : **nettoyage complet**. Demande confirmation, puis tue les tâches en cours, supprime le compte `partagpu`, vire le venv géré (~2 Go), libère le cgroup, retire les règles SSH/sudo deny, ferme le pare-feu. Pour ré-utiliser ensuite il faudra cliquer **Activer** à nouveau (re-pkexec + ré-install du venv si voulu).
+  - **Activer** (depuis Désactivé) : crée le compte, configure le cgroup, ouvre le pare-feu. Demande pkexec.
 - **Compte partagpu** : statut du compte, formulaire de mot de passe
 - **Jauges de ressources** : CPU, RAM, GPU en temps réel, avec un curseur rouge draggable directement sur la jauge pour fixer la limite de partage (apparaît seulement quand le partage est Actif)
 - **Répartition par utilisateur** : barres empilées colorées montrant la consommation de chaque pair
@@ -389,7 +392,7 @@ Les ajustements de sliders, la consultation du statut, et le monitoring **n'appe
 - **Cgroups v2** : les tâches ne peuvent pas dépasser les limites CPU/RAM définies par les sliders
 - **PolicyKit** : les opérations root passent par `pkexec` avec une règle explicite, pas de sudo en dur. Le mot de passe transite par stdin, jamais en argument CLI.
 - **Validation des entrées** : toutes les entrées passées au helper root sont validées (entiers, longueur, caractères interdits)
-- **Contrôle local** : chaque machine garde le contrôle total — pause ou désactivation en un clic, les tâches distantes sont immédiatement arrêtées
+- **Contrôle local** : chaque machine garde le contrôle total — *Pause* (suspend temporairement) ou *Désactiver* (nettoie tout, comme si PartaGPU n'avait jamais été installé) en un clic ; les tâches distantes en cours sont immédiatement arrêtées
 
 Pour le détail complet de chaque mécanisme (schémas, fichiers concernés, scénarios d'attaque), voir [SECURITY.md](SECURITY.md).
 

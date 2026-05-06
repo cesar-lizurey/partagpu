@@ -697,11 +697,29 @@ Les opérations qui demandent root passent par un binaire séparé `partagpu-hel
 | `setup-cgroup <cpu> <ram>` | Crée/ajuste `/sys/fs/cgroup/partagpu/{cpu.max, memory.max}`. Les ajustements suivants se font en écriture directe (l'UID utilisateur peut écrire dans le cgroup une fois créé). |
 | `open-port` | Ouvre TCP 7654, **TCP 7655 (peer)**, **TCP 29500–29510 (DDP)**, UDP 5353 (mDNS) via `ufw` ou `iptables` |
 | `close-port` | Ferme les mêmes ports |
-| `remove-user` | Supprime complètement `partagpu` + cgroup + règles SSH/sudo |
+| `remove-user` | Supprime complètement `partagpu` + cgroup + règles SSH/sudo. Aussi vire `/var/lib/partagpu` y compris le venv géré (via `userdel --remove`). Tue d'abord les processus de l'utilisateur (`pkill -u partagpu`). Idempotent : no-op si l'utilisateur n'existe pas. |
+| `setup-venv` / `remove-venv` | Provisionne / supprime `/var/lib/partagpu/venv` avec torch + numpy. |
 
 ### Quand pkexec est-il invoqué ?
 
-Seulement pour `create-user`, `set-password`, `setup-cgroup` (premier appel), `open-port`, `close-port`, `remove-user`. Les ajustements de sliders et le monitoring **n'invoquent jamais pkexec** — tout se fait par lecture/écriture directe.
+Seulement pour `create-user`, `set-password`, `setup-cgroup` (premier appel), `open-port`, `close-port`, `remove-user`, `setup-venv`, `remove-venv`. Les ajustements de sliders et le monitoring **n'invoquent jamais pkexec** — tout se fait par lecture/écriture directe.
+
+### Pause vs Désactiver
+
+L'UI propose deux niveaux d'arrêt qui ont des sémantiques différentes :
+
+| | Pause | Désactiver |
+|---|---|---|
+| Pare-feu | Fermé | Fermé (via `remove-user`) |
+| Compte `partagpu` | Inchangé | **Supprimé** (`userdel --remove`) |
+| Tâches en cours | Inchangées (mais plus de nouvelles) | **Tuées** (`pkill -u partagpu`) |
+| Cgroup | Inchangé | **Supprimé** |
+| Venv géré | Inchangé | **Supprimé** (avec `/var/lib/partagpu`) |
+| Règles SSH/sudo deny | Inchangées | **Supprimées** |
+| Pour reprendre | Cliquer *Reprendre* (instantané, pas de pkexec) | Cliquer *Activer* (re-création complète + pkexec, ré-install venv si voulu, ~5 min) |
+| Action Tauri | `pause_sharing` → `close_port` + status Paused | `disable_sharing` → `remove_user` (via helper, demande confirmation côté UI) + status Disabled |
+
+Donc *Pause* est le choix par défaut pour "j'ai fini ma session du jour mais je reviendrai demain". *Désactiver* est pour "j'ai fini d'utiliser PartaGPU sur cette machine, nettoyage complet pour libérer la place et l'image système".
 
 ---
 

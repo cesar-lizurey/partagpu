@@ -14,6 +14,22 @@ const STATUS_LABELS: Record<SharingStatus, { label: string; className: string }>
   Paused: { label: "En pause", className: "status--paused" },
 };
 
+const DISABLE_CONFIRM_MESSAGE =
+  "Désactiver le partage va NETTOYER COMPLÈTEMENT PartaGPU sur cette machine :\n" +
+  "\n" +
+  "  • Le compte système 'partagpu' est supprimé\n" +
+  "  • Les tâches en cours sur ce poste sont tuées\n" +
+  "  • Le venv géré (torch + numpy, ~2 Go) est supprimé\n" +
+  "  • Le cgroup et les règles SSH/sudo sont nettoyés\n" +
+  "  • Le pare-feu PartaGPU est fermé\n" +
+  "\n" +
+  "Pour ré-utiliser PartaGPU ensuite, il faudra tout re-créer (mot de\n" +
+  "passe administrateur + ré-installer le venv ~5 min).\n" +
+  "\n" +
+  "Pour un arrêt temporaire, utilisez plutôt « Pause ».\n" +
+  "\n" +
+  "Confirmer la désactivation complète ?";
+
 export function SharingToggle({
   status,
   onEnable,
@@ -22,6 +38,12 @@ export function SharingToggle({
   onResume,
 }: SharingToggleProps) {
   const { label, className } = STATUS_LABELS[status];
+
+  const handleDisable = () => {
+    if (window.confirm(DISABLE_CONFIRM_MESSAGE)) {
+      onDisable();
+    }
+  };
 
   return (
     <div className="sharing-toggle">
@@ -37,10 +59,18 @@ export function SharingToggle({
         )}
         {status === "Active" && (
           <>
-            <button className="btn btn--warning" onClick={onPause}>
+            <button
+              className="btn btn--warning"
+              onClick={onPause}
+              title="Suspend temporairement les tâches reçues sans rien désinstaller. Cliquez « Reprendre » pour redémarrer instantanément."
+            >
               Pause
             </button>
-            <button className="btn btn--danger" onClick={onDisable}>
+            <button
+              className="btn btn--danger"
+              onClick={handleDisable}
+              title="Nettoie complètement PartaGPU : supprime le compte partagpu, tue les tâches, vire le venv géré, ferme le pare-feu. À utiliser pour libérer la machine après usage."
+            >
               Désactiver
             </button>
           </>
@@ -50,7 +80,11 @@ export function SharingToggle({
             <button className="btn btn--primary" onClick={onResume}>
               Reprendre
             </button>
-            <button className="btn btn--danger" onClick={onDisable}>
+            <button
+              className="btn btn--danger"
+              onClick={handleDisable}
+              title="Nettoie complètement PartaGPU : supprime le compte partagpu, vire le venv géré, ferme le pare-feu."
+            >
               Désactiver
             </button>
           </>

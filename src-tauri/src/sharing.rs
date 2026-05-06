@@ -65,11 +65,20 @@ impl SharingController {
         Ok(config.clone())
     }
 
+    /// Désactivation complète : remove the partagpu user, kill its running
+    /// processes, free the cgroup, close the firewall, drop the managed
+    /// venv. Brings the system back to a clean state as if PartaGPU had
+    /// never been activated. Use *Pause* for a temporary stop instead —
+    /// pause keeps everything in place for fast resume.
     pub fn disable(&self) -> Result<SharingConfig, String> {
         let mut config = self.config.lock().unwrap();
 
-        // Close firewall — no more incoming connections
-        let _ = crate::user_manager::UserManager::close_port();
+        // Full cleanup via the helper (pkexec password prompt). Kills all
+        // running tasks (pkill -u partagpu), removes the user (userdel
+        // --remove also wipes /var/lib/partagpu including the managed venv),
+        // strips SSH/sudo deny rules, removes the restricted shell from
+        // /etc/shells, deletes the cgroup, closes the firewall.
+        crate::user_manager::UserManager::remove_user()?;
 
         config.status = SharingStatus::Disabled;
         Ok(config.clone())
