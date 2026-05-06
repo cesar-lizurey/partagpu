@@ -27,15 +27,17 @@ export function MyUsage() {
     return () => clearInterval(interval);
   }, [refresh]);
 
-  // Sort : peers that share their resources first (the only ones you can
-  // actually use), then non-sharing peers. Within each group, verified
-  // before unverified, then alphabetical.
+  // Sort : usable peers (verified AND sharing) at the very top, since
+  // they're the only ones we can actually dispatch to. Then verified-but-
+  // not-sharing, then sharing-but-unverified (still unusable), then
+  // neither. Alphabetical within each bucket.
   const sortedPeers = [...peers].sort((a, b) => {
+    const usableA = a.verified && a.sharing_enabled;
+    const usableB = b.verified && b.sharing_enabled;
+    if (usableA !== usableB) return usableA ? -1 : 1;
+    if (a.verified !== b.verified) return a.verified ? -1 : 1;
     if (a.sharing_enabled !== b.sharing_enabled) {
       return a.sharing_enabled ? -1 : 1;
-    }
-    if (a.verified !== b.verified) {
-      return a.verified ? -1 : 1;
     }
     return (a.display_name || a.hostname).localeCompare(
       b.display_name || b.hostname,
@@ -54,9 +56,12 @@ export function MyUsage() {
       <section className="section">
         <h3>Machines détectées</h3>
         <p className="section__hint">
-          Vous pouvez utiliser les machines avec <strong>Partage : Actif</strong>{" "}
-          (triées en premier). Les autres sont visibles mais ne mettent rien à
-          disposition pour le moment.
+          Vous pouvez utiliser les machines à la fois{" "}
+          <strong>Auth : OK</strong> (dans votre salle) et{" "}
+          <strong>Partage : Actif</strong>. Les machines non vérifiées
+          (Auth : <strong>?</strong>) sont dans une autre salle ou aucune —
+          vous ne pourrez pas leur dispatcher de tâches même si elles
+          partagent. Triées : utilisables d'abord, puis le reste.
         </p>
         <PeerTable peers={sortedPeers} />
       </section>
