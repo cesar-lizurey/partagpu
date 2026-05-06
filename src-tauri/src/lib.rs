@@ -21,6 +21,27 @@ use sharing::SharingController;
 use std::sync::{Arc, Mutex};
 use task_runner::{IncomingTasks, OutgoingTasks};
 
+/// Rotate the peer-API ephemeral keypair on a fixed cadence so the
+/// forward-secrecy window stays bounded even within a long-lived session.
+/// On each tick we generate a new keypair, push the new pubkey into mDNS
+/// (so peers update their cache), and let the previous key live ~60 s for
+/// in-flight requests (handled by `EphemeralKey::dh_candidates`).
+fn spawn_eph_rotation(server_eph: crypto::EphemeralKey, discovery: discovery::Discovery) {
+    /// Re-keying period. 600 s = 10 min : an attacker who steals RAM at
+    /// time T can decrypt traffic from at most T-600 s. Trade-off vs the
+    /// mDNS noise of re-announcing every 10 min — fine on a LAN.
+    const ROTATION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
+    std::thread::spawn(move || loop {
+        std::thread::sleep(ROTATION_INTERVAL);
+        let new_pub = server_eph.rotate();
+        discovery.set_ephemeral_pubkey(new_pub);
+        // Garbage collection of the previous key is independent of rotation
+        // so callers always see a single canonical state. Run it on each
+        // tick anyway as a safety net.
+        server_eph.gc_expired();
+    });
+}
+
 /// Load a persistent machine ID from ~/.config/partagpu/machine-id,
 /// or generate and save one on first launch. This avoids mDNS ghost
 /// services when the app is restarted.
@@ -59,8 +80,9 @@ pub fn run() {
     let sharing = SharingController::new();
 
     // Forward-secret ephemeral keypair for the peer-API. Lives in memory
-    // only — never written to disk. Regenerated on every app restart, which
-    // is what bounds the forward-secrecy window.
+    // only — never written to disk. Regenerated on every app restart, plus
+    // rotated every 10 minutes by `spawn_eph_rotation` below to keep the
+    // forward-secrecy window short even within a single session.
     let server_eph = EphemeralKey::generate();
 
     let mut discovery = Discovery::new(&hostname, &machine_id)
@@ -69,6 +91,8 @@ pub fn run() {
     discovery.set_sharing(sharing.clone());
     discovery.set_security_log(sec_log.clone());
     discovery.set_ephemeral_pubkey(server_eph.public_b64());
+
+    spawn_eph_rotation(server_eph.clone(), discovery.clone());
 
     if let Err(e) = discovery.register() {
         eprintln!("Warning: could not register mDNS service: {e}");

@@ -47,3 +47,6 @@ rand = "0.8"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 # Gzip for workspace compression on the dispatcher → peer hop.
 flate2 = "1"
+
+[dev-dependencies]
+tempdir = "0.3"

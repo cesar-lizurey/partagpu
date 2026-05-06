@@ -110,6 +110,14 @@ impl SharingController {
         Ok(config.clone())
     }
 
+    /// Test-only : flip the in-memory status to Active without going through
+    /// the helper / pkexec / cgroup setup. Used by the peer-API integration
+    /// tests so they can submit tasks without requiring root privileges.
+    #[doc(hidden)]
+    pub fn force_active_for_tests(&self) {
+        self.config.lock().unwrap().status = SharingStatus::Active;
+    }
+
     pub fn set_limits(
         &self,
         cpu_percent: u32,

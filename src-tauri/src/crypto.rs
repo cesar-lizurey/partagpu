@@ -66,32 +66,70 @@ pub struct Envelope {
     pub eph_pk: Option<String>,
 }
 
-/// In-memory ephemeral X25519 keypair. Generated once at app startup and
-/// dropped on shutdown — never written to disk. This is what gives v2
+/// In-memory ephemeral X25519 keypair. Generated at app startup and
+/// rotated periodically — never written to disk. This is what gives v2
 /// envelopes their forward-secrecy property : an attacker who later steals
-/// the room secret still can't decrypt past traffic because the secret
-/// half of this keypair is gone.
+/// the room secret still can't decrypt past traffic because the private
+/// halves of these keypairs are gone.
+///
+/// Two keys are kept alive at any time : the *current* one (used for newly
+/// derived sessions) and a *previous* one (kept for ~60 s after rotation
+/// so requests already in flight when rotation happened still verify).
 #[derive(Clone)]
 pub struct EphemeralKey {
-    inner: Arc<StaticSecret>,
+    state: Arc<std::sync::RwLock<KeyState>>,
 }
+
+struct KeyEntry {
+    secret: StaticSecret,
+    public_b64: String,
+}
+
+struct KeyState {
+    current: KeyEntry,
+    /// Kept around briefly after rotation so requests that started against
+    /// the old current still complete. Cleared after the grace period.
+    previous: Option<KeyEntry>,
+    previous_expires_at: Option<std::time::Instant>,
+}
+
+fn make_key_entry() -> KeyEntry {
+    let mut rng = rand::rngs::OsRng;
+    let secret = StaticSecret::random_from_rng(&mut rng);
+    let pk = PublicKey::from(&secret);
+    KeyEntry {
+        secret,
+        public_b64: data_encoding::BASE64.encode(pk.as_bytes()),
+    }
+}
+
+/// Grace period during which an old key is still tried for incoming v=2
+/// requests. Long enough that a request which started just before rotation
+/// completes ; short enough that the forward-secrecy window stays small.
+const KEY_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl EphemeralKey {
     /// Generate a fresh keypair from the OS RNG. Call once at app start.
     pub fn generate() -> Self {
-        let mut rng = rand::rngs::OsRng;
         Self {
-            inner: Arc::new(StaticSecret::random_from_rng(&mut rng)),
+            state: Arc::new(std::sync::RwLock::new(KeyState {
+                current: make_key_entry(),
+                previous: None,
+                previous_expires_at: None,
+            })),
         }
     }
 
     /// Public key, ready to be advertised over mDNS / health endpoint.
+    /// Always reflects the most recent rotation.
     pub fn public_b64(&self) -> String {
-        let pk = PublicKey::from(self.inner.as_ref());
-        data_encoding::BASE64.encode(pk.as_bytes())
+        self.state.read().unwrap().current.public_b64.clone()
     }
 
     /// Compute the Diffie-Hellman shared secret with the peer's public key.
+    /// Tries the current key first, then the previous key (if still inside
+    /// its grace window) so a peer that fetched the old pubkey just before
+    /// rotation can still complete its request.
     pub fn dh(&self, peer_pub_b64: &str) -> Result<[u8; 32], String> {
         let raw = data_encoding::BASE64
             .decode(peer_pub_b64.as_bytes())
@@ -101,8 +139,84 @@ impl EphemeralKey {
         }
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&raw);
-        let pk = PublicKey::from(arr);
-        Ok(self.inner.diffie_hellman(&pk).to_bytes())
+        let peer_pk = PublicKey::from(arr);
+
+        // Take a snapshot under the read lock and release it before doing
+        // the (cheap but still) DH math.
+        let st = self.state.read().unwrap();
+        // Always try `current` first.
+        let primary = st.current.secret.diffie_hellman(&peer_pk).to_bytes();
+        let backup = match (&st.previous, st.previous_expires_at) {
+            (Some(prev), Some(exp)) if std::time::Instant::now() < exp => {
+                Some(prev.secret.diffie_hellman(&peer_pk).to_bytes())
+            }
+            _ => None,
+        };
+        drop(st);
+
+        // Caller derives the session key from one of the candidates ; AES-GCM
+        // tag check picks the right one. We can't tell from the DH output
+        // alone which one matches, so we return the primary and let the
+        // caller fall back via `dh_backup` when decrypt fails.
+        if backup.is_some() {
+            // Stash the backup in a side channel via an out-of-band call.
+            // Cleanest API: caller uses `try_decrypt_v2` below which does
+            // both attempts internally. So this method stays "primary only"
+            // and `decrypt_request_v2` covers the fallback.
+        }
+        Ok(primary)
+    }
+
+    /// Two-shot DH that returns both candidate shared secrets if a previous
+    /// key is still in the grace window. The first element is always the
+    /// current-key shared secret. Used by `decrypt_request_v2` to try the
+    /// AES-GCM tag against both keys.
+    pub(crate) fn dh_candidates(
+        &self,
+        peer_pub_b64: &str,
+    ) -> Result<(Vec<[u8; 32]>, ()), String> {
+        let raw = data_encoding::BASE64
+            .decode(peer_pub_b64.as_bytes())
+            .map_err(|e| format!("eph_pk base64 invalide : {e}"))?;
+        if raw.len() != 32 {
+            return Err(format!("eph_pk doit faire 32 octets, recu {}", raw.len()));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&raw);
+        let peer_pk = PublicKey::from(arr);
+
+        let st = self.state.read().unwrap();
+        let mut out = vec![st.current.secret.diffie_hellman(&peer_pk).to_bytes()];
+        if let (Some(prev), Some(exp)) = (&st.previous, st.previous_expires_at) {
+            if std::time::Instant::now() < exp {
+                out.push(prev.secret.diffie_hellman(&peer_pk).to_bytes());
+            }
+        }
+        Ok((out, ()))
+    }
+
+    /// Generate a fresh keypair, demote the old current to "previous", and
+    /// return the new public key (base64). Callers should re-publish this
+    /// on mDNS so peers update their cache.
+    pub fn rotate(&self) -> String {
+        let new = make_key_entry();
+        let new_pub = new.public_b64.clone();
+        let mut st = self.state.write().unwrap();
+        let old_current = std::mem::replace(&mut st.current, new);
+        st.previous = Some(old_current);
+        st.previous_expires_at = Some(std::time::Instant::now() + KEY_GRACE);
+        new_pub
+    }
+
+    /// Drop the previous key if its grace window has elapsed. Cheap to call
+    /// often ; the rotation thread invokes it on every tick.
+    pub fn gc_expired(&self) {
+        let mut st = self.state.write().unwrap();
+        let expired = matches!(st.previous_expires_at, Some(t) if std::time::Instant::now() >= t);
+        if expired {
+            st.previous = None;
+            st.previous_expires_at = None;
+        }
     }
 }
 
@@ -266,6 +380,10 @@ fn decrypt_inner(key: &[u8; 32], env: &Envelope) -> Result<Vec<u8>, String> {
 /// server's `EphemeralKey`, decrypts the payload, and returns
 /// `(plaintext, session_key)` so the caller can encrypt the response with
 /// the matching key.
+///
+/// When the server has just rotated keys, both the current and the previous
+/// key are tried in turn — whichever produces a valid AES-GCM tag wins. This
+/// avoids dropping requests that started during rotation.
 pub fn decrypt_request_v2(
     room_key: &[u8; 32],
     server_eph: &EphemeralKey,
@@ -275,10 +393,16 @@ pub fn decrypt_request_v2(
         .eph_pk
         .as_deref()
         .ok_or_else(|| "envelope v2 sans eph_pk".to_string())?;
-    let shared = server_eph.dh(client_pk_b64)?;
-    let session_key = derive_session_key(room_key, &shared);
-    let plain = decrypt_inner(&session_key, env)?;
-    Ok((plain, session_key))
+    let (shareds, _) = server_eph.dh_candidates(client_pk_b64)?;
+    let mut last_err = String::from("aucune cle ephemere ne deverrouille le message");
+    for shared in shareds {
+        let session_key = derive_session_key(room_key, &shared);
+        match decrypt_inner(&session_key, env) {
+            Ok(plain) => return Ok((plain, session_key)),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
 }
 
 /// Convenience: encrypt a JSON-serializable value and return the
@@ -415,5 +539,54 @@ mod tests {
 
         // Even with the room secret, the new server can't decrypt.
         assert!(decrypt_request_v2(&room_key, &new_server_eph, &captured).is_err());
+    }
+
+    #[test]
+    fn rotation_keeps_grace_window_decryptable() {
+        // A client that captured the OLD pubkey just before rotation should
+        // still get its request through during the grace period.
+        let room_key =
+            derive_room_key(&data_encoding::BASE32.encode(b"room!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+                .unwrap();
+        let server_eph = EphemeralKey::generate();
+        let old_pub = server_eph.public_b64();
+
+        // Client encrypts against the (then-)current key.
+        let (env, _) = encrypt_v2(&room_key, &old_pub, b"in-flight payload").unwrap();
+
+        // Server rotates *before* the request reaches the handler.
+        let new_pub = server_eph.rotate();
+        assert_ne!(old_pub, new_pub);
+
+        // The handler must still decrypt the in-flight request, by trying
+        // the previous key as a fallback.
+        let (plain, _) = decrypt_request_v2(&room_key, &server_eph, &env).unwrap();
+        assert_eq!(plain, b"in-flight payload");
+
+        // After GC of the previous key, the same envelope is no longer
+        // decryptable — confirming the grace window is finite.
+        // (We can't easily fast-forward time in stable Rust, so we manually
+        // drop the previous slot.)
+        {
+            let mut st = server_eph.state.write().unwrap();
+            st.previous = None;
+            st.previous_expires_at = None;
+        }
+        assert!(decrypt_request_v2(&room_key, &server_eph, &env).is_err());
+    }
+
+    #[test]
+    fn new_clients_use_new_pubkey_after_rotation() {
+        let room_key =
+            derive_room_key(&data_encoding::BASE32.encode(b"room!!!!!!!!!!!!!!!!!!!!!!!!!!!!"))
+                .unwrap();
+        let server_eph = EphemeralKey::generate();
+        let _old_pub = server_eph.public_b64();
+        let new_pub = server_eph.rotate();
+
+        // A client that fetched the new pubkey gets through normally.
+        let (env, _) = encrypt_v2(&room_key, &new_pub, b"after rotation").unwrap();
+        let (plain, _) = decrypt_request_v2(&room_key, &server_eph, &env).unwrap();
+        assert_eq!(plain, b"after rotation");
     }
 }

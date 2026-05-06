@@ -23,6 +23,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const LISTEN_ADDR: &str = "0.0.0.0:7655";
+
+/// Start the peer-API listening on the canonical port (0.0.0.0:7655).
+/// The integration tests use `start_on_addr` instead so they can bind to
+/// 127.0.0.1:0 and avoid port conflicts.
 const TOTP_HEADER: &str = "x-partagpu-totp";
 /// Cap on raw request size (post-base64, post-encryption-envelope). Sized
 /// to comfortably hold a 16 MB sandbox workspace after JSON+base64+encrypt
@@ -71,6 +75,40 @@ pub fn start(
     sec_log: SecurityLog,
     server_eph: EphemeralKey,
 ) {
+    let _ = start_on_addr(
+        LISTEN_ADDR,
+        incoming,
+        auth,
+        discovery,
+        sharing,
+        sec_log,
+        server_eph,
+    );
+}
+
+/// Like `start` but binds to a caller-specified address and returns the
+/// actual bound port (useful when the address ends in `:0`). Bind happens
+/// synchronously in the calling thread so the listener is ready before
+/// this function returns ; the accept loop runs in a background thread.
+pub fn start_on_addr(
+    addr: &str,
+    incoming: IncomingTasks,
+    auth: AuthManager,
+    discovery: Discovery,
+    sharing: SharingController,
+    sec_log: SecurityLog,
+    server_eph: EphemeralKey,
+) -> Result<u16, String> {
+    let std_listener = std::net::TcpListener::bind(addr)
+        .map_err(|e| format!("Peer API: failed to bind {addr}: {e}"))?;
+    std_listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("Peer API: set_nonblocking failed: {e}"))?;
+    let port = std_listener
+        .local_addr()
+        .map(|a| a.port())
+        .map_err(|e| format!("Peer API: local_addr failed: {e}"))?;
+
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -85,14 +123,14 @@ pub fn start(
         };
 
         runtime.block_on(async move {
-            let listener = match TcpListener::bind(LISTEN_ADDR).await {
+            let listener = match TcpListener::from_std(std_listener) {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("Peer API: failed to bind {LISTEN_ADDR}: {e}");
+                    eprintln!("Peer API: from_std failed: {e}");
                     return;
                 }
             };
-            eprintln!("Peer API listening on {LISTEN_ADDR}");
+            eprintln!("Peer API listening on port {port}");
 
             loop {
                 let (stream, addr) = match listener.accept().await {
@@ -119,6 +157,8 @@ pub fn start(
             }
         });
     });
+
+    Ok(port)
 }
 
 async fn handle_connection(
