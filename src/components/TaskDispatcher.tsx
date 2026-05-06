@@ -104,9 +104,13 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
   );
 
   const [selectedIp, setSelectedIp] = useState<string>("");
+  const [mode, setMode] = useState<"command" | "file">("command");
   const [commandInput, setCommandInput] = useState<string>(
     'python3 -c "import socket; print(socket.gethostname())"',
   );
+  const [fileInterpreter, setFileInterpreter] = useState<string>("python3");
+  const [fileName, setFileName] = useState<string>("");
+  const [fileArgs, setFileArgs] = useState<string>("");
   const [networkEnabled, setNetworkEnabled] = useState(false);
   const [timeoutSecs, setTimeoutSecs] = useState(60);
   const [workspaceFiles, setWorkspaceFiles] = useState<File[]>([]);
@@ -144,7 +148,13 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
     };
   }, []);
 
-  const parsedArgs = useMemo(() => parseCommand(commandInput), [commandInput]);
+  const parsedArgs = useMemo(() => {
+    if (mode === "command") return parseCommand(commandInput);
+    // mode === "file"
+    if (!fileName) return [];
+    const tail = fileArgs.trim() ? parseCommand(fileArgs) : [];
+    return [fileInterpreter, fileName, ...tail];
+  }, [mode, commandInput, fileInterpreter, fileName, fileArgs]);
 
   const stopPolling = () => {
     if (pollTimerRef.current !== null) {
@@ -166,10 +176,27 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
     setWorkspaceFiles(merged);
     // Reset the input so the same file can be re-picked after removal
     if (fileInputRef.current) fileInputRef.current.value = "";
+    // Auto-fill the file selector with the first newly uploaded file if
+    // none is selected yet — common case is "I'm in file mode, I upload
+    // train.py, I want to run train.py".
+    if (!fileName && newOnes.length > 0) {
+      setFileName(newOnes[0].name);
+    }
+    // If the user just uploaded a file but is still in command mode,
+    // suggest the file mode.
+    if (workspaceFiles.length === 0 && newOnes.length > 0 && mode === "command") {
+      setMode("file");
+      if (!fileName) setFileName(newOnes[0].name);
+    }
   };
 
   const handleRemoveFile = (name: string) => {
     setWorkspaceFiles((prev) => prev.filter((f) => f.name !== name));
+    // If the removed file was the selected one, clear or fallback
+    if (fileName === name) {
+      const remaining = workspaceFiles.filter((f) => f.name !== name);
+      setFileName(remaining[0]?.name ?? "");
+    }
   };
 
   const handleLaunch = async () => {
@@ -306,24 +333,106 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
           </label>
         </div>
 
-        <label className="task-dispatcher__field">
-          <span className="task-dispatcher__label">Commande</span>
-          <input
-            type="text"
-            value={commandInput}
-            onChange={(e) => setCommandInput(e.target.value)}
-            disabled={isLaunching}
-            placeholder='python3 -c "print(42)"'
-            spellCheck={false}
-            autoComplete="off"
-            className="task-dispatcher__input task-dispatcher__input--mono"
-          />
-          {parsedArgs.length > 0 ? (
-            <small className="task-dispatcher__parsed">
-              argv : <code>{JSON.stringify(parsedArgs)}</code>
-            </small>
-          ) : null}
-        </label>
+        <div className="task-dispatcher__field">
+          <span className="task-dispatcher__label">Quoi exécuter</span>
+          <div className="task-dispatcher__mode-tabs">
+            <button
+              type="button"
+              className={`task-dispatcher__mode-tab${
+                mode === "command" ? " task-dispatcher__mode-tab--active" : ""
+              }`}
+              onClick={() => setMode("command")}
+              disabled={isLaunching}
+            >
+              Une commande
+            </button>
+            <button
+              type="button"
+              className={`task-dispatcher__mode-tab${
+                mode === "file" ? " task-dispatcher__mode-tab--active" : ""
+              }`}
+              onClick={() => setMode("file")}
+              disabled={isLaunching}
+            >
+              Un fichier uploadé
+            </button>
+          </div>
+
+          {mode === "command" ? (
+            <>
+              <input
+                type="text"
+                value={commandInput}
+                onChange={(e) => setCommandInput(e.target.value)}
+                disabled={isLaunching}
+                placeholder='python3 -c "print(42)"'
+                spellCheck={false}
+                autoComplete="off"
+                className="task-dispatcher__input task-dispatcher__input--mono"
+              />
+              {parsedArgs.length > 0 ? (
+                <small className="task-dispatcher__parsed">
+                  argv : <code>{JSON.stringify(parsedArgs)}</code>
+                </small>
+              ) : null}
+            </>
+          ) : (
+            <div className="task-dispatcher__file-mode">
+              <div className="task-dispatcher__file-mode-row">
+                <select
+                  value={fileInterpreter}
+                  onChange={(e) => setFileInterpreter(e.target.value)}
+                  disabled={isLaunching}
+                  className="task-dispatcher__input task-dispatcher__input--mono"
+                  style={{ width: 120 }}
+                >
+                  <option value="python3">python3</option>
+                  <option value="bash">bash</option>
+                  <option value="sh">sh</option>
+                </select>
+                <select
+                  value={fileName}
+                  onChange={(e) => setFileName(e.target.value)}
+                  disabled={isLaunching || workspaceFiles.length === 0}
+                  className="task-dispatcher__input task-dispatcher__input--mono"
+                  style={{ flex: 1 }}
+                >
+                  {workspaceFiles.length === 0 ? (
+                    <option value="">— uploadez un fichier d'abord —</option>
+                  ) : (
+                    <>
+                      {!fileName && <option value="">— choisir —</option>}
+                      {workspaceFiles.map((f) => (
+                        <option key={f.name} value={f.name}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </>
+                  )}
+                </select>
+              </div>
+              <input
+                type="text"
+                value={fileArgs}
+                onChange={(e) => setFileArgs(e.target.value)}
+                disabled={isLaunching}
+                placeholder="arguments optionnels (ex: --epochs 10)"
+                spellCheck={false}
+                autoComplete="off"
+                className="task-dispatcher__input task-dispatcher__input--mono"
+              />
+              {parsedArgs.length > 0 ? (
+                <small className="task-dispatcher__parsed">
+                  argv : <code>{JSON.stringify(parsedArgs)}</code>
+                </small>
+              ) : workspaceFiles.length === 0 ? (
+                <small className="task-dispatcher__parsed">
+                  Uploadez un fichier dans la section ci-dessous.
+                </small>
+              ) : null}
+            </div>
+          )}
+        </div>
 
         <div className="task-dispatcher__workspace">
           <div className="task-dispatcher__workspace-header">

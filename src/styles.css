@@ -1506,3 +1506,58 @@ select.task-dispatcher__input option {
   font-size: 0.82em;
   padding: 4px 8px 0 8px;
 }
+
+/* TaskDispatcher : mode tabs (command vs file) */
+
+.task-dispatcher__mode-tabs {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--color-bg);
+  width: fit-content;
+}
+
+.task-dispatcher__mode-tab {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  padding: 7px 14px;
+  font-size: 0.88em;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+.task-dispatcher__mode-tab + .task-dispatcher__mode-tab {
+  border-left: 1px solid var(--color-border);
+}
+
+.task-dispatcher__mode-tab:hover:not(:disabled):not(.task-dispatcher__mode-tab--active) {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.task-dispatcher__mode-tab--active {
+  background: var(--color-primary);
+  color: white;
+}
+
+.task-dispatcher__mode-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.task-dispatcher__file-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-dispatcher__file-mode-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
