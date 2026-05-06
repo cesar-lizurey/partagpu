@@ -319,6 +319,11 @@ impl IncomingTasks {
                 let snapshot_timeouts: HashMap<String, u64> =
                     timeouts.lock().unwrap().clone();
 
+                // One-shot poll of nvidia-smi pmon to learn per-PID GPU SM%.
+                // Empty map when the host has no GPU or pmon failed; we just
+                // leave gpu_usage at 0 in that case.
+                let gpu_per_pid = sample_gpu_per_pid();
+
                 for (task_id, root_pid) in snapshot_pids {
                     // Walk the process tree rooted at the bwrap PID, summing
                     // CPU% and RAM. The sandbox creates child processes
@@ -326,13 +331,18 @@ impl IncomingTasks {
                     let tree = collect_descendants(&sys, Pid::from_u32(root_pid));
                     let mut cpu_sum: f32 = 0.0;
                     let mut ram_sum: u64 = 0;
+                    let mut gpu_sum: f32 = 0.0;
                     for pid in &tree {
                         if let Some(p) = sys.process(*pid) {
                             cpu_sum += p.cpu_usage();
                             ram_sum += p.memory();
                         }
+                        if let Some(util) = gpu_per_pid.get(&(pid.as_u32())) {
+                            gpu_sum += *util;
+                        }
                     }
                     let ram_mb = ram_sum / (1024 * 1024);
+                    let gpu_pct = gpu_sum.min(100.0 * tree.len().max(1) as f32);
 
                     let progress = match (
                         snapshot_starts.get(&task_id),
@@ -350,6 +360,7 @@ impl IncomingTasks {
                             task.progress = progress;
                             task.cpu_usage = cpu_sum;
                             task.ram_usage_mb = ram_mb;
+                            task.gpu_usage = gpu_pct;
                             changed = true;
                         }
                     }
@@ -849,6 +860,39 @@ impl OutgoingTasks {
         self.remote_refs.lock().unwrap().remove(id);
         self.notify();
     }
+}
+
+/// One-shot poll of `nvidia-smi pmon -c 1`, returning a map PID → SM utilization
+/// (0..100). On a 4-GPU host with one PID using two GPUs at 50 % each, that
+/// PID appears twice and the caller sums the values. Empty map when nvidia-smi
+/// is missing, fails, or the line format is unexpected — caller falls back to
+/// 0 % GPU usage gracefully.
+fn sample_gpu_per_pid() -> HashMap<u32, f32> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args(["pmon", "-c", "1", "-s", "u"])
+        .output();
+    let mut out: HashMap<u32, f32> = HashMap::new();
+    let Ok(o) = output else { return out };
+    if !o.status.success() {
+        return out;
+    }
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Expected columns: gpu pid type sm mem enc dec command
+        // Some drivers emit "-" for sm/mem when the process is short-lived.
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let Ok(pid) = parts[1].parse::<u32>() else { continue };
+        let sm: f32 = parts[3].parse().unwrap_or(0.0);
+        *out.entry(pid).or_insert(0.0) += sm;
+    }
+    out
 }
 
 /// Collect the BFS process tree rooted at `root`, using the parent-child
