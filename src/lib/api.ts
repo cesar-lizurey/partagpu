@@ -173,6 +173,9 @@ export const dispatchTask = (
     /** Pre-allocated outgoing task id. Lets the UI poll the live task while
      *  the dispatch is still in flight. */
     localId?: string;
+    /** Files to push to the peer's `/workspace` before exec. Each file's
+     *  `content_b64` is the base64 of its raw bytes. */
+    workspace?: WorkspaceFile[];
   } = {},
 ) =>
   invoke<Task>("dispatch_task", {
@@ -182,6 +185,7 @@ export const dispatchTask = (
     network: options.network,
     user: options.user,
     localId: options.localId,
+    workspace: options.workspace,
   });
 
 export const cancelIncomingTask = (taskId: string) =>

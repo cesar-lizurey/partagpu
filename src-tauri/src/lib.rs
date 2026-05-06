@@ -1,5 +1,6 @@
 pub mod api;
 pub mod auth;
+pub mod crypto;
 pub mod discovery;
 pub mod http_api;
 pub mod peer_api;

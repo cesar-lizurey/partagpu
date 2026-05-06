@@ -108,6 +108,15 @@ Vous n'êtes dans aucune salle. UI → onglet en haut → *Créer une salle* ou 
 
 Décalage d'horloge entre les deux PC ou pas dans la même salle. Voir *Pairs et découverte*.
 
+### `HTTP 415 Unsupported Media Type` côté pair
+
+Depuis la 1.6.0, tous les bodies entre pairs sont chiffrés (AES-256-GCM). Le pair récepteur retourne 415 si :
+- Le client est en `< 1.6.0` (envoie en clair) → upgrade le client.
+- Le pair est dans une autre salle (clé AES différente) → `decrypt` échoue → 415. Vérifier que les deux PC ont rejoint la même salle.
+- Décalage d'horloge important entre les deux PC : le TOTP peut passer mais la clé AES est dérivée du secret persistant — celle-ci ne dépend pas de l'horloge. En général le 415 trahit un problème de salle, pas de TOTP.
+
+Pour vérifier que les deux pairs partagent bien le même secret : sur chaque machine, *Mon partage* → *Salle* doit afficher le même nom et la même passphrase.
+
 ### `Commande refusée : « X » n'est pas dans la liste autorisée`
 
 L'allowlist du pair ne contient pas la commande. Sur la machine du pair : UI → *Mon partage* → *Allowlist* → ajouter le binaire. Defaults : `python3`, `python`, `nvidia-smi`, `bash`, `make`, `gcc`, `julia`, etc.

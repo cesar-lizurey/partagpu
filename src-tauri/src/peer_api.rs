@@ -11,6 +11,7 @@
 //!   GET  /peer/v1/tasks/<id>    → fetch task status/output (TOTP required)
 
 use crate::auth::AuthManager;
+use crate::crypto::{self, ENCRYPTED_CONTENT_TYPE};
 use crate::discovery::Discovery;
 use crate::sandbox::{SandboxOptions, WorkspaceFile};
 use crate::security_log::{EventCategory, EventLevel, SecurityLog};
@@ -23,7 +24,10 @@ use tokio::net::{TcpListener, TcpStream};
 
 const LISTEN_ADDR: &str = "0.0.0.0:7655";
 const TOTP_HEADER: &str = "x-partagpu-totp";
-const MAX_REQUEST_BYTES: usize = 256 * 1024; // 256 KB cap on request size
+/// Cap on raw request size (post-base64, post-encryption-envelope). Sized
+/// to comfortably hold a 16 MB sandbox workspace after JSON+base64+encrypt
+/// inflation (~28 MB worst case).
+const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct SubmitBody {
@@ -123,30 +127,108 @@ async fn handle_connection(
     sharing: SharingController,
     sec_log: SecurityLog,
 ) -> Result<(), String> {
-    let req = read_request(&mut stream).await?;
+    let mut req = read_request(&mut stream).await?;
 
-    let (status, body) = match (req.method.as_str(), req.path.as_str()) {
-        ("GET", "/peer/v1/health") => handle_health(&auth, &sharing),
-        ("POST", "/peer/v1/tasks") => {
-            handle_submit(&req, &addr, &incoming, &auth, &discovery, &sharing, &sec_log)
+    // /health is the only unauthenticated, unencrypted endpoint (used as a
+    // probe). Everything under /peer/v1/tasks must be encrypted.
+    let route_needs_encryption = req.path.starts_with("/peer/v1/tasks");
+
+    // Try to derive the room key. Required for encrypted routes; absent if
+    // we're not in a room (auth.get_secret() returns None).
+    let room_key: Option<[u8; 32]> = auth
+        .get_secret()
+        .and_then(|s| crypto::derive_room_key(&s).ok());
+
+    // Decrypt request body if we're on an encrypted route and the body is
+    // non-empty (POST). Replace req.body with the plaintext so handlers
+    // continue to expect plain JSON.
+    let body_decrypt_error = if route_needs_encryption && !req.body.is_empty() {
+        let content_type = req
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("");
+        if !content_type.contains(ENCRYPTED_CONTENT_TYPE) {
+            Some(format!(
+                "Content-Type doit être {ENCRYPTED_CONTENT_TYPE} (chiffrement obligatoire entre pairs)"
+            ))
+        } else {
+            match &room_key {
+                None => Some(
+                    "Cette machine n'est dans aucune salle PartaGPU."
+                        .to_string(),
+                ),
+                Some(key) => {
+                    match serde_json::from_str::<crypto::Envelope>(&req.body) {
+                        Ok(env) => match crypto::decrypt(key, &env) {
+                            Ok(plain) => match String::from_utf8(plain) {
+                                Ok(s) => {
+                                    req.body = s;
+                                    None
+                                }
+                                Err(_) => Some("plaintext non UTF-8".to_string()),
+                            },
+                            Err(e) => Some(e),
+                        },
+                        Err(e) => {
+                            Some(format!("envelope JSON invalide : {e}"))
+                        }
+                    }
+                }
+            }
         }
-        ("GET", path) if path.starts_with("/peer/v1/tasks/") => {
-            let id = &path["/peer/v1/tasks/".len()..];
-            handle_get_task(id, &req, &incoming, &auth, &sharing)
-        }
-        ("DELETE", path) if path.starts_with("/peer/v1/tasks/") => {
-            let id = &path["/peer/v1/tasks/".len()..];
-            handle_cancel_task(id, &req, &addr, &incoming, &auth, &sharing, &sec_log)
-        }
-        _ => (
-            "404 Not Found",
-            json_string(&ErrorResponse {
-                error: "Route inconnue.".into(),
-            }),
-        ),
+    } else {
+        None
     };
 
-    write_response(&mut stream, status, &body).await
+    let (status, body) = if let Some(err) = body_decrypt_error {
+        (
+            "415 Unsupported Media Type",
+            json_string(&ErrorResponse { error: err }),
+        )
+    } else {
+        match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/peer/v1/health") => handle_health(&auth, &sharing),
+            ("POST", "/peer/v1/tasks") => handle_submit(
+                &req, &addr, &incoming, &auth, &discovery, &sharing, &sec_log,
+            ),
+            ("GET", path) if path.starts_with("/peer/v1/tasks/") => {
+                let id = &path["/peer/v1/tasks/".len()..];
+                handle_get_task(id, &req, &incoming, &auth, &sharing)
+            }
+            ("DELETE", path) if path.starts_with("/peer/v1/tasks/") => {
+                let id = &path["/peer/v1/tasks/".len()..];
+                handle_cancel_task(id, &req, &addr, &incoming, &auth, &sharing, &sec_log)
+            }
+            _ => (
+                "404 Not Found",
+                json_string(&ErrorResponse {
+                    error: "Route inconnue.".into(),
+                }),
+            ),
+        }
+    };
+
+    // Encrypt 2xx response bodies on encrypted routes. Errors stay plain
+    // (the caller may not have the key — that's why the call failed).
+    let (final_body, content_type) = if route_needs_encryption
+        && status.starts_with('2')
+        && !body.is_empty()
+        && room_key.is_some()
+    {
+        match crypto::encrypt(&room_key.unwrap(), body.as_bytes()) {
+            Ok(env) => match serde_json::to_string(&env) {
+                Ok(s) => (s, ENCRYPTED_CONTENT_TYPE),
+                Err(_) => (body, "application/json"),
+            },
+            Err(_) => (body, "application/json"),
+        }
+    } else {
+        (body, "application/json")
+    };
+
+    write_response(&mut stream, status, &final_body, content_type).await
 }
 
 // ── Handlers ───────────────────────────────────────────────────────────────
@@ -454,10 +536,15 @@ fn find_double_crlf(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
-async fn write_response(stream: &mut TcpStream, status: &str, body: &str) -> Result<(), String> {
+async fn write_response(
+    stream: &mut TcpStream,
+    status: &str,
+    body: &str,
+    content_type: &str,
+) -> Result<(), String> {
     let response = format!(
         "HTTP/1.1 {status}\r\n\
-         Content-Type: application/json\r\n\
+         Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n\
          \r\n\

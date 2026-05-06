@@ -4,7 +4,33 @@ import {
   getOutgoingTasks,
   type Peer,
   type Task,
+  type WorkspaceFile,
 } from "../lib/api";
+
+/** Hard limit enforced by the peer-side sandbox. Sum of file sizes. */
+const WORKSPACE_MAX_BYTES = 16 * 1024 * 1024;
+
+async function fileToBase64(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  // Build the binary string in chunks to avoid stack overflow on large files
+  // (String.fromCharCode.apply blows up around 100k args).
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(
+      null,
+      Array.from(bytes.subarray(i, i + chunk)),
+    );
+  }
+  return btoa(binary);
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} o`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} Ko`;
+  return `${(n / (1024 * 1024)).toFixed(1)} Mo`;
+}
 
 interface TaskDispatcherProps {
   /** Verified peers that have sharing enabled (the only ones we can target). */
@@ -83,12 +109,20 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
   );
   const [networkEnabled, setNetworkEnabled] = useState(false);
   const [timeoutSecs, setTimeoutSecs] = useState(60);
+  const [workspaceFiles, setWorkspaceFiles] = useState<File[]>([]);
   const [isLaunching, setIsLaunching] = useState(false);
   const [result, setResult] = useState<Task | null>(null);
   const [livePartial, setLivePartial] = useState<Task | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const pollTimerRef = useRef<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const workspaceBytes = useMemo(
+    () => workspaceFiles.reduce((sum, f) => sum + f.size, 0),
+    [workspaceFiles],
+  );
+  const workspaceTooBig = workspaceBytes > WORKSPACE_MAX_BYTES;
 
   // Auto-select first target when the list changes
   useEffect(() => {
@@ -119,6 +153,25 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
     }
   };
 
+  const handleAddFiles = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const newOnes = Array.from(files);
+    // Drop duplicates by name (keep latest)
+    const merged = [
+      ...workspaceFiles.filter(
+        (f) => !newOnes.some((nf) => nf.name === f.name),
+      ),
+      ...newOnes,
+    ];
+    setWorkspaceFiles(merged);
+    // Reset the input so the same file can be re-picked after removal
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleRemoveFile = (name: string) => {
+    setWorkspaceFiles((prev) => prev.filter((f) => f.name !== name));
+  };
+
   const handleLaunch = async () => {
     if (!selectedIp) {
       setError("Aucun pair sélectionné.");
@@ -126,6 +179,13 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
     }
     if (parsedArgs.length === 0) {
       setError("La commande est vide.");
+      return;
+    }
+    if (workspaceTooBig) {
+      setError(
+        `Le workspace dépasse la limite de ${formatBytes(WORKSPACE_MAX_BYTES)}. ` +
+          `Total actuel : ${formatBytes(workspaceBytes)}.`,
+      );
       return;
     }
     setError(null);
@@ -139,6 +199,24 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()
         : `task-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    // Read + base64 all selected workspace files. Done up-front (not lazily)
+    // so the dispatch invoke gets the full payload in one go.
+    let workspace: WorkspaceFile[] | undefined;
+    if (workspaceFiles.length > 0) {
+      try {
+        workspace = await Promise.all(
+          workspaceFiles.map(async (f) => ({
+            path: f.name,
+            content_b64: await fileToBase64(f),
+          })),
+        );
+      } catch (e) {
+        setError(`Échec de lecture des fichiers : ${String(e)}`);
+        setIsLaunching(false);
+        return;
+      }
+    }
 
     pollTimerRef.current = window.setInterval(async () => {
       try {
@@ -157,6 +235,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
         timeoutSecs,
         network: networkEnabled,
         localId,
+        workspace,
       });
       setResult(task);
       onDispatched?.();
@@ -246,6 +325,65 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
           ) : null}
         </label>
 
+        <div className="task-dispatcher__workspace">
+          <div className="task-dispatcher__workspace-header">
+            <span className="task-dispatcher__label">
+              Fichiers du workspace (optionnel)
+            </span>
+            <button
+              type="button"
+              className="btn btn--secondary btn--small"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isLaunching}
+            >
+              Ajouter…
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => handleAddFiles(e.target.files)}
+            />
+          </div>
+          <p className="task-dispatcher__help">
+            Ces fichiers seront copiés dans le répertoire de travail de la
+            commande sur le pair (par défaut <code>/workspace</code>).
+            Référez-y dans la commande par leur nom (ex.{" "}
+            <code>python3 train.py</code>). Limite totale :{" "}
+            {formatBytes(WORKSPACE_MAX_BYTES)}.
+          </p>
+          {workspaceFiles.length > 0 && (
+            <ul className="task-dispatcher__files">
+              {workspaceFiles.map((f) => (
+                <li key={f.name}>
+                  <code>{f.name}</code>
+                  <span className="task-dispatcher__file-size">
+                    {formatBytes(f.size)}
+                  </span>
+                  <button
+                    type="button"
+                    className="task-dispatcher__file-remove"
+                    onClick={() => handleRemoveFile(f.name)}
+                    disabled={isLaunching}
+                    title="Retirer ce fichier"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+              <li className="task-dispatcher__files-total">
+                Total : {formatBytes(workspaceBytes)}
+                {workspaceTooBig && (
+                  <span style={{ color: "var(--color-danger)", marginLeft: 8 }}>
+                    (dépasse la limite)
+                  </span>
+                )}
+              </li>
+            </ul>
+          )}
+        </div>
+
         <div className="task-dispatcher__network">
           <label className="task-dispatcher__checkbox">
             <input
@@ -270,7 +408,12 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
           <button
             type="button"
             onClick={handleLaunch}
-            disabled={isLaunching || !selectedIp || parsedArgs.length === 0}
+            disabled={
+              isLaunching ||
+              !selectedIp ||
+              parsedArgs.length === 0 ||
+              workspaceTooBig
+            }
             className="btn btn--primary"
           >
             {isLaunching ? "Exécution..." : "Lancer"}

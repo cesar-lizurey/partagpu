@@ -338,6 +338,8 @@ pub async fn remove_managed_venv() -> Result<(), String> {
 /// principal pendant que le dispatch bloque côté ureq, ce qui permet à l'UI
 /// de continuer à poller `getOutgoingTasks` (live output) en parallèle.
 /// Si `local_id` est fourni, c'est cet id qui est utilisé pour l'OutgoingTask.
+/// `workspace` : fichiers à pousser dans `/workspace` du sandbox du pair
+/// avant l'exécution (déjà encodés en base64 côté caller).
 #[tauri::command]
 pub async fn dispatch_task(
     auth: State<'_, AuthManager>,
@@ -349,6 +351,7 @@ pub async fn dispatch_task(
     network: Option<bool>,
     user: Option<String>,
     local_id: Option<String>,
+    workspace: Option<Vec<crate::sandbox::WorkspaceFile>>,
 ) -> Result<Task, String> {
     // Clone the state out of the lifetime-bound State references so we can
     // move into a blocking worker task. The inner types are all Clone (Arc).
@@ -357,6 +360,7 @@ pub async fn dispatch_task(
     let outgoing = outgoing.inner().clone();
     let timeout = timeout_secs.unwrap_or(3600).min(24 * 3600);
     let network = network.unwrap_or(false);
+    let workspace = workspace.unwrap_or_default();
 
     tokio::task::spawn_blocking(move || {
         crate::http_api::dispatch_task_blocking(
@@ -368,7 +372,7 @@ pub async fn dispatch_task(
             user,
             timeout,
             network,
-            Vec::new(),
+            workspace,
             local_id,
         )
     })

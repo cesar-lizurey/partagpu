@@ -33,6 +33,10 @@ coverage/
 # Logs
 *.log
 
+# Backups
+*.bck
+*.bck[0-9]*
+
 # Python venv (notebooks examples)
 examples/venv/
 examples/.ipynb_checkpoints/

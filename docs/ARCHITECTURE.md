@@ -9,17 +9,19 @@ Ce document explique **comment PartaGPU fonctionne en interne** : les composants
 1. [Vue d'ensemble](#vue-densemble)
 2. [Les deux serveurs HTTP](#les-deux-serveurs-http)
 3. [Authentification TOTP entre pairs](#authentification-totp-entre-pairs)
-4. [Le sandbox d'exécution](#le-sandbox-dexécution)
-5. [Flux d'une tâche `run_remote`](#flux-dune-tâche-run_remote)
-6. [Orchestration DDP avec `distribute`](#orchestration-ddp-avec-distribute)
-7. [Multi-GPU par machine](#multi-gpu-par-machine)
-8. [Annulation des tâches](#annulation-des-tâches)
-9. [UI dispatcher](#ui-dispatcher)
-10. [Streaming des logs en temps réel](#streaming-des-logs-en-temps-réel)
-11. [Venv géré côté pair](#venv-géré-côté-pair)
-12. [Découverte mDNS](#découverte-mdns)
-13. [Privilèges et helper](#privilèges-et-helper)
-14. [Modèle de sécurité](#modèle-de-sécurité)
+4. [Chiffrement des messages pair-à-pair](#chiffrement-des-messages-pair-à-pair)
+5. [Le sandbox d'exécution](#le-sandbox-dexécution)
+6. [Flux d'une tâche `run_remote`](#flux-dune-tâche-run_remote)
+7. [Orchestration DDP avec `distribute`](#orchestration-ddp-avec-distribute)
+8. [Multi-GPU par machine](#multi-gpu-par-machine)
+9. [Annulation des tâches](#annulation-des-tâches)
+10. [UI dispatcher](#ui-dispatcher)
+11. [Streaming des logs en temps réel](#streaming-des-logs-en-temps-réel)
+12. [Monitoring des ressources par tâche](#monitoring-des-ressources-par-tâche)
+13. [Venv géré côté pair](#venv-géré-côté-pair)
+14. [Découverte mDNS](#découverte-mdns)
+15. [Privilèges et helper](#privilèges-et-helper)
+16. [Modèle de sécurité](#modèle-de-sécurité)
 
 ---
 
@@ -117,7 +119,7 @@ L'app expose **deux** serveurs HTTP, écrits à la main en Rust avec `tokio` (pa
     "workspace": [...]
   }
   ```
-  Auth → résolution du `source_machine` depuis l'IP TCP source (lookup dans `discovery.get_peers()`) → `IncomingTasks::create_and_run(...)` qui lance le sandbox dans un thread, retourne immédiatement un `task_id`.
+  Auth → résolution du `source_machine` depuis l'IP TCP source (lookup dans `discovery.get_peers()`, en préférant `display_name` puis `hostname` puis l'IP brute) → `IncomingTasks::create_and_run(...)` qui lance le sandbox dans un thread, retourne immédiatement un `task_id`. Le `source_machine` apparaît dans le tableau "Qui utilise mes ressources ?" côté pair.
 - `GET /peer/v1/tasks/<id>` — auth idem, retourne la struct `Task` complète (status, output, error_output, exit_code).
 - `DELETE /peer/v1/tasks/<id>` — **annulation** d'une tâche en cours. Auth idem. Marque la tâche `Cancelled` côté `IncomingTasks`, envoie `SIGTERM` au PID du bwrap, puis `SIGKILL` après 2 s si toujours en vie. Logged dans le `SecurityLog` avec `EventCategory::TaskRejected`.
 
@@ -148,7 +150,84 @@ Chaque pair **annonce son code TOTP courant** dans son TXT record mDNS (champ `t
 
 Pour `POST /peer/v1/tasks` et `GET /peer/v1/tasks/<id>`, le client envoie son code TOTP courant dans l'en-tête `X-PartaGPU-TOTP: 123456`. Le récepteur vérifie avec `AuthManager::verify_code` (même logique que mDNS, fenêtre ±1 step).
 
-**Pourquoi pas TLS ?** Le LAN après auth de salle est de confiance (modèle "salle de cours"). Un attaquant qui écoute le trafic verrait passer du Python source mais ne pourrait pas injecter ses propres tâches sans le secret. Pour une protection contre l'écoute, le chiffrement AES dérivé du secret de salle est dans `TODO.md` (Phase suivante).
+**TOTP n'apporte que l'authenticité**, pas la confidentialité — un attaquant qui écoute le trafic en clair verrait le contenu des bodies HTTP. C'est pour ça qu'on layered un **chiffrement** par-dessus (section suivante).
+
+---
+
+## Chiffrement des messages pair-à-pair
+
+Tous les bodies échangés sur le peer-API (port 7655, sauf `/peer/v1/health`) sont chiffrés en **AES-256-GCM** avec une clé dérivée du secret de salle.
+
+### Dérivation de la clé
+
+```
+key = HKDF-SHA256(
+    ikm    = base32_decode(room_secret),     // déjà partagé via la passphrase
+    salt   = "PartaGPU/peer-api/v1",
+    info   = "AES-256-GCM message key",
+    length = 32 bytes,
+)
+```
+
+Tous les membres de la salle dérivent la **même** clé puisqu'ils partagent le secret. Personne en dehors de la salle ne peut la dériver.
+
+### Format d'enveloppe
+
+Chaque body de requête (POST) ou de réponse (2xx) est sérialisé ainsi :
+
+```json
+{
+  "v": 1,
+  "nonce": "<12 octets random, base64>",
+  "ct":    "<ciphertext + tag GCM, base64>"
+}
+```
+
+Le Content-Type est `application/x-partagpu-encrypted-v1`.
+
+### Ordre d'opérations côté serveur ([peer_api.rs](../src-tauri/src/peer_api.rs))
+
+```
+1. read_request                         # parse method/path/headers/body
+2. si route ∈ /peer/v1/tasks* :
+   - check Content-Type == ENCRYPTED_CONTENT_TYPE  (sinon 415)
+   - check room_key disponible                     (sinon 415)
+   - decrypt(body) -> plaintext JSON               (sinon 415)
+   - replace req.body par plaintext
+3. dispatch vers handle_submit / handle_get_task / handle_cancel_task
+4. si status 2xx ET route encrypted :
+   - encrypt(response_body, room_key) -> envelope
+   - write_response avec Content-Type = ENCRYPTED_CONTENT_TYPE
+5. sinon (4xx, 5xx) : envoyer en clair
+```
+
+Les erreurs (4xx, 5xx) restent en clair parce que le client peut ne pas avoir la clé (c'est ça qui a généré le 4xx). Un body 401 chiffré serait illisible.
+
+### Ordre d'opérations côté client ([http_api.rs::run_remote_blocking](../src-tauri/src/http_api.rs))
+
+```
+1. derive_room_key depuis auth.get_secret()
+2. encrypt(body) -> envelope JSON
+3. ureq::post(url, Content-Type: ENCRYPTED..., X-PartaGPU-TOTP: code, body=envelope)
+4. si 2xx : decrypt(response_body) -> Task JSON
+   sinon : lire response.text() en clair
+```
+
+### Propriétés
+
+- **Confidentialité** : un attaquant qui écoute le trafic LAN ne peut rien lire (script Python, données workspace, stdout/stderr).
+- **Intégrité** : tout flip de bit dans le ciphertext fait échouer le déchiffrement (tag GCM rejeté). Le serveur retourne 415.
+- **Authenticité au niveau salle** : seul un détenteur du secret peut produire un envelope qui se déchiffre proprement. Combiné au TOTP, on a auth + intégrité + replay-protect (TOTP fenêtre 30 s).
+
+### Hors scope
+
+- **Forward secrecy** : pas d'échange de clé éphémère. Si le secret est leaké un jour, tout l'historique enregistré devient lisible.
+- **Protection contre un membre de la salle** : par construction, tout pair dans la salle a la clé. Le modèle de menace est "attaquant LAN qui n'est PAS dans la salle".
+- **Compatibilité ascendante** : avant `1.6.0`, les bodies passaient en clair. Les pairs en `< 1.6.0` ne peuvent plus parler à des pairs en `>= 1.6.0`. Upgrade simultané requis.
+
+### Tests
+
+`crypto.rs` a des tests unitaires : round-trip, mauvaise clé, ciphertext altéré, JSON round-trip (`cargo test --lib crypto::`).
 
 ---
 
@@ -412,10 +491,16 @@ Le composant `TaskList` rend un bouton **Stop** sur chaque tâche en `Queued` ou
 
 Pour éviter une self-loopback HTTP qui ajouterait une latence et une surface d'erreur inutile. Comme l'UI tourne dans le même process que `dispatch_task_blocking`, l'invoke direct est plus propre.
 
+### Workspace upload
+
+Le formulaire inclut une section **Fichiers du workspace** : un file picker multi-fichiers, plus une liste des fichiers sélectionnés avec leur taille et un bouton de suppression. Au lancement, chaque fichier est lu en `ArrayBuffer` côté JS, encodé base64 (par chunks de 32 KB pour éviter le stack overflow de `String.fromCharCode.apply`), et passé via le param `workspace` du Tauri command. Total cappé à 16 MB côté UI (warning si dépassé) et côté sandbox.
+
+Le user référence un fichier dans la commande par son nom de base : par ex. après upload de `train.py`, taper la commande `python3 train.py` lance le script poussé.
+
 ### Limites volontaires
 
-- **Pas d'upload workspace** dans l'UI (plus complexe : drag-drop, gestion d'erreurs). Pour les tâches qui ont besoin de fichiers, utilisez `partagpu.run_remote(..., workspace=...)` côté Python.
-- **Pas de DDP**. L'UI dispatcher est pour des tâches single-worker. DDP reste l'API Python `partagpu.distribute(...)`.
+- **Pas de DDP** depuis l'UI. L'UI dispatcher est pour des tâches single-worker. DDP reste l'API Python `partagpu.distribute(...)`.
+- **Pas d'arborescence dans le workspace** depuis l'UI (uniquement des fichiers à plat). Pour pousser un sous-dossier, utilisez `partagpu.run_remote(..., workspace={"sub/file.py": "..."})` côté Python.
 
 ---
 
@@ -476,6 +561,49 @@ Côté script utilisateur, `print()` est par défaut **block-buffered** quand st
 - ou `PYTHONUNBUFFERED=1` dans l'environnement (déjà passé par notre sandbox… non, pas par défaut, à ajouter si on veut)
 
 Le script `examples/ddp_train_demo.py` utilise déjà `print(..., flush=True)`. Le sandbox **force aussi `PYTHONUNBUFFERED=1`** dans l'environnement de chaque tâche (cf. [sandbox.rs](../src-tauri/src/sandbox.rs)), donc les `print()` sans `flush=True` arrivent quand même en direct.
+
+---
+
+## Monitoring des ressources par tâche
+
+Pour que l'UI montre une **progression** qui avance et des **valeurs CPU/RAM** réelles pendant qu'une tâche tourne (au lieu d'un saut 0% → 100% à la fin), `IncomingTasks` lance un **thread monitor** au démarrage qui tourne toute la vie de l'app.
+
+### Boucle
+
+```
+loop forever:
+  sleep 1s
+  sysinfo::System.refresh_processes(All)
+  pour chaque (task_id, bwrap_pid) dans pids:
+    tree = collect_descendants(sysinfo, bwrap_pid)
+    cpu_total = somme des process.cpu_usage() du tree
+    ram_total = somme des process.memory() du tree
+    progress = clamp((elapsed / timeout) * 100, 0..99)
+    si task.status == Running:
+      task.cpu_usage = cpu_total
+      task.ram_usage_mb = ram_total
+      task.progress = progress
+```
+
+### Détails
+
+- **Process tree** : `bwrap` est le parent direct, mais c'est `python3` (et ses propres enfants éventuels) qui consomme la majorité du CPU/RAM. Une fonction `collect_descendants` parcourt en BFS la map des processus de sysinfo et retient tout ce qui descend du PID bwrap. La somme inclut donc bwrap + python + tout petit-enfant.
+
+- **Progression = elapsed/timeout** : pas de mesure intrinsèque "30% du job" possible pour une commande arbitraire ; on utilise donc le ratio temps écoulé / timeout, capé à 99 % jusqu'à ce que la tâche atteigne réellement un état terminal. Approximation imparfaite mais visible et utile.
+
+- **GPU per-task** : pas implémenté dans cette version. `nvidia-smi` ne donne pas la consommation GPU par PID directement (il faudrait NVML via `nvml-wrapper` ou un cgroup v2 GPU resource controller). La colonne GPU des tâches reste à 0 % ; la jauge globale "Ressources de cette machine" continue de remonter le GPU usage agrégé.
+
+- **`task_starts` + `task_timeouts`** : deux maps `HashMap<task_id, _>` dans `IncomingTasks`, peuplées dans `spawn_execution` quand la tâche transitionne en Running, et nettoyées à la fin du thread d'exécution.
+
+### Côté machine de lancement (OutgoingTasks)
+
+`run_remote_blocking` poll le pair toutes les 500 ms. À chaque tick, en plus de mirror le stdout/stderr, il copie aussi `progress`, `cpu_usage`, `ram_usage_mb`, `gpu_usage` du Task distant dans le miroir local. Méthode dédiée : `OutgoingTasks::mirror_running(local_id, &peer_task)`.
+
+Résultat : l'UI de la machine de lancement (page *Mon utilisation*) voit les mêmes valeurs live que l'UI de la machine cible (page *Mon partage*).
+
+### Répartition par utilisateur
+
+La page *Mon partage* affiche un panneau **Répartition par utilisateur** qui empile les conso CPU/RAM/GPU des tâches courantes par `source_user`. Avec le monitoring temps réel, ce panneau est désormais peuplé en direct au lieu de rester à 0 %. Couleurs distinctes par user (jusqu'à 8). C'est ce qu'un prof regarde pour voir quel élève saturate la machine.
 
 ---
 

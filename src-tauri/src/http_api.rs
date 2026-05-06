@@ -12,6 +12,7 @@
 //! /api/dispatch body: { "peer_ip": "192.168.x.y", "args": [...], "timeout_secs": 60, "user": "alice" }
 
 use crate::auth::AuthManager;
+use crate::crypto::{self, ENCRYPTED_CONTENT_TYPE};
 use crate::discovery::Discovery;
 use crate::resource::ResourceMonitor;
 use crate::sandbox::WorkspaceFile;
@@ -25,7 +26,9 @@ use tokio::net::{TcpListener, TcpStream};
 
 const LISTEN_ADDR: &str = "127.0.0.1:7654";
 const PEER_PORT: u16 = 7655;
-const MAX_REQUEST_BYTES: usize = 256 * 1024;
+/// Cap on local API request size. Same generous size as peer_api so the
+/// /api/dispatch endpoint can accept a 16 MB workspace from Python clients.
+const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// A GPU resource advertised by a peer (or local). One entry per physical
@@ -276,6 +279,10 @@ pub fn dispatch_task_blocking(
             "Cette machine n'est dans aucune salle PartaGPU. Joignez une salle pour pouvoir dispatcher des tâches."
                 .to_string()
         })?;
+    let secret_b32 = auth.get_secret().ok_or_else(|| {
+        "Impossible de dériver la clé de chiffrement (secret de salle indisponible).".to_string()
+    })?;
+    let key = crypto::derive_room_key(&secret_b32)?;
 
     let user = user.unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "local".into()));
     let local_hostname = hostname::get()
@@ -332,6 +339,7 @@ pub fn dispatch_task_blocking(
         &user,
         timeout_secs,
         &totp,
+        &key,
         network,
         workspace,
         outgoing.clone(),
@@ -454,6 +462,7 @@ fn run_remote_blocking(
     user: &str,
     timeout_secs: u64,
     totp: &str,
+    key: &[u8; 32],
     network_enabled: bool,
     workspace: Vec<WorkspaceFile>,
     outgoing: OutgoingTasks,
@@ -467,12 +476,13 @@ fn run_remote_blocking(
         "network_enabled": network_enabled,
         "workspace": workspace,
     });
+    let body_env = crypto::encrypt_json(key, &body)?;
 
     let resp = ureq::post(&url_submit)
         .set("X-PartaGPU-TOTP", totp)
-        .set("Content-Type", "application/json")
+        .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
         .timeout(Duration::from_secs(15))
-        .send_json(body)
+        .send_string(&body_env)
         .map_err(|e| format!("connexion au pair {peer_ip} échouée : {e}"))?;
 
     if resp.status() < 200 || resp.status() >= 300 {
@@ -487,9 +497,11 @@ fn run_remote_blocking(
     struct SubmitResp {
         task_id: String,
     }
-    let submit: SubmitResp = resp
-        .into_json()
-        .map_err(|e| format!("réponse du pair invalide : {e}"))?;
+    let resp_body = resp
+        .into_string()
+        .map_err(|e| format!("lecture réponse pair : {e}"))?;
+    let submit: SubmitResp = crypto::decrypt_json(key, &resp_body)
+        .map_err(|e| format!("réponse du pair non déchiffrable : {e}"))?;
 
     // Remember which peer task corresponds to this local id, so a future
     // cancel can be propagated.
@@ -522,10 +534,17 @@ fn run_remote_blocking(
             }
         };
 
-        let task: Task = match r.into_json() {
+        let body = match r.into_string() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("dispatch poll body: {e}");
+                continue;
+            }
+        };
+        let task: Task = match crypto::decrypt_json(key, &body) {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("dispatch poll decode: {e}");
+                eprintln!("dispatch poll decrypt: {e}");
                 continue;
             }
         };

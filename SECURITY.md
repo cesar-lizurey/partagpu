@@ -8,12 +8,13 @@ Ce document détaille les mesures de sécurité implémentées dans PartaGPU. L'
 
 - [Vue d'ensemble](#vue-densemble)
 - [1. Authentification des pairs par TOTP](#1-authentification-des-pairs-par-totp)
-- [2. Sandbox d'exécution (bubblewrap)](#2-sandbox-dexécution-bubblewrap)
-- [3. Durcissement du compte partagpu](#3-durcissement-du-compte-partagpu)
-- [4. Gestion automatique du pare-feu](#4-gestion-automatique-du-pare-feu)
-- [5. Protection contre le mDNS spoofing / flood](#5-protection-contre-le-mdns-spoofing--flood)
-- [6. Élévation de privilèges sécurisée (PolicyKit)](#6-élévation-de-privilèges-sécurisée-policykit)
-- [7. Validation des entrées](#7-validation-des-entrées)
+- [2. Chiffrement des messages pair-à-pair](#2-chiffrement-des-messages-pair-à-pair)
+- [3. Sandbox d'exécution (bubblewrap)](#3-sandbox-dexécution-bubblewrap)
+- [4. Durcissement du compte partagpu](#4-durcissement-du-compte-partagpu)
+- [5. Gestion automatique du pare-feu](#5-gestion-automatique-du-pare-feu)
+- [6. Protection contre le mDNS spoofing / flood](#6-protection-contre-le-mdns-spoofing--flood)
+- [7. Élévation de privilèges sécurisée (PolicyKit)](#7-élévation-de-privilèges-sécurisée-policykit)
+- [8. Validation des entrées](#8-validation-des-entrées)
 - [Mesures restantes à implémenter](#mesures-restantes-à-implémenter)
 - [Signaler une vulnérabilité](#signaler-une-vulnérabilité)
 
@@ -26,6 +27,7 @@ PartaGPU repose sur plusieurs couches de sécurité complémentaires :
 | Couche | Protège contre | Implémentation |
 |--------|---------------|----------------|
 | **Authentification TOTP** | Pairs non autorisés, imposteurs | Code temporaire dérivé d'un secret partagé |
+| **Chiffrement AES-256-GCM** | Écoute réseau passive | Clé HKDF du secret de salle, mandatory sur /peer/v1/tasks* |
 | **Sandbox bubblewrap** | Exécution de code malveillant | Filesystem read-only, pas de réseau, PID isolé |
 | **Compte durci** | Abus du compte partagpu | Shell restreint, SSH bloqué, sudo bloqué |
 | **Pare-feu automatique** | Exposition réseau inutile | Port ouvert uniquement quand le partage est actif |
@@ -70,7 +72,64 @@ Quand une salle est active, l'API `submit_task` :
 
 ---
 
-## 2. Sandbox d'exécution (bubblewrap)
+## 2. Chiffrement des messages pair-à-pair
+
+### Le problème
+
+Le TOTP authentifie le pair, mais ne chiffre rien. Sans chiffrement, un attaquant qui écoute le LAN (port mirror, ARP spoofing, ou simplement Wi-Fi partagé) verrait passer en clair :
+
+- les arguments des commandes (`python3 -c "secret"` → secret visible)
+- les fichiers du workspace pushés vers le pair (code propriétaire, datasets)
+- les outputs stdout/stderr des tâches (résultats de calcul, parfois sensibles)
+
+### La défense
+
+Tous les bodies HTTP échangés sur le port pair-à-pair (`7655`, sauf `/peer/v1/health`) sont chiffrés en **AES-256-GCM** (chiffrement authentifié — confidentialité + intégrité dans une seule primitive).
+
+#### Dérivation de la clé
+
+```
+key = HKDF-SHA256(
+    ikm    = base32_decode(room_secret),
+    salt   = "PartaGPU/peer-api/v1",
+    info   = "AES-256-GCM message key",
+    length = 32 bytes,
+)
+```
+
+Le `room_secret` est le même que celui qui sert au TOTP — déjà partagé entre membres de la salle via la passphrase de 4 mots. Aucun nouveau matériel à distribuer.
+
+#### Format
+
+Chaque body est un JSON `{"v": 1, "nonce": "<base64-12B>", "ct": "<base64>"}`, avec Content-Type `application/x-partagpu-encrypted-v1`. Nonce de 12 octets random par message (largement sous le birthday bound de 2^48).
+
+#### Mandatory
+
+Le serveur peer-API rejette en `415 Unsupported Media Type` toute requête avec un body sans le bon Content-Type. Pas de fallback en clair. Conséquence : tous les pairs doivent être en `>= 1.6.0` pour pouvoir communiquer entre eux.
+
+### Propriétés
+
+- **Confidentialité** : un attaquant qui écoute le trafic ne lit ni les commandes, ni les workspaces, ni les outputs.
+- **Intégrité** : tout flip de bit dans un ciphertext fait échouer le déchiffrement (tag GCM rejeté). Le serveur retourne 415, le client reçoit l'erreur sans avoir accepté le message altéré.
+- **Authenticité au niveau salle** : seuls les détenteurs du secret peuvent produire un body qui se déchiffre. TOTP ajoute l'anti-replay sur ~30 s.
+
+### Limites connues
+
+- **Pas de forward secrecy** : si le secret leak, tout l'historique enregistré devient déchiffrable. Listé dans [TODO.md](TODO.md).
+- **Pas de protection contre un membre de la salle** : par construction, tout pair dans la salle a la clé. Le modèle de menace est "attaquant LAN qui n'est PAS dans la salle".
+- **Anti-DOS faible** : le body (jusqu'à 32 MB) est lu et tenté de déchiffrer AVANT le check du TOTP. Un attaquant LAN pourrait spammer des bodies invalides pour forcer des allocations mémoire. Mitigation actuelle : le port n'est ouvert que quand le partage est actif (firewall fermé sinon).
+
+### Fichiers concernés
+
+- `src-tauri/src/crypto.rs` — module de chiffrement (HKDF, AES-GCM, envelope serde)
+- `src-tauri/src/peer_api.rs` — handler chiffrement/déchiffrement des bodies
+- `src-tauri/src/http_api.rs` — chiffrement côté client (run_remote_blocking)
+
+Tests unitaires : `cargo test --lib crypto::` (round-trip, mauvaise clé, tampering, JSON round-trip).
+
+---
+
+## 3. Sandbox d'exécution (bubblewrap)
 
 ### Le problème
 
@@ -114,7 +173,7 @@ Si une commande n'est pas dans la liste, la tâche est **refusée avant même de
 
 ---
 
-## 3. Durcissement du compte partagpu
+## 4. Durcissement du compte partagpu
 
 ### Le problème
 
@@ -160,7 +219,7 @@ Le compte ne peut jamais utiliser sudo, même s'il était ajouté à un groupe p
 
 ---
 
-## 4. Gestion automatique du pare-feu
+## 5. Gestion automatique du pare-feu
 
 ### Le problème
 
@@ -193,7 +252,7 @@ Le port mDNS (5353/UDP) n'est pas fermé lors de la pause ou désactivation car 
 
 ---
 
-## 5. Protection contre le mDNS spoofing / flood
+## 6. Protection contre le mDNS spoofing / flood
 
 ### Le problème
 
@@ -232,7 +291,7 @@ Loggé : `SECURITY: hostname conflict detected — « <hostname> » announced by
 
 ---
 
-## 6. Élévation de privilèges sécurisée (PolicyKit)
+## 7. Élévation de privilèges sécurisée (PolicyKit)
 
 ### Le problème
 
@@ -272,7 +331,7 @@ L'option `auth_admin_keep` dans la policy PolicyKit mémorise le mot de passe qu
 
 ---
 
-## 7. Validation des entrées
+## 8. Validation des entrées
 
 Toutes les entrées utilisateur et réseau sont validées avant traitement :
 

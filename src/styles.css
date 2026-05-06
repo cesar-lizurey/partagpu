@@ -1429,3 +1429,80 @@ select.task-dispatcher__input option {
   font-size: 0.85em;
   color: var(--color-text-muted);
 }
+
+/* TaskDispatcher : workspace upload */
+
+.task-dispatcher__workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.task-dispatcher__workspace-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.task-dispatcher__workspace-header .task-dispatcher__label {
+  flex: 1;
+}
+
+.task-dispatcher__files {
+  list-style: none;
+  margin: 6px 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.task-dispatcher__files li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.88em;
+  padding: 4px 8px;
+  background: var(--color-bg);
+  border-radius: 4px;
+}
+
+.task-dispatcher__files li code {
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  flex: 1;
+  color: var(--color-text);
+}
+
+.task-dispatcher__file-size {
+  color: var(--color-text-muted);
+  font-size: 0.85em;
+}
+
+.task-dispatcher__file-remove {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.95em;
+  line-height: 1;
+  padding: 0;
+}
+
+.task-dispatcher__file-remove:hover:not(:disabled) {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.task-dispatcher__files-total {
+  background: transparent !important;
+  color: var(--color-text-muted);
+  font-size: 0.82em;
+  padding: 4px 8px 0 8px;
+}

@@ -35,7 +35,7 @@ Côté code, un package Python (`partagpu`) permet d'exécuter une commande sur 
 ![Vue d'ensemble du réseau](docs/images/network-overview.svg)
 
 - Chaque poste fait tourner PartaGPU et s'annonce automatiquement sur le réseau local
-- Chaque utilisateur choisit **ce qu'il partage** et **combien** via des sliders
+- Chaque utilisateur choisit **ce qu'il partage** et **combien** via des curseurs rouges directement sur les jauges de ressources
 - Les tâches de calcul reçues tournent sous un compte système isolé (`partagpu`) dans un sandbox **bubblewrap** (FS read-only, /workspace tmpfs, network opt-in)
 - Un camarade absent ? On allume son PC, on se connecte en `partagpu`, et ses ressources sont disponibles
 - Une **salle virtuelle** protégée par un code d'accès garantit que seuls les postes autorisés peuvent communiquer (auth TOTP partagée)
@@ -192,15 +192,13 @@ Ce nom apparaîtra dans la liste des machines disponibles pour les autres.
 
 ### Étape 4 : Régler les limites de partage
 
-Utilisez les sliders pour définir combien de ressources vous partagez :
+Sur chaque jauge de ressource (*Mon partage* → *Ressources de cette machine*), un **curseur rouge draggable** indique la limite que vous partagez. Faites-le glisser à la souris pour ajuster :
 
-![Sliders de limites](docs/images/resource-sliders.svg)
-
-- **CPU** : pourcentage max des cœurs alloués aux tâches partagées (par pas de 5%)
+- **CPU** : pourcentage max des cœurs alloués aux tâches partagées (par pas de 5 %)
 - **RAM** : quantité max en Mo (par pas de 256 Mo, 0 = illimitée)
 - **GPU** : pourcentage max du GPU (visible uniquement si un GPU NVIDIA est détecté)
 
-Ces limites sont appliquées via les [cgroups v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) du noyau Linux. Les sliders sont réactifs et ne demandent pas de mot de passe (seule la première activation en demande un).
+Le curseur n'apparaît que quand le partage est *Actif* — sans partage, il n'y a rien à limiter. Les modifications sont debounced à 300 ms et appliquées via les [cgroups v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) du noyau Linux, sans demander de mot de passe (seule la première activation du partage en demande un).
 
 ---
 
@@ -214,13 +212,12 @@ L'application a **3 onglets** :
 
 - **Statut** : Actif / En pause / Désactivé — avec boutons pour changer
 - **Compte partagpu** : statut du compte, formulaire de mot de passe
-- **Jauges de ressources** : CPU, RAM, GPU en temps réel avec indicateur de limite
-- **Limites** : sliders pour ajuster à tout moment
+- **Jauges de ressources** : CPU, RAM, GPU en temps réel, avec un curseur rouge draggable directement sur la jauge pour fixer la limite de partage (apparaît seulement quand le partage est Actif)
 - **Répartition par utilisateur** : barres empilées colorées montrant la consommation de chaque pair
   ![Répartition par utilisateur](docs/images/usage-breakdown.svg)
 
   Chaque segment a la couleur de l'utilisateur. Survolez pour voir le détail.
-- **Tableau détaillé** : commande, source, statut, progression, CPU/RAM/GPU par tâche, **bouton Stop** pour annuler une tâche entrante en cours (utile si vous pensez qu'un camarade pousse n'importe quoi)
+- **Tableau détaillé** : commande, source (display_name du pair), statut, **progression et CPU/RAM en temps réel** (mise à jour chaque seconde, agrégés sur tout le sous-arbre de processus de la sandbox), **bouton Stop** pour annuler une tâche entrante en cours (utile si vous pensez qu'un camarade pousse n'importe quoi). GPU per-task pas mesuré pour l'instant — voyez la jauge globale.
 
 ### Onglet « Mon utilisation »
 
@@ -228,7 +225,7 @@ L'application a **3 onglets** :
 
 - **Machines disponibles** : liste des postes qui partagent, avec leur capacité et leur statut d'authentification (colonne **Auth**)
 - **Toutes les machines** : y compris celles qui ne partagent pas encore
-- **Lancer une commande sur un pair** : formulaire pour dispatcher une commande sur un pair sans passer par Python (sélection du pair, commande avec parsing shell, timeout, accès réseau opt-in, panneau résultat avec stdout/stderr **qui défile en direct** pendant l'exécution — utile pour voir les `print()` d'un long entraînement arriver ligne par ligne)
+- **Lancer une commande sur un pair** : formulaire pour dispatcher une commande sur un pair sans passer par Python (sélection du pair, commande avec parsing shell, timeout, accès réseau opt-in, **upload de fichiers du workspace** par file picker, panneau résultat avec stdout/stderr **qui défile en direct** pendant l'exécution — utile pour voir les `print()` d'un long entraînement arriver ligne par ligne)
 - **Mes tâches en cours** : progression en temps réel de ce que j'ai soumis. Bouton **Stop** sur les tâches Queued/Running pour les annuler proprement (SIGTERM côté pair, propagation aux rangs siblings dans un DDP).
 
 ### Onglet « Guide »
@@ -387,6 +384,7 @@ Les ajustements de sliders, la consultation du statut, et le monitoring **n'appe
 ## Sécurité
 
 - **Authentification par salle** : un code d'accès de 4 mots génère un secret TOTP partagé. Chaque poste prouve son appartenance en présentant un code temporaire à 6 chiffres qui change toutes les 30 secondes. Les postes non vérifiés sont clairement identifiés.
+- **Chiffrement pair-à-pair** (depuis 1.6.0) : les bodies HTTP entre pairs (port 7655) sont chiffrés en AES-256-GCM avec une clé HKDF dérivée du secret de salle. Confidentialité + intégrité contre l'écoute LAN passive. Tous les pairs doivent être en `>= 1.6.0`.
 - **Isolation** : le compte `partagpu` est dédié au partage, il n'a pas accès aux fichiers personnels des autres utilisateurs
 - **Cgroups v2** : les tâches ne peuvent pas dépasser les limites CPU/RAM définies par les sliders
 - **PolicyKit** : les opérations root passent par `pkexec` avec une règle explicite, pas de sudo en dur. Le mot de passe transite par stdin, jamais en argument CLI.
