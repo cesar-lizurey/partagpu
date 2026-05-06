@@ -434,10 +434,11 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
           )}
         </div>
 
+        {mode === "file" && (
         <div className="task-dispatcher__workspace">
           <div className="task-dispatcher__workspace-header">
             <span className="task-dispatcher__label">
-              Fichiers du workspace (optionnel)
+              Fichiers à uploader
             </span>
             <button
               type="button"
@@ -492,6 +493,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
             </ul>
           )}
         </div>
+        )}
 
         <div className="task-dispatcher__network">
           <label className="task-dispatcher__checkbox">
