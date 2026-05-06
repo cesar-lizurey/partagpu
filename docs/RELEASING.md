@@ -9,17 +9,17 @@ Deux artefacts indépendants, deux tags séparés.
 Workflow : [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 Déclencheur : tag `vX.Y.Z` (ex. `v1.6.1`).
 
-1. Mettre à jour la version au **trois endroits qui doivent rester synchronisés** :
+1. Mettre à jour la version aux **trois endroits qui doivent rester synchronisés** :
    - [`src-tauri/Cargo.toml`](../src-tauri/Cargo.toml) — section `[package]` → `version`
    - [`src-tauri/tauri.conf.json`](../src-tauri/tauri.conf.json) — clé `version`
    - [`package.json`](../package.json) — clé `version`
-2. Commit la bump : `git commit -am "Bump version to 1.6.1"`
+2. Commit la bump : `git commit -am "Bump version to 1.7.1"`
 3. Tagger et pousser :
    ```bash
-   git tag v1.6.1
-   git push origin main v1.6.1
+   git tag v1.7.1
+   git push origin main v1.7.1
    ```
-4. La CI build le `.deb` + `.AppImage` puis crée la GitHub Release.
+4. La CI exécute d'abord `cargo test --all-targets --locked` ; si un test échoue, la release est avortée. Sinon elle build le `.deb` + `.AppImage` puis crée la GitHub Release.
 5. Vérifier la release sur la [page des releases](https://github.com/cesar-lizurey/partagpu/releases).
 
 Pour ne pas créer la release publique tout de suite, marquer le tag en
@@ -47,7 +47,9 @@ la version Tauri — le paquet Python évolue à son propre rythme.
 ## Avant de pousser un tag
 
 - `npx tsc --noEmit` doit passer sans erreur.
-- `cargo test --manifest-path src-tauri/Cargo.toml` doit passer (notamment
-  les tests crypto).
+- `cargo test` (depuis `src-tauri/`) doit passer — y compris la suite
+  d'intégration (`cargo test --test peer_api_e2e`). Le workflow release
+  exécute déjà ce gate ; un échec local signifie que la CI rejettera le
+  tag.
 - `npx tauri build --bundles deb` au moins une fois en local pour
   vérifier que le bundle s'assemble bien avant de consommer un run de CI.
