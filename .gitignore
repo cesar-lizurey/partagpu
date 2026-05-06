@@ -18,6 +18,10 @@ src-tauri/resources/partagpu-helper
 *.swp
 *.swo
 
+# Claude Code (personal local overrides only ; .claude/settings.json
+# stays trackable for shared team config)
+.claude/settings.local.json
+
 # OS
 .DS_Store
 Thumbs.db
