@@ -25,3 +25,12 @@ Aucun chantier critique restant. Tout ce qui suit est de l'amélioration optionn
 - **État actuel** : la clé éphémère tourne toutes les 10 minutes. Suffisant pour le modèle classroom.
 - **Amélioration possible** : tourner après N requêtes traitées (cap absolu sur la quantité de trafic chiffrée avec une même clé). Aucun bénéfice pratique au volume actuel.
 - **Priorité** : nulle pour le projet actuel.
+
+### Retirer TOTP au profit d'un HMAC + timestamp
+- **État actuel** : l'auth des requêtes pair-à-pair s'appuie sur un code TOTP à 6 chiffres dans le header `X-PartaGPU-TOTP`, plus l'annonce du même code dans les TXT records mDNS pour la vérification passive entre pairs.
+- **Pourquoi le remplacer** : depuis l'ajout d'AES-256-GCM (1.6.0) puis de la forward secrecy X25519 (1.7.0), TOTP ne fait plus que de l'anti-replay sur ~30 s. C'est exactement ce qu'un schéma plus standard apporterait :
+  - HTTP : header `X-PartaGPU-AUTH: HMAC-SHA256(room_key, timestamp || body_hash)` + check côté serveur `|now - timestamp| < 30 s` → mêmes garanties anti-replay, plus lisible, pas de dépendance `totp-rs` / `base32`.
+  - mDNS : broadcaster `HMAC-SHA256(room_key, current_time_window)` tronqué (qui *est* TOTP au sens mathématique mais sans le formalisme RFC 6238) ou un challenge HTTP léger pour la vérif.
+- **Coût** : break du protocole pair-à-pair, donc force un upgrade simultané. Probablement ~1 jour de boulot incluant tests + migration de la doc.
+- **Bénéfice** : réduction de la surface dépendances (`totp-rs`, `base32`, `data-encoding`), code plus lisible (HMAC explicite plutôt que TOTP qui est un HMAC déguisé), et moins de couches superposées qui font la même chose.
+- **Priorité** : faible. Le système marche, retirer TOTP ne gagne rien sur le plan sécurité — c'est purement du nettoyage de design.

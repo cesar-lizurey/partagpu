@@ -25,3 +25,12 @@ No critical work left. Anything below is optional polish.
 - **Current state**: ephemeral key rotates every 10 minutes. Enough for the classroom threat model.
 - **Possible improvement**: rotate after N processed requests (hard cap on the amount of traffic encrypted under any single key). No practical benefit at current traffic volumes.
 - **Priority**: zero for this project as it stands.
+
+### Drop TOTP in favor of an HMAC + timestamp scheme
+- **Current state**: peer-to-peer request auth relies on a 6-digit TOTP code in the `X-PartaGPU-TOTP` header, plus the same code broadcast in mDNS TXT records for passive peer verification.
+- **Why replace it**: since AES-256-GCM (1.6.0) and X25519 forward secrecy (1.7.0) shipped, TOTP only does anti-replay over a ~30 s window. A more standard scheme buys exactly the same:
+  - HTTP: header `X-PartaGPU-AUTH: HMAC-SHA256(room_key, timestamp || body_hash)` + server check `|now - timestamp| < 30 s` → same anti-replay guarantees, more readable, no `totp-rs` / `base32` dependency.
+  - mDNS: broadcast a truncated `HMAC-SHA256(room_key, current_time_window)` (which **is** TOTP mathematically but without the RFC 6238 formalism) or a lightweight HTTP verification challenge.
+- **Cost**: peer-to-peer protocol break, so forces a simultaneous upgrade. Probably ~1 day of work including tests + doc migration.
+- **Benefit**: smaller dependency surface (`totp-rs`, `base32`, `data-encoding`), more readable code (explicit HMAC instead of a disguised HMAC inside TOTP), fewer overlapping layers doing the same thing.
+- **Priority**: low. The system works ; removing TOTP buys nothing on the security front — it's purely design cleanup.
