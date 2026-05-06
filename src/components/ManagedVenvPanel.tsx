@@ -71,14 +71,19 @@ export function ManagedVenvPanel() {
   }, [installLog]);
 
   const handleInstall = async () => {
-    if (
-      !confirm(
-        "Installer la toolkit ML dans le venv géré ?\n\n" +
-          "Packages : torch, torchvision, numpy, scipy, pandas, scikit-learn, matplotlib, pillow.\n" +
-          "Téléchargement de ~3 Go, prend 5 à 10 minutes selon votre connexion.\n" +
-          "Le mot de passe administrateur sera demandé.",
-      )
-    ) {
+    const isUpdate = status?.installed === true;
+    const message = isUpdate
+      ? "Vérifier les mises à jour de la toolkit ML ?\n\n" +
+        "Lance pip install --upgrade sur torch, torchvision, numpy,\n" +
+        "scipy, pandas, scikit-learn, matplotlib, pillow.\n" +
+        "Téléchargement uniquement de ce qui a une nouvelle version.\n" +
+        "Le mot de passe administrateur sera demandé."
+      : "Installer la toolkit ML dans le venv géré ?\n\n" +
+        "Packages : torch, torchvision, numpy, scipy, pandas,\n" +
+        "scikit-learn, matplotlib, pillow.\n" +
+        "Téléchargement de ~3 Go, prend 5 à 10 minutes selon votre\n" +
+        "connexion. Le mot de passe administrateur sera demandé.";
+    if (!confirm(message)) {
       return;
     }
     setError(null);
@@ -161,9 +166,11 @@ export function ManagedVenvPanel() {
               onClick={handleInstall}
               disabled={busy !== null}
               className="btn btn--secondary"
-              title="Réinstalle / met à jour torch + numpy"
+              title="Relance pip install --upgrade sur la toolkit ML pour récupérer les dernières versions des packages"
             >
-              {busy === "install" ? "Mise à jour…" : "Mettre à jour"}
+              {busy === "install"
+                ? "Vérification…"
+                : "Vérifier les mises à jour de la toolkit ML"}
             </button>
             <button
               type="button"

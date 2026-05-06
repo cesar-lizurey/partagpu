@@ -183,8 +183,13 @@ fn cmd_create_user() {
     // 4. Block sudo access
     install_sudoers_deny();
 
-    // 5. Lock down home directory permissions (only partagpu can read)
-    set_permissions(PARTAGPU_HOME, 0o700);
+    // 5. Home directory permissions : 0o711 = traversable (anyone can `cd`
+    //    or stat() a child path) but not listable (no `ls` for non-partagpu).
+    //    Files inside stay private through their own mode bits. Pure 0o700
+    //    would block the main app (running as the regular user) from even
+    //    checking whether `/var/lib/partagpu/venv/bin/python3` exists, which
+    //    is needed to render the "managed venv installed" badge in the UI.
+    set_permissions(PARTAGPU_HOME, 0o711);
 
     // 6. Autostart
     cmd_setup_autostart();
@@ -588,6 +593,13 @@ fn cmd_setup_venv() {
     // (technically, world-readable mode would suffice, but this keeps perms
     // clean if pip ever installs with mode 600 something).
     chown_recursive(MANAGED_VENV, PARTAGPU_USER);
+
+    // Ensure the parent /var/lib/partagpu is traversable by other users
+    // (mode 0o711). On older installs that still have 0o700 from a
+    // previous create-user, the main app can't stat /venv/bin/python3
+    // and renders "Non installé" even when the venv is there. This makes
+    // setup-venv idempotently fix that.
+    set_permissions(PARTAGPU_HOME, 0o711);
 
     println!("Venv géré installé dans {MANAGED_VENV}");
 }
