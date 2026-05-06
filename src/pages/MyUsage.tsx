@@ -27,7 +27,20 @@ export function MyUsage() {
     return () => clearInterval(interval);
   }, [refresh]);
 
-  const availablePeers = peers.filter((p) => p.sharing_enabled);
+  // Sort : peers that share their resources first (the only ones you can
+  // actually use), then non-sharing peers. Within each group, verified
+  // before unverified, then alphabetical.
+  const sortedPeers = [...peers].sort((a, b) => {
+    if (a.sharing_enabled !== b.sharing_enabled) {
+      return a.sharing_enabled ? -1 : 1;
+    }
+    if (a.verified !== b.verified) {
+      return a.verified ? -1 : 1;
+    }
+    return (a.display_name || a.hostname).localeCompare(
+      b.display_name || b.hostname,
+    );
+  });
 
   return (
     <div className="page">
@@ -39,16 +52,13 @@ export function MyUsage() {
       {error && <div className="alert alert--error">{error}</div>}
 
       <section className="section">
-        <h3>Machines disponibles</h3>
-        <PeerTable
-          peers={availablePeers}
-          emptyMessage="Aucune machine ne partage ses ressources actuellement."
-        />
-      </section>
-
-      <section className="section">
-        <h3>Toutes les machines détectées</h3>
-        <PeerTable peers={peers} />
+        <h3>Machines détectées</h3>
+        <p className="section__hint">
+          Vous pouvez utiliser les machines avec <strong>Partage : Actif</strong>{" "}
+          (triées en premier). Les autres sont visibles mais ne mettent rien à
+          disposition pour le moment.
+        </p>
+        <PeerTable peers={sortedPeers} />
       </section>
 
       <section className="section">
