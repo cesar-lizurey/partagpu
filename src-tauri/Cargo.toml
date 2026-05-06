@@ -38,10 +38,12 @@ log = "0.4"
 env_logger = "0.11"
 # HTTP client used to dispatch tasks to remote peers (no TLS needed on LAN).
 ureq = { version = "2", default-features = false, features = ["json"] }
-# Peer-to-peer encryption (AES-256-GCM keyed by HKDF-SHA256(room secret)).
+# Peer-to-peer encryption (AES-256-GCM keyed by HKDF-SHA256(room secret + ECDH)).
 aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
 rand = "0.8"
+# Forward secrecy : ephemeral X25519 keys derived via Diffie-Hellman per request.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 # Gzip for workspace compression on the dispatcher → peer hop.
 flate2 = "1"

@@ -293,7 +293,28 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
     const tail = parseExtraArgs(extraArgs);
 
     // Fire all dispatches in parallel; they need to be alive simultaneously
-    // for the NCCL/Gloo rendezvous to converge.
+    // for the NCCL/Gloo rendezvous to converge. The first rank to fail
+    // triggers a cancel-all so siblings stuck in the rendezvous don't
+    // hang for the full timeout.
+    const settledIds = new Set<string>();
+    let abortTriggered = false;
+    const triggerAbort = (sourceRank: number, reason: string) => {
+      if (abortTriggered) return;
+      abortTriggered = true;
+      const target = newAssignments.find((a) => a.rank === sourceRank);
+      setError(
+        target
+          ? `Rank ${sourceRank} (${target.peer.display_name || target.peer.hostname}) a échoué : ${reason}. Annulation des autres ranks…`
+          : `Rank ${sourceRank} a échoué : ${reason}. Annulation des autres ranks…`,
+      );
+      // Cancel every sibling that hasn't already settled.
+      for (const a of newAssignments) {
+        if (a.rank === sourceRank) continue;
+        if (settledIds.has(a.localId)) continue;
+        cancelOutgoingTask(a.localId).catch(() => undefined);
+      }
+    };
+
     const dispatchPromises = newAssignments.map(async (a) => {
       const envPrefix = [
         "env",
@@ -308,30 +329,38 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
       ];
       const cmd = [...envPrefix, "python3", scriptName, ...tail];
       try {
-        return await dispatchTask(a.peer.ip, cmd, {
+        const result = await dispatchTask(a.peer.ip, cmd, {
           timeoutSecs,
           network: true,
           user: `${userLabel} (rank ${a.rank}/${worldSize}, dev ${a.deviceIndex})`,
           localId: a.localId,
           workspace,
         });
+        settledIds.add(a.localId);
+        // A non-zero exit code means this rank crashed — others are likely
+        // hung in NCCL rendezvous waiting for it.
+        if (result.status === "Failed" && !abortTriggered) {
+          triggerAbort(a.rank, `exit ${result.exit_code ?? "?"}`);
+        }
+        return result;
       } catch (e) {
-        // Surface the rank that failed. Don't auto-cancel siblings here —
-        // the user can do it via the cancel-all button. Keep behavior simple
-        // for now.
+        settledIds.add(a.localId);
+        if (!abortTriggered) {
+          triggerAbort(a.rank, String(e));
+        }
         throw new Error(`Rank ${a.rank} : ${String(e)}`);
       }
     });
 
     try {
-      await Promise.allSettled(dispatchPromises).then((settled) => {
-        const failures = settled
-          .map((r, i) => (r.status === "rejected" ? `R${i}: ${r.reason}` : null))
-          .filter(Boolean);
-        if (failures.length > 0) {
-          setError(`Erreurs : ${failures.join(" ; ")}`);
-        }
-      });
+      const settled = await Promise.allSettled(dispatchPromises);
+      const failures = settled
+        .map((r, i) => (r.status === "rejected" ? `R${i}: ${r.reason}` : null))
+        .filter(Boolean);
+      if (failures.length > 0 && !abortTriggered) {
+        // Rare path: failures arrived after abort window. Surface them anyway.
+        setError(`Erreurs : ${failures.join(" ; ")}`);
+      }
     } finally {
       unlistenRef.current?.();
       unlistenRef.current = null;

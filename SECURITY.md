@@ -101,7 +101,12 @@ Le `room_secret` est le même que celui qui sert au TOTP — déjà partagé ent
 
 #### Format
 
-Chaque body est un JSON `{"v": 1, "nonce": "<base64-12B>", "ct": "<base64>"}`, avec Content-Type `application/x-partagpu-encrypted-v1`. Nonce de 12 octets random par message (largement sous le birthday bound de 2^48).
+Deux versions d'enveloppes coexistent (le serveur accepte les deux ; le client envoie v=2 quand le pair publie sa pubkey, sinon v=1 pour les anciennes versions).
+
+- **v=1 (legacy)** : `{"v": 1, "nonce": "<base64-12B>", "ct": "<base64>"}`. Clé AES = HKDF(room_secret).
+- **v=2 (forward-secret, par défaut)** : `{"v": 2, "eph_pk": "<base64-32B>", "nonce": "...", "ct": "..."}`. Le client génère une paire X25519 éphémère par requête, fait Diffie-Hellman contre la pubkey éphémère du serveur (publiée en mDNS, regénérée à chaque démarrage de l'app, **jamais sur disque**), et la clé AES est HKDF(room_secret || ECDH_shared). La réponse réutilise la même clé de session.
+
+Content-Type dans les deux cas : `application/x-partagpu-encrypted-v1`. Nonce de 12 octets random par message (largement sous le birthday bound de 2^48).
 
 #### Mandatory
 
@@ -112,10 +117,11 @@ Le serveur peer-API rejette en `415 Unsupported Media Type` toute requête avec 
 - **Confidentialité** : un attaquant qui écoute le trafic ne lit ni les commandes, ni les workspaces, ni les outputs.
 - **Intégrité** : tout flip de bit dans un ciphertext fait échouer le déchiffrement (tag GCM rejeté). Le serveur retourne 415, le client reçoit l'erreur sans avoir accepté le message altéré.
 - **Authenticité au niveau salle** : seuls les détenteurs du secret peuvent produire un body qui se déchiffre. TOTP ajoute l'anti-replay sur ~30 s.
+- **Forward secrecy (v=2)** : un attaquant qui capture du trafic chiffré et obtient le secret de salle plus tard ne peut pas déchiffrer ce qu'il a capturé, car la moitié privée de la clé éphémère n'a jamais quitté la RAM du serveur et a disparu au redémarrage de l'app.
 
 ### Limites connues
 
-- **Pas de forward secrecy** : si le secret leak, tout l'historique enregistré devient déchiffrable. Listé dans [TODO.md](TODO.md).
+- **Forward secrecy bornée au redémarrage** : la clé éphémère ne tourne pas en cours d'exécution. Un attaquant qui accède à la RAM d'un poste **pendant qu'il tourne** peut déchiffrer toutes les sessions courantes jusqu'au prochain restart. Voir [TODO.md](TODO.md).
 - **Pas de protection contre un membre de la salle** : par construction, tout pair dans la salle a la clé. Le modèle de menace est "attaquant LAN qui n'est PAS dans la salle".
 - **Anti-DOS faible** : le body (jusqu'à 32 MB) est lu et tenté de déchiffrer AVANT le check du TOTP. Un attaquant LAN pourrait spammer des bodies invalides pour forcer des allocations mémoire. Mitigation actuelle : le port n'est ouvert que quand le partage est actif (firewall fermé sinon).
 

@@ -5,26 +5,22 @@ Mesures de sécurité restantes à implémenter. Les mesures déjà en place son
 ## Fait
 
 - ✅ **Chiffrement des communications entre pairs** (depuis 1.6.0). AES-256-GCM avec clé dérivée HKDF-SHA256 du secret de salle. Voir [ARCHITECTURE.md → Chiffrement des messages pair-à-pair](docs/ARCHITECTURE.md#chiffrement-des-messages-pair-à-pair).
+- ✅ **Forward secrecy** (depuis 1.6.0). Échange Diffie-Hellman X25519 éphémère par requête (envelope v=2). La clé éphémère du serveur est gardée en RAM uniquement et regénérée à chaque démarrage de l'application : un attaquant qui capture du trafic et obtient le secret de salle plus tard ne peut plus déchiffrer une fois l'app redémarrée.
+- ✅ **Per-task cgroup isolation** (depuis 1.6.0). Chaque tâche reçoit son propre `/sys/fs/cgroup/partagpu/task-<uuid>` pour éviter qu'une tâche OOM les voisines.
+- ✅ **Limite de tâches concurrentes** (depuis 1.6.0). Cap configurable depuis l'UI ; au-delà, les tâches restent en file d'attente FIFO.
 
 ## Reste à faire
 
-### Forward secrecy
-- **Risque** : si le secret de salle leak un jour, tout l'historique réseau enregistré devient déchiffrable a posteriori.
+### Forward secrecy : re-keying périodique en cours d'exécution
+- **Risque** : la clé éphémère actuelle ne tourne qu'au redémarrage de l'app. Si un attaquant accède à la RAM d'un poste **pendant** qu'il tourne, il peut déchiffrer toutes les communications jusqu'au prochain redémarrage.
 - **Défense** :
-  - [ ] Échange de clé éphémère par session (Diffie-Hellman X25519)
-  - [ ] Re-keying périodique
-- **Priorité** : moyenne. Pas critique pour le modèle "salle de cours" où le secret tourne avec la passphrase et les sessions sont courtes.
+  - [ ] Régénérer `EphemeralKey` toutes les 10 minutes (ou après N requêtes), garder l'ancienne 30 s pour les requêtes en vol.
+  - [ ] Re-publier la nouvelle pubkey via mDNS dès la rotation.
+- **Priorité** : faible. Le modèle de menace classroom n'inclut pas l'attaque mémoire en direct.
 
-### Per-task cgroup isolation
-- **Risque** : aujourd'hui toutes les tâches reçues partagent le cgroup `/sys/fs/cgroup/partagpu`. Une tâche peut consommer toute la RAM allouée et faire OOM les autres.
-- **Défense** :
-  - [ ] Créer `/sys/fs/cgroup/partagpu/task-<uuid>` par tâche
-  - [ ] Sous-allouer les limites du cgroup parent
-- **Priorité** : moyenne. Limite anti-DOS interne au compte partagpu.
-
-### Limite de tâches concurrentes
-- **Risque** : un pair pourrait recevoir 100 dispatches d'un coup, saturer CPU + spawner 100 bwrap.
-- **Défense** :
-  - [ ] Queue avec max-concurrent côté `IncomingTasks::create_and_run`
-  - [ ] Tasks au-delà de la limite : retournent 429 Too Many Requests ou Queued (en attente)
-- **Priorité** : faible. La salle est de confiance ; à voir si le projet sort du cadre cours.
+### Tests d'intégration end-to-end
+- **Manque** : seuls les tests unitaires du module crypto existent. Le flux complet (deux instances qui se découvrent par mDNS, s'authentifient, dispatchent une tâche) est testé à la main.
+- **À faire** :
+  - [ ] Test qui démarre deux instances locales sur ports différents et vérifie qu'une tâche dispatchée arrive bien et termine.
+  - [ ] Test qui simule un pair non vérifié et vérifie que le dispatch est refusé.
+- **Priorité** : moyenne. Utile avant de publier sur PyPI/.deb publiquement.

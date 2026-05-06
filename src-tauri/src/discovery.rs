@@ -37,6 +37,11 @@ pub struct Peer {
     /// True if another peer already claimed this hostname (possible spoof).
     #[serde(default)]
     pub hostname_conflict: bool,
+    /// Peer's ephemeral X25519 public key (base64), regenerated on app restart.
+    /// Used to derive a forward-secret session key per request via ECDH.
+    /// Empty when the peer is on an older version (no FS support).
+    #[serde(default)]
+    pub eph_pk: String,
 }
 
 /// Internal tracking data per peer (not serialized to frontend).
@@ -55,6 +60,9 @@ pub struct Discovery {
     auth: Option<crate::auth::AuthManager>,
     sharing: Option<crate::sharing::SharingController>,
     sec_log: Option<crate::security_log::SecurityLog>,
+    /// Local ephemeral X25519 public key (base64). Announced over mDNS so
+    /// peers can use ECDH for forward secrecy. Empty until set_ephemeral_key.
+    eph_pk_b64: Arc<Mutex<String>>,
     /// Cached last announced state to avoid re-registering when unchanged.
     last_announced: Arc<Mutex<String>>,
 }
@@ -100,8 +108,17 @@ impl Discovery {
             auth: None,
             sharing: None,
             sec_log: None,
+            eph_pk_b64: Arc::new(Mutex::new(String::new())),
             last_announced: Arc::new(Mutex::new(String::new())),
         })
+    }
+
+    /// Plug in this app's ephemeral X25519 public key (base64) so it gets
+    /// announced over mDNS. Called once at startup from `lib.rs::run`.
+    pub fn set_ephemeral_pubkey(&self, pk_b64: String) {
+        *self.eph_pk_b64.lock().unwrap() = pk_b64;
+        // Force re-announce so the new property propagates.
+        *self.last_announced.lock().unwrap() = String::new();
     }
 
     /// Attach an AuthManager so peers can be verified via TOTP.
@@ -179,6 +196,7 @@ impl Discovery {
             .unwrap_or_default();
         let (sharing, cpu_limit, ram_limit, gpu_limit) = self.sharing_properties();
         let gpu_count = self.local_gpu_count().to_string();
+        let eph_pk = self.eph_pk_b64.lock().unwrap().clone();
 
         let properties = [
             ("hostname", self.hostname.as_str()),
@@ -189,6 +207,7 @@ impl Discovery {
             ("gpu_limit", &gpu_limit),
             ("gpu_count", &gpu_count),
             ("totp", &totp_code),
+            ("eph_pk", &eph_pk),
         ];
 
         let ip_str = local_ip.to_string();
@@ -217,6 +236,7 @@ impl Discovery {
         let instance_name = self.instance_name.clone();
         let hostname = self.hostname.clone();
         let display_name = self.display_name.clone();
+        let eph_pk_b64 = self.eph_pk_b64.clone();
         let last_announced = self.last_announced.clone();
 
         std::thread::spawn(move || {
@@ -243,9 +263,11 @@ impl Discovery {
                 };
 
                 let gpu_count = crate::resource::list_gpus().len().to_string();
+                let eph_pk = eph_pk_b64.lock().unwrap().clone();
 
                 // Only re-register if something changed.
-                let state_key = format!("{totp}|{sharing_str}|{cpu}|{ram}|{gpu}|{gpu_count}");
+                let state_key =
+                    format!("{totp}|{sharing_str}|{cpu}|{ram}|{gpu}|{gpu_count}|{eph_pk}");
                 {
                     let mut last = last_announced.lock().unwrap();
                     if *last == state_key {
@@ -269,6 +291,7 @@ impl Discovery {
                     ("gpu_limit", &gpu),
                     ("gpu_count", &gpu_count),
                     ("totp", totp.as_str()),
+                    ("eph_pk", eph_pk.as_str()),
                 ];
 
                 if let Ok(service) = ServiceInfo::new(
@@ -378,6 +401,10 @@ impl Discovery {
                                 .get_property_val_str("totp")
                                 .unwrap_or("")
                                 .to_string();
+                            let eph_pk = props
+                                .get_property_val_str("eph_pk")
+                                .unwrap_or("")
+                                .to_string();
 
                             let verified = match &auth {
                                 Some(a) if !totp_code.is_empty() => a.verify_code(&totp_code),
@@ -417,6 +444,7 @@ impl Discovery {
                                 totp_code,
                                 verified,
                                 hostname_conflict,
+                                eph_pk,
                             };
 
                             if let Ok(mut map) = peers.lock() {

@@ -12,6 +12,7 @@ pub mod task_runner;
 pub mod user_manager;
 
 use auth::AuthManager;
+use crypto::EphemeralKey;
 use discovery::Discovery;
 use resource::ResourceMonitor;
 use sandbox::Sandbox;
@@ -57,11 +58,17 @@ pub fn run() {
     let auth = AuthManager::new();
     let sharing = SharingController::new();
 
+    // Forward-secret ephemeral keypair for the peer-API. Lives in memory
+    // only — never written to disk. Regenerated on every app restart, which
+    // is what bounds the forward-secrecy window.
+    let server_eph = EphemeralKey::generate();
+
     let mut discovery = Discovery::new(&hostname, &machine_id)
         .expect("Failed to initialize mDNS discovery");
     discovery.set_auth(auth.clone());
     discovery.set_sharing(sharing.clone());
     discovery.set_security_log(sec_log.clone());
+    discovery.set_ephemeral_pubkey(server_eph.public_b64());
 
     if let Err(e) = discovery.register() {
         eprintln!("Warning: could not register mDNS service: {e}");
@@ -93,6 +100,7 @@ pub fn run() {
         discovery.clone(),
         sharing.clone(),
         sec_log.clone(),
+        server_eph.clone(),
     );
 
     let incoming_for_setup = incoming.clone();

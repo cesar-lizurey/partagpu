@@ -17,6 +17,9 @@ export interface Peer {
   totp_code: string;
   verified: boolean;
   hostname_conflict: boolean;
+  /** Peer's ephemeral X25519 public key (base64), regenerated on app restart.
+   *  Empty when the peer is on an older PartaGPU version. */
+  eph_pk?: string;
 }
 
 export interface RoomStatus {

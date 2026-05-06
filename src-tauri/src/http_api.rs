@@ -303,6 +303,22 @@ pub fn dispatch_task_blocking(
         || peer_ip == "0.0.0.0"
         || local_lan_ip.as_deref() == Some(peer_ip);
 
+    // Look up the peer's ephemeral X25519 pubkey from mDNS. Empty string
+    // means the peer is on an older PartaGPU that doesn't support v=2 yet —
+    // we'll fall back to the v=1 envelope (no forward secrecy) in that case.
+    let peer_eph_pk = if is_loopback_target {
+        // Talking to ourselves : we don't appear in get_peers(), so just
+        // skip ECDH (the room key alone is enough; same machine).
+        String::new()
+    } else {
+        discovery
+            .get_peers()
+            .into_iter()
+            .find(|p| p.ip == peer_ip)
+            .map(|p| p.eph_pk)
+            .unwrap_or_default()
+    };
+
     let target_machine = if is_loopback_target {
         let dn = discovery.get_display_name();
         if !dn.is_empty() {
@@ -346,6 +362,7 @@ pub fn dispatch_task_blocking(
         timeout_secs,
         &totp,
         &key,
+        &peer_eph_pk,
         network,
         workspace,
         outgoing.clone(),
@@ -462,6 +479,14 @@ async fn handle_cancel(req: &Request, state: &ApiState) -> (&'static str, String
 
 /// Submit + poll a task on a remote peer. Blocking. Updates the matching
 /// OutgoingTask entry as it progresses.
+///
+/// When `peer_eph_pk` is non-empty, every request uses a v=2 envelope (fresh
+/// X25519 keypair on the client + ECDH against the peer's announced ephemeral
+/// public key) for forward secrecy. Each request derives its own session key
+/// which is then used to read back the peer's response. When the peer doesn't
+/// advertise an `eph_pk` (older version), we fall back to the v=1 envelope
+/// keyed by the room secret alone.
+#[allow(clippy::too_many_arguments)]
 fn run_remote_blocking(
     peer_ip: &str,
     args: &[String],
@@ -469,11 +494,33 @@ fn run_remote_blocking(
     timeout_secs: u64,
     totp: &str,
     key: &[u8; 32],
+    peer_eph_pk: &str,
     network_enabled: bool,
     workspace: Vec<WorkspaceFile>,
     outgoing: OutgoingTasks,
     local_id: &str,
 ) -> Result<Task, String> {
+    /// Encrypt with v=2 if peer publishes an ephemeral pubkey, otherwise v=1.
+    /// Returns (envelope_json, session_key_for_response_decrypt).
+    fn encrypt_for(
+        room_key: &[u8; 32],
+        peer_eph_pk: &str,
+        plaintext_json: &str,
+    ) -> Result<(String, [u8; 32]), String> {
+        if peer_eph_pk.is_empty() {
+            let env = crypto::encrypt(room_key, plaintext_json.as_bytes())?;
+            let s = serde_json::to_string(&env)
+                .map_err(|e| format!("envelope sérialisation : {e}"))?;
+            Ok((s, *room_key))
+        } else {
+            let (env, session) =
+                crypto::encrypt_v2(room_key, peer_eph_pk, plaintext_json.as_bytes())?;
+            let s = serde_json::to_string(&env)
+                .map_err(|e| format!("envelope sérialisation : {e}"))?;
+            Ok((s, session))
+        }
+    }
+
     let url_submit = format!("http://{peer_ip}:{PEER_PORT}/peer/v1/tasks");
     let body = serde_json::json!({
         "args": args,
@@ -482,7 +529,9 @@ fn run_remote_blocking(
         "network_enabled": network_enabled,
         "workspace": workspace,
     });
-    let body_env = crypto::encrypt_json(key, &body)?;
+    let body_str = serde_json::to_string(&body)
+        .map_err(|e| format!("JSON sérialisation : {e}"))?;
+    let (body_env, submit_session_key) = encrypt_for(key, peer_eph_pk, &body_str)?;
 
     let resp = ureq::post(&url_submit)
         .set("X-PartaGPU-TOTP", totp)
@@ -506,7 +555,7 @@ fn run_remote_blocking(
     let resp_body = resp
         .into_string()
         .map_err(|e| format!("lecture réponse pair : {e}"))?;
-    let submit: SubmitResp = crypto::decrypt_json(key, &resp_body)
+    let submit: SubmitResp = crypto::decrypt_json(&submit_session_key, &resp_body)
         .map_err(|e| format!("réponse du pair non déchiffrable : {e}"))?;
 
     // Remember which peer task corresponds to this local id, so a future
@@ -524,6 +573,9 @@ fn run_remote_blocking(
         }
         std::thread::sleep(POLL_INTERVAL);
 
+        // Each poll generates its own ephemeral keypair (when v=2). The
+        // server replies with an encrypted task snapshot keyed by that
+        // session key, which lives only for the duration of this poll.
         let r = match ureq::get(&url_get)
             .set("X-PartaGPU-TOTP", totp)
             .timeout(Duration::from_secs(10))
@@ -547,6 +599,9 @@ fn run_remote_blocking(
                 continue;
             }
         };
+        // GET has no body, so the server response is encrypted with the
+        // *room key* (v=2 path doesn't apply since there's no client eph_pk
+        // for the request). Use the room key to decrypt.
         let task: Task = match crypto::decrypt_json(key, &body) {
             Ok(t) => t,
             Err(e) => {

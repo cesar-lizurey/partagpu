@@ -11,7 +11,7 @@
 //!   GET  /peer/v1/tasks/<id>    → fetch task status/output (TOTP required)
 
 use crate::auth::AuthManager;
-use crate::crypto::{self, ENCRYPTED_CONTENT_TYPE};
+use crate::crypto::{self, EphemeralKey, ENCRYPTED_CONTENT_TYPE};
 use crate::discovery::Discovery;
 use crate::sandbox::{SandboxOptions, WorkspaceFile};
 use crate::security_log::{EventCategory, EventLevel, SecurityLog};
@@ -69,6 +69,7 @@ pub fn start(
     discovery: Discovery,
     sharing: SharingController,
     sec_log: SecurityLog,
+    server_eph: EphemeralKey,
 ) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -104,11 +105,13 @@ pub fn start(
                 let discovery = discovery.clone();
                 let sharing = sharing.clone();
                 let sec_log = sec_log.clone();
+                let server_eph = server_eph.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        handle_connection(stream, addr, incoming, auth, discovery, sharing, sec_log)
-                            .await
+                    if let Err(e) = handle_connection(
+                        stream, addr, incoming, auth, discovery, sharing, sec_log, server_eph,
+                    )
+                    .await
                     {
                         eprintln!("Peer API: connection error from {addr}: {e}");
                     }
@@ -126,6 +129,7 @@ async fn handle_connection(
     discovery: Discovery,
     sharing: SharingController,
     sec_log: SecurityLog,
+    server_eph: EphemeralKey,
 ) -> Result<(), String> {
     let mut req = read_request(&mut stream).await?;
 
@@ -141,7 +145,12 @@ async fn handle_connection(
 
     // Decrypt request body if we're on an encrypted route and the body is
     // non-empty (POST). Replace req.body with the plaintext so handlers
-    // continue to expect plain JSON.
+    // continue to expect plain JSON. Capture the session key so the response
+    // can be encrypted with the same key (v=2 forward-secret path). For
+    // GET/DELETE requests there's no body to decrypt, so response defaults
+    // to the room key — no forward secrecy on those, but they leak only the
+    // task id and status which is bounded.
+    let mut response_key: Option<[u8; 32]> = room_key;
     let body_decrypt_error = if route_needs_encryption && !req.body.is_empty() {
         let content_type = req
             .headers
@@ -161,19 +170,26 @@ async fn handle_connection(
                 ),
                 Some(key) => {
                     match serde_json::from_str::<crypto::Envelope>(&req.body) {
-                        Ok(env) => match crypto::decrypt(key, &env) {
-                            Ok(plain) => match String::from_utf8(plain) {
-                                Ok(s) => {
-                                    req.body = s;
-                                    None
-                                }
-                                Err(_) => Some("plaintext non UTF-8".to_string()),
-                            },
-                            Err(e) => Some(e),
-                        },
-                        Err(e) => {
-                            Some(format!("envelope JSON invalide : {e}"))
+                        Ok(env) => {
+                            let result = match env.v {
+                                1 => crypto::decrypt(key, &env)
+                                    .map(|plain| (plain, *key)),
+                                2 => crypto::decrypt_request_v2(key, &server_eph, &env),
+                                v => Err(format!("version d'enveloppe non supportée : {v}")),
+                            };
+                            match result {
+                                Ok((plain, session_key)) => match String::from_utf8(plain) {
+                                    Ok(s) => {
+                                        req.body = s;
+                                        response_key = Some(session_key);
+                                        None
+                                    }
+                                    Err(_) => Some("plaintext non UTF-8".to_string()),
+                                },
+                                Err(e) => Some(e),
+                            }
                         }
+                        Err(e) => Some(format!("envelope JSON invalide : {e}")),
                     }
                 }
             }
@@ -210,14 +226,18 @@ async fn handle_connection(
         }
     };
 
-    // Encrypt 2xx response bodies on encrypted routes. Errors stay plain
-    // (the caller may not have the key — that's why the call failed).
+    // Encrypt 2xx response bodies on encrypted routes. Use the same session
+    // key the request was decrypted with — that's the room key for v=1
+    // requests, and a freshly-derived ECDH session key for v=2.
+    // Errors stay plain (the caller may not have the key — that's why the
+    // call failed).
     let (final_body, content_type) = if route_needs_encryption
         && status.starts_with('2')
         && !body.is_empty()
-        && room_key.is_some()
+        && response_key.is_some()
     {
-        match crypto::encrypt(&room_key.unwrap(), body.as_bytes()) {
+        let key = response_key.unwrap();
+        match crypto::encrypt_with_session(&key, body.as_bytes()) {
             Ok(env) => match serde_json::to_string(&env) {
                 Ok(s) => (s, ENCRYPTED_CONTENT_TYPE),
                 Err(_) => (body, "application/json"),
