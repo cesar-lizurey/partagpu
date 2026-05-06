@@ -15,9 +15,11 @@ Ce document explique **comment PartaGPU fonctionne en interne** : les composants
 7. [Multi-GPU par machine](#multi-gpu-par-machine)
 8. [Annulation des tâches](#annulation-des-tâches)
 9. [UI dispatcher](#ui-dispatcher)
-10. [Découverte mDNS](#découverte-mdns)
-11. [Privilèges et helper](#privilèges-et-helper)
-12. [Modèle de sécurité](#modèle-de-sécurité)
+10. [Streaming des logs en temps réel](#streaming-des-logs-en-temps-réel)
+11. [Venv géré côté pair](#venv-géré-côté-pair)
+12. [Découverte mDNS](#découverte-mdns)
+13. [Privilèges et helper](#privilèges-et-helper)
+14. [Modèle de sécurité](#modèle-de-sécurité)
 
 ---
 
@@ -414,6 +416,121 @@ Pour éviter une self-loopback HTTP qui ajouterait une latence et une surface d'
 
 - **Pas d'upload workspace** dans l'UI (plus complexe : drag-drop, gestion d'erreurs). Pour les tâches qui ont besoin de fichiers, utilisez `partagpu.run_remote(..., workspace=...)` côté Python.
 - **Pas de DDP**. L'UI dispatcher est pour des tâches single-worker. DDP reste l'API Python `partagpu.distribute(...)`.
+
+---
+
+## Streaming des logs en temps réel
+
+Lecture incrémentale de stdout/stderr pendant l'exécution, sans attendre la fin du process. Permet de voir les `print()` d'un long entraînement défiler dans l'UI au fur et à mesure.
+
+### Côté sandbox
+
+Le sandbox lit stdout/stderr du bwrap via deux **threads readers** dédiés (`drain_stream`), qui consomment des chunks de 4 KB et les append à des buffers partagés `Arc<Mutex<String>>`. Ces buffers sont :
+- Soit **internes au sandbox** si aucun observateur n'est branché (cas d'usage stand-alone, équivalent à l'ancien comportement).
+- Soit **fournis par le caller** via le struct `OutputSink { stdout, stderr }` passé à `execute_with_callbacks_and_sink(...)`.
+
+Les readers respectent un cap (1 MB stdout, 256 KB stderr — configurable via `MAX_STDOUT_BYTES` / `MAX_STDERR_BYTES`) et gèrent les multi-bytes UTF-8 coupés en fin de chunk (carry-over vers le prochain).
+
+À la fin de l'exécution, après `wait_with_timeout`, le sandbox **join** les threads readers pour garantir que tous les bytes sont capturés avant de retourner le `SandboxResult`.
+
+### Côté `IncomingTasks`
+
+Map `sinks: HashMap<task_id, OutputSink>` :
+- `spawn_execution` crée un `OutputSink` AVANT le `execute_*`, l'inscrit dans la map, le passe au sandbox.
+- `get(id)` et `list()` lisent ce sink (snapshot des buffers via `OutputSink::snapshot()`) si la tâche est encore en cours, et écrasent `task.output` / `task.error_output` dans le `Task` retourné. Si la tâche est déjà terminée (sink retiré), on retourne le `Task` tel quel.
+- Le sink est retiré de la map dès que le wait_loop revient.
+
+Résultat : un `GET /peer/v1/tasks/<id>` retourne toujours l'output partiel le plus à jour, qu'il s'agisse d'une tâche en cours ou terminée.
+
+### Côté `OutgoingTasks` (machine de lancement)
+
+`update_outputs(local_id, stdout, stderr)` copie l'output partiel d'une tâche distante dans son miroir local. Appelée à chaque tick (~500 ms) du poll loop dans `run_remote_blocking` :
+
+```
+loop:
+  GET /peer/v1/tasks/<remote_id>     # récupère un Task complet avec output partiel
+  outgoing.update_outputs(local_id, task.output, task.error_output)
+  if task.status == terminal: return task
+  sleep 500ms
+```
+
+### Côté UI
+
+Pendant qu'un dispatch est en cours, le composant `TaskDispatcher` :
+1. Pré-alloue un `local_id` (UUID) et le passe à la commande Tauri `dispatch_task`.
+2. Démarre un `setInterval(500ms)` qui appelle `getOutgoingTasks()` et trouve la tâche par cet id, puis met à jour un `livePartial` state.
+3. Le panneau résultat affiche `displayedTask = result ?? livePartial` : avant la fin du dispatch, on voit l'output partiel grandir ; après, le `result` final remplace.
+4. Stop l'interval quand l'invoke résout.
+
+### Pourquoi `dispatch_task` est `async`
+
+Si `dispatch_task` était sync, Tauri exécuterait sa logique sur le thread IPC principal — bloqué pour toute la durée de la tâche. Pendant ce temps, `getOutgoingTasks` queue, le polling de `livePartial` ne tourne pas, et l'UI gèle (potentiellement avec un message OS "ne répond pas"). En async + `tokio::task::spawn_blocking` pour la partie ureq, le thread IPC reste libre, le polling continue, l'output défile en direct.
+
+Idem pour `cancel_outgoing_task` qui fait aussi du ureq sync vers le pair.
+
+### Buffering Python à connaître
+
+Côté script utilisateur, `print()` est par défaut **block-buffered** quand stdout n'est pas un TTY (ce qui est notre cas : pipe vers le bwrap parent). Tout est gardé en mémoire jusqu'à un `flush()`, un newline en line-buffered mode, ou la fermeture du process. Pour voir les `print()` défiler en direct :
+- `print(..., flush=True)` à chaque appel
+- ou `python3 -u` (unbuffered)
+- ou `PYTHONUNBUFFERED=1` dans l'environnement (déjà passé par notre sandbox… non, pas par défaut, à ajouter si on veut)
+
+Le script `examples/ddp_train_demo.py` utilise déjà `print(..., flush=True)`. Le sandbox **force aussi `PYTHONUNBUFFERED=1`** dans l'environnement de chaque tâche (cf. [sandbox.rs](../src-tauri/src/sandbox.rs)), donc les `print()` sans `flush=True` arrivent quand même en direct.
+
+---
+
+## Venv géré côté pair
+
+PartaGPU peut provisionner un venv Python pré-rempli (`torch`, `numpy`) sur chaque machine, pour éviter à l'utilisateur de faire `sudo pip install --break-system-packages …` côté système (qui ne marche que pour le user `partagpu`, demande un mot de passe sudo, et pollue le Python système).
+
+### Provisionnement
+
+Le helper privilégié expose deux sous-commandes :
+
+```
+sudo /usr/local/lib/partagpu/partagpu-helper setup-venv
+sudo /usr/local/lib/partagpu/partagpu-helper remove-venv
+```
+
+`setup-venv` :
+1. Crée `/var/lib/partagpu/venv` via `python3 -m venv`.
+2. Met à jour pip dans le venv.
+3. Installe `torch` + `numpy` (best effort — torch est le gros download, ~2 Go).
+4. `chown -R partagpu:partagpu /var/lib/partagpu/venv` pour que la sandbox UID puisse y lire.
+
+`remove-venv` : `rm -rf /var/lib/partagpu/venv`.
+
+### Côté UI
+
+Page *Mon partage* → section *Environnement Python pour les tâches reçues*. Composant [`ManagedVenvPanel`](../src/components/ManagedVenvPanel.tsx) :
+- Status (installé / non installé) + chemin
+- Bouton **Installer torch + numpy (~2 Go)** → invoke `setup_managed_venv` async (qui lance le helper via pkexec)
+- Bouton **Mettre à jour** (re-run de l'install pour upgrader)
+- Bouton **Supprimer** → invoke `remove_managed_venv`
+
+Les commandes Tauri sont **async** (`tokio::task::spawn_blocking` autour du pkexec) parce que l'install de torch peut bloquer 5-10 minutes. Sans ça, l'UI gèlerait pendant le download (cf. la même leçon que pour [dispatch_task](#ui-dispatcher)).
+
+### Côté sandbox
+
+Quand `bwrap` lance une tâche, il :
+1. **Bind-mount `/var/lib/partagpu/venv` (host) → `/opt/partagpu-venv` (sandbox), read-only**, si le dossier existe.
+2. **Override `PATH`** : `/opt/partagpu-venv/bin:/usr/local/bin:/usr/bin:/bin`. Les arguments de la tâche qui invoquent `python3` (basename, pas chemin absolu) sont résolus via PATH → ils trouvent le binaire du venv en premier.
+3. **Force `PYTHONUNBUFFERED=1`** dans l'env (utile pour le streaming, cf. section précédente).
+
+Si le venv n'est pas installé, le sandbox tombe sur le `python3` système comme avant — comportement rétro-compatible. Les utilisateurs qui ont déjà installé torch en system Python continuent de l'utiliser.
+
+### Pourquoi un venv plutôt que `pip install --break-system-packages` automatique
+
+- **Pas de pollution** du Python système. L'utilisateur garde le contrôle de son `/usr/lib/python3/dist-packages` pour ses propres outils.
+- **Versionnable** : on peut un jour décider de bouger `torch==2.x` à `torch==2.y` proprement, sans risquer de casser un autre outil système qui dépend d'une version particulière.
+- **Désinstallable d'un seul `rm -rf`**, sans casser apt.
+- **Multi-utilisateur** : tous les utilisateurs locaux qui lancent l'app PartaGPU partagent le même venv (vu via le sandbox), pas un par user.
+
+### Limites actuelles
+
+- Liste fixe de packages : `torch + numpy`. Pour ajouter (`pandas`, `scikit-learn`, `transformers`…), il faut soit éditer le helper, soit que l'utilisateur fasse `sudo /var/lib/partagpu/venv/bin/pip install <package>` à la main. Pas d'UI pour ajouter / retirer un package — viendrait dans une itération future.
+- Pas d'indicateur de progression pendant l'install (pkexec masque le stdout du helper). L'UI affiche un spinner et le terminal de `npm run tauri:dev` montre la sortie pip si on veut suivre.
+- Pas d'auto-update. Si torch sort une nouvelle version, l'utilisateur doit cliquer "Mettre à jour".
 
 ---
 

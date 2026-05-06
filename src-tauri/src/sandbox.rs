@@ -23,6 +23,12 @@ const CGROUP_PATH: &str = "/sys/fs/cgroup/partagpu";
 const MAX_STDOUT_BYTES: usize = 1024 * 1024; // 1 MB
 const MAX_STDERR_BYTES: usize = 256 * 1024; // 256 KB
 const MAX_WORKSPACE_BYTES: u64 = 16 * 1024 * 1024; // 16 MB total
+/// Path of the managed Python venv on the host. If present, the sandbox
+/// bind-mounts it read-only at `/opt/partagpu-venv` and prepends its `bin/`
+/// to PATH so `python3` finds the venv version first (with torch + numpy
+/// pre-installed) instead of the bare system python.
+const MANAGED_VENV_HOST: &str = "/var/lib/partagpu/venv";
+const MANAGED_VENV_SANDBOX: &str = "/opt/partagpu-venv";
 
 /// A file pushed by the requester into the sandbox workspace before exec.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,6 +247,26 @@ impl Sandbox {
         cmd.args(["--chdir", "/workspace"]);
 
         cmd.args(["--tmpfs", "/tmp"]);
+
+        // If the managed venv has been provisioned on the host, bind-mount it
+        // read-only into the sandbox and prepend its `bin/` to PATH. This way
+        // `python3` resolved by PATH lookup picks the venv version (with
+        // torch + numpy pre-installed) instead of the bare system python.
+        let managed_venv_active = Path::new(MANAGED_VENV_HOST).is_dir();
+        if managed_venv_active {
+            cmd.args(["--ro-bind", MANAGED_VENV_HOST, MANAGED_VENV_SANDBOX]);
+        }
+        let path_value = if managed_venv_active {
+            format!(
+                "{MANAGED_VENV_SANDBOX}/bin:/usr/local/bin:/usr/bin:/bin"
+            )
+        } else {
+            "/usr/local/bin:/usr/bin:/bin".to_string()
+        };
+        cmd.env("PATH", &path_value);
+        // Force unbuffered Python so users see prints in the live UI without
+        // having to remember `flush=True`. Doesn't affect non-Python tasks.
+        cmd.env("PYTHONUNBUFFERED", "1");
 
         if !opts.network_enabled {
             cmd.arg("--unshare-net");

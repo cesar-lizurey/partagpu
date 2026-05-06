@@ -258,4 +258,27 @@ impl UserManager {
         Self::run_helper(&["close-port"])?;
         Ok(())
     }
+
+    /// Path of the managed venv on disk. The sandbox bind-mounts this at
+    /// `/opt/partagpu-venv` inside the sandbox (read-only).
+    pub fn managed_venv_path() -> &'static str {
+        "/var/lib/partagpu/venv"
+    }
+
+    /// True if the managed venv has been provisioned (i.e. `bin/python3` exists).
+    pub fn managed_venv_exists() -> bool {
+        std::path::Path::new(&format!("{}/bin/python3", Self::managed_venv_path())).exists()
+    }
+
+    /// Run `helper setup-venv` via pkexec. Long-running (~2 GB pip install).
+    pub fn setup_managed_venv() -> Result<(), String> {
+        Self::run_helper(&["setup-venv"])?;
+        Ok(())
+    }
+
+    /// Run `helper remove-venv` via pkexec.
+    pub fn remove_managed_venv() -> Result<(), String> {
+        Self::run_helper(&["remove-venv"])?;
+        Ok(())
+    }
 }

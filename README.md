@@ -228,7 +228,7 @@ L'application a **3 onglets** :
 
 - **Machines disponibles** : liste des postes qui partagent, avec leur capacité et leur statut d'authentification (colonne **Auth**)
 - **Toutes les machines** : y compris celles qui ne partagent pas encore
-- **Lancer une commande sur un pair** : formulaire pour dispatcher une commande sur un pair sans passer par Python (sélection du pair, commande avec parsing shell, timeout, accès réseau opt-in, panneau résultat avec stdout/stderr)
+- **Lancer une commande sur un pair** : formulaire pour dispatcher une commande sur un pair sans passer par Python (sélection du pair, commande avec parsing shell, timeout, accès réseau opt-in, panneau résultat avec stdout/stderr **qui défile en direct** pendant l'exécution — utile pour voir les `print()` d'un long entraînement arriver ligne par ligne)
 - **Mes tâches en cours** : progression en temps réel de ce que j'ai soumis. Bouton **Stop** sur les tâches Queued/Running pour les annuler proprement (SIGTERM côté pair, propagation aux rangs siblings dans un DDP).
 
 ### Onglet « Guide »
@@ -527,11 +527,13 @@ dist.destroy_process_group()
 
 **Pré-requis sur chaque machine cible** (pas seulement la machine de lancement) :
 - `bubblewrap` installé (`sudo apt install bubblewrap`)
-- `torch` installé en **Python système** (le sandbox tourne sous l'utilisateur `partagpu`, pas sous le vôtre, donc ne voit pas votre venv) :
-  ```bash
-  sudo apt install -y python3-pip
-  sudo /usr/bin/python3 -m pip install --break-system-packages torch numpy
-  ```
+- `torch` accessible côté sandbox. Deux options :
+  - **Recommandé** : utiliser le **venv géré** (UI → *Mon partage* → *Environnement Python pour les tâches reçues* → *Installer torch + numpy*). PartaGPU provisionne `/var/lib/partagpu/venv/` avec torch+numpy et le bind dans le sandbox. Pas de pollution du Python système.
+  - **Alternative** : installer torch en Python système :
+    ```bash
+    sudo apt install -y python3-pip
+    sudo /usr/bin/python3 -m pip install --break-system-packages torch numpy
+    ```
 
 ### API HTTP
 

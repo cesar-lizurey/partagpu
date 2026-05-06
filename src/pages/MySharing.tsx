@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { ManagedVenvPanel } from "../components/ManagedVenvPanel";
 import { ResourceGauge } from "../components/ResourceGauge";
 import { ResourceSliders } from "../components/ResourceSliders";
 import { SharingToggle } from "../components/SharingToggle";
@@ -243,6 +244,11 @@ export function MySharing() {
           />
         </section>
       )}
+
+      <section className="section">
+        <h3>Environnement Python pour les tâches reçues</h3>
+        <ManagedVenvPanel />
+      </section>
 
       <section className="section">
         <h3>Qui utilise mes ressources ?</h3>

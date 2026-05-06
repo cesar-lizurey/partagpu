@@ -147,6 +147,21 @@ export const submitTask = (
     workspace,
   });
 
+// ── Managed venv ─────────────────────────────────────────────────────────
+
+export interface ManagedVenvStatus {
+  installed: boolean;
+  path: string;
+}
+
+export const getManagedVenvStatus = () =>
+  invoke<ManagedVenvStatus>("get_managed_venv_status");
+
+/** Install the managed venv (~2 GB pip download for torch). Long-running. */
+export const setupManagedVenv = () => invoke<void>("setup_managed_venv");
+
+export const removeManagedVenv = () => invoke<void>("remove_managed_venv");
+
 /** Dispatch a command to a peer from the UI. Blocks until the task ends. */
 export const dispatchTask = (
   peerIp: string,

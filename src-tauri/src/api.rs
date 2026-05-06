@@ -299,6 +299,39 @@ pub fn clear_security_log(sec_log: State<'_, SecurityLog>) {
     sec_log.clear();
 }
 
+// ── Managed venv ───────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct ManagedVenvStatus {
+    pub installed: bool,
+    pub path: String,
+}
+
+#[tauri::command]
+pub fn get_managed_venv_status() -> ManagedVenvStatus {
+    ManagedVenvStatus {
+        installed: UserManager::managed_venv_exists(),
+        path: UserManager::managed_venv_path().to_string(),
+    }
+}
+
+/// Provision the managed venv (creates `/var/lib/partagpu/venv` and installs
+/// torch + numpy via pkexec → helper setup-venv). Async because the install
+/// can take ~5 minutes (~2 GB download).
+#[tauri::command]
+pub async fn setup_managed_venv() -> Result<(), String> {
+    tokio::task::spawn_blocking(UserManager::setup_managed_venv)
+        .await
+        .map_err(|e| format!("setup-venv interrompu : {e}"))?
+}
+
+#[tauri::command]
+pub async fn remove_managed_venv() -> Result<(), String> {
+    tokio::task::spawn_blocking(UserManager::remove_managed_venv)
+        .await
+        .map_err(|e| format!("remove-venv interrompu : {e}"))?
+}
+
 // ── Dispatch (UI) ──────────────────────────────────────────────────────────
 
 /// Dispatcher une tâche sur un pair depuis l'UI. Async : libère le thread IPC

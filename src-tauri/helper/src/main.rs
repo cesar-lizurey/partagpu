@@ -30,6 +30,12 @@ const MDNS_PORT: u16 = 5353;
 /// uses 29500; we open a small range so concurrent jobs don't collide.
 const RENDEZVOUS_RANGE: &str = "29500:29510";
 
+/// Managed Python venv used by the sandbox so users don't need to do
+/// `sudo pip install --break-system-packages` on each peer. The venv is
+/// installed once via the helper, then bind-mounted read-only inside the
+/// sandbox at `/opt/partagpu-venv`.
+const MANAGED_VENV: &str = "/var/lib/partagpu/venv";
+
 // ── Helpers ────────────────────────────────────────────────
 
 fn die(msg: &str) -> ! {
@@ -521,6 +527,58 @@ fn cmd_close_port() {
     }
 }
 
+// ── Managed venv ──────────────────────────────────────────────────────────
+
+fn cmd_setup_venv() {
+    // Use the system python to create the venv.
+    if !std::path::Path::new("/usr/bin/python3").exists() {
+        die("/usr/bin/python3 introuvable. Installez python3 d'abord.");
+    }
+
+    // Ensure the parent dir exists and is owned by partagpu.
+    if let Some(parent) = std::path::Path::new(MANAGED_VENV).parent() {
+        mkdir_p(&parent.to_string_lossy());
+    }
+
+    // Create the venv (idempotent — `python3 -m venv` reuses an existing dir
+    // if it already has a `bin/python` matching the current python).
+    if !run("/usr/bin/python3", &["-m", "venv", MANAGED_VENV]) {
+        die("python3 -m venv a échoué.");
+    }
+
+    let pip = format!("{MANAGED_VENV}/bin/pip");
+
+    // Upgrade pip (best effort — old pip versions sometimes can't install
+    // recent torch wheels). Failure is non-fatal.
+    let _ = run(&pip, &["install", "--upgrade", "pip"]);
+
+    // Install / upgrade torch + numpy. This is the long part (~2 GB download
+    // for torch on first install). Output goes to the helper's stdout/stderr
+    // and back to the Tauri command via pkexec.
+    println!("Installation de torch + numpy (peut prendre plusieurs minutes)…");
+    if !run(&pip, &["install", "--upgrade", "torch", "numpy"]) {
+        die("pip install torch numpy a échoué.");
+    }
+
+    // Hand ownership to partagpu so the sandbox UID can read the files
+    // (technically, world-readable mode would suffice, but this keeps perms
+    // clean if pip ever installs with mode 600 something).
+    chown_recursive(MANAGED_VENV, PARTAGPU_USER);
+
+    println!("Venv géré installé dans {MANAGED_VENV}");
+}
+
+fn cmd_remove_venv() {
+    if std::path::Path::new(MANAGED_VENV).exists() {
+        if let Err(e) = fs::remove_dir_all(MANAGED_VENV) {
+            die(&format!("rm -rf {MANAGED_VENV} : {e}"));
+        }
+        println!("Venv géré supprimé.");
+    } else {
+        println!("Aucun venv géré à supprimer.");
+    }
+}
+
 fn which(cmd: &str) -> bool {
     Command::new("which")
         .arg(cmd)
@@ -544,6 +602,8 @@ fn usage() -> ! {
     eprintln!("  remove-cgroup");
     eprintln!("  open-port                Open firewall for PartaGPU");
     eprintln!("  close-port               Close firewall for PartaGPU");
+    eprintln!("  setup-venv               Create /var/lib/partagpu/venv with torch + numpy");
+    eprintln!("  remove-venv              Remove the managed venv");
     process::exit(1);
 }
 
@@ -566,6 +626,8 @@ fn main() {
         "remove-cgroup" => cmd_remove_cgroup(),
         "open-port" => cmd_open_port(),
         "close-port" => cmd_close_port(),
+        "setup-venv" => cmd_setup_venv(),
+        "remove-venv" => cmd_remove_venv(),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             usage();

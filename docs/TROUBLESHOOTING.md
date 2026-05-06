@@ -124,7 +124,11 @@ Le sandbox n'arrive pas à se lancer. Causes :
 
 ### `ModuleNotFoundError: No module named 'torch'` côté pair
 
-Le sandbox tourne sous l'UID `partagpu` qui ne voit pas votre venv utilisateur. Il faut `torch` dans le **Python système** :
+Le sandbox tourne sous l'UID `partagpu` qui ne voit pas votre venv utilisateur. Deux solutions :
+
+**Recommandée — via l'UI (venv géré)** : sur chaque machine cible, *Mon partage* → *Environnement Python pour les tâches reçues* → cliquer **Installer torch + numpy (~2 Go)**. Mot de passe administrateur demandé une fois, ~5 min de download. Le sandbox bind ensuite `/var/lib/partagpu/venv/` automatiquement et fait pointer `python3` dessus. Pas de pollution du Python système.
+
+**Alternative — install système** :
 ```bash
 sudo apt install -y python3-pip
 sudo /usr/bin/python3 -m pip install --break-system-packages torch numpy
@@ -161,6 +165,27 @@ Une `Exception` est levée du côté Python avant même que la tâche ne soit di
 ### Outputs tronqués
 
 stdout est cappé à **1 Mo**, stderr à **256 Ko** par tâche. Pour des sorties volumineuses, écrire dans un fichier (et envisager de le faire remonter via un shared filesystem ou un upload séparé — pas géré par PartaGPU pour l'instant).
+
+### Mes `print()` n'apparaissent qu'à la fin (pas en direct)
+
+Python bufferise stdout par bloc quand il n'écrit pas vers un TTY (notre cas : pipe vers le sandbox). Trois façons de forcer un flush ligne-par-ligne :
+
+```python
+print("hello", flush=True)            # explicite à chaque appel
+```
+
+```bash
+python3 -u mon_script.py               # mode unbuffered global
+```
+
+```python
+import os
+os.environ.setdefault("PYTHONUNBUFFERED", "1")  # début du script
+```
+
+Symptôme classique : on voit le panneau live rester vide pendant 30 s, puis tout sort d'un coup à la fin. C'est presque toujours du buffering Python, pas un bug d'infra.
+
+`tqdm` et `print('\\r…', end='')` (progress bars) écrivent sans newline et sont buffered différemment — `tqdm(file=sys.stderr)` aide souvent.
 
 ---
 
