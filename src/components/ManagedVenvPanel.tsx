@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useEffect, useRef, useState } from "react";
 import {
   getManagedVenvStatus,
   removeManagedVenv,
   setupManagedVenv,
   type ManagedVenvStatus,
 } from "../lib/api";
+
+/** Maximum number of log lines kept in memory while the helper streams. */
+const MAX_LOG_LINES = 500;
 
 /**
  * Panel for the managed Python venv (provides torch + numpy to the sandbox so
@@ -14,6 +18,8 @@ export function ManagedVenvPanel() {
   const [status, setStatus] = useState<ManagedVenvStatus | null>(null);
   const [busy, setBusy] = useState<"install" | "remove" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [installLog, setInstallLog] = useState<string[]>([]);
+  const logBoxRef = useRef<HTMLPreElement | null>(null);
 
   const refresh = async () => {
     try {
@@ -27,6 +33,43 @@ export function ManagedVenvPanel() {
     refresh();
   }, []);
 
+  // Listen to helper output events (stdout + stderr lines streamed by the
+  // backend during long-running installs). Append to the log buffer with
+  // a hard cap so a chatty pip install doesn't blow up memory.
+  useEffect(() => {
+    let unlistenStdout: UnlistenFn | null = null;
+    let unlistenStderr: UnlistenFn | null = null;
+    (async () => {
+      unlistenStdout = await listen<string>("helper-output", (e) => {
+        setInstallLog((prev) => {
+          const next = [...prev, e.payload];
+          return next.length > MAX_LOG_LINES
+            ? next.slice(next.length - MAX_LOG_LINES)
+            : next;
+        });
+      });
+      unlistenStderr = await listen<string>("helper-output-err", (e) => {
+        setInstallLog((prev) => {
+          const next = [...prev, `[stderr] ${e.payload}`];
+          return next.length > MAX_LOG_LINES
+            ? next.slice(next.length - MAX_LOG_LINES)
+            : next;
+        });
+      });
+    })();
+    return () => {
+      unlistenStdout?.();
+      unlistenStderr?.();
+    };
+  }, []);
+
+  // Auto-scroll the log to the bottom as new lines arrive.
+  useEffect(() => {
+    if (logBoxRef.current) {
+      logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
+    }
+  }, [installLog]);
+
   const handleInstall = async () => {
     if (
       !confirm(
@@ -39,6 +82,7 @@ export function ManagedVenvPanel() {
       return;
     }
     setError(null);
+    setInstallLog([]);
     setBusy("install");
     try {
       await setupManagedVenv();
@@ -146,11 +190,28 @@ export function ManagedVenvPanel() {
 
       {busy === "install" ? (
         <p className="managed-venv__progress">
-          Le téléchargement et l'installation tournent en arrière-plan via
-          pkexec — laissez la fenêtre ouverte. Pour suivre la progression,
-          regardez le terminal d'où vous avez lancé l'app.
+          Téléchargement et installation en cours (5 à 10 minutes selon
+          votre connexion). Laissez la fenêtre ouverte — la progression
+          de pip s'affiche ci-dessous en temps réel.
         </p>
       ) : null}
+
+      {(busy === "install" || installLog.length > 0) && (
+        <details
+          className="managed-venv__log-box"
+          open={busy === "install"}
+        >
+          <summary>
+            Log d'installation ({installLog.length} ligne
+            {installLog.length === 1 ? "" : "s"})
+          </summary>
+          <pre ref={logBoxRef} className="managed-venv__log">
+            {installLog.length > 0
+              ? installLog.join("\n")
+              : "(en attente de la première ligne…)"}
+          </pre>
+        </details>
+      )}
 
       {error ? <div className="alert alert--error">{error}</div> : null}
     </div>

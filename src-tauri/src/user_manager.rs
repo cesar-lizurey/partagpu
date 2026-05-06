@@ -270,15 +270,92 @@ impl UserManager {
         std::path::Path::new(&format!("{}/bin/python3", Self::managed_venv_path())).exists()
     }
 
-    /// Run `helper setup-venv` via pkexec. Long-running (~2 GB pip install).
-    pub fn setup_managed_venv() -> Result<(), String> {
-        Self::run_helper(&["setup-venv"])?;
-        Ok(())
+    /// Run `helper setup-venv` via pkexec. Long-running (~3 GB pip install).
+    /// If `app` is provided, stdout/stderr lines are emitted as Tauri events
+    /// (`helper-output` / `helper-output-err`) for the UI to show live.
+    pub fn setup_managed_venv(app: Option<&tauri::AppHandle>) -> Result<(), String> {
+        Self::run_helper_streaming(&["setup-venv"], app)
     }
 
-    /// Run `helper remove-venv` via pkexec.
+    /// Run `helper remove-venv` via pkexec. Quick, no streaming needed.
     pub fn remove_managed_venv() -> Result<(), String> {
         Self::run_helper(&["remove-venv"])?;
         Ok(())
+    }
+
+    /// Like `run_helper` but reads stdout/stderr line-by-line and (if `app`
+    /// is provided) emits each line as a Tauri event so the frontend can
+    /// display a live install log. Used by `setup-venv` which can take
+    /// 5-10 minutes.
+    fn run_helper_streaming(
+        args: &[&str],
+        app: Option<&tauri::AppHandle>,
+    ) -> Result<(), String> {
+        use std::io::{BufRead, BufReader};
+        use std::process::Stdio;
+        use tauri::Emitter;
+
+        let helper = Self::helper_path();
+
+        let mut child = Command::new("pkexec")
+            .arg(&helper)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    "pkexec n'est pas installé. Installez policykit-1 : sudo apt install policykit-1".to_string()
+                }
+                _ => format!("Impossible de lancer pkexec : {e}"),
+            })?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "stdout du helper indisponible".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "stderr du helper indisponible".to_string())?;
+
+        // Spawn a reader thread per stream so we don't deadlock if one of
+        // them outpaces the other (pip install spams stdout heavily).
+        let app_for_stdout = app.cloned();
+        let stdout_handle = std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some(ref a) = app_for_stdout {
+                    let _ = a.emit("helper-output", &line);
+                }
+            }
+        });
+
+        let app_for_stderr = app.cloned();
+        let stderr_handle = std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some(ref a) = app_for_stderr {
+                    let _ = a.emit("helper-output-err", &line);
+                }
+            }
+        });
+
+        let status = child
+            .wait()
+            .map_err(|e| format!("Erreur d'attente du helper : {e}"))?;
+        let _ = stdout_handle.join();
+        let _ = stderr_handle.join();
+
+        if status.success() {
+            Ok(())
+        } else {
+            let code = status.code().unwrap_or(-1);
+            if code == 126 {
+                return Err("Authentification annulée par l'utilisateur.".to_string());
+            }
+            Err(format!("Erreur du helper (code {code}). Voir le log d'install."))
+        }
     }
 }

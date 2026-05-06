@@ -316,11 +316,13 @@ pub fn get_managed_venv_status() -> ManagedVenvStatus {
 }
 
 /// Provision the managed venv (creates `/var/lib/partagpu/venv` and installs
-/// torch + numpy via pkexec → helper setup-venv). Async because the install
-/// can take ~5 minutes (~2 GB download).
+/// the ML toolkit via pkexec → helper setup-venv). Async because the install
+/// takes 5-10 minutes (~3 GB download). Streams the helper's stdout/stderr
+/// to the frontend as Tauri events `helper-output` / `helper-output-err`
+/// so the UI can show a live install log.
 #[tauri::command]
-pub async fn setup_managed_venv() -> Result<(), String> {
-    tokio::task::spawn_blocking(UserManager::setup_managed_venv)
+pub async fn setup_managed_venv(app: tauri::AppHandle) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || UserManager::setup_managed_venv(Some(&app)))
         .await
         .map_err(|e| format!("setup-venv interrompu : {e}"))?
 }
