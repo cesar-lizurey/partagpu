@@ -135,15 +135,24 @@ Le sandbox n'arrive pas à se lancer. Causes :
 
 Le sandbox tourne sous l'UID `partagpu` qui ne voit pas votre venv utilisateur. Deux solutions :
 
-**Recommandée — via l'UI (venv géré)** : sur chaque machine cible, *Mon partage* → *Environnement Python pour les tâches reçues* → cliquer **Installer torch + numpy (~2 Go)**. Mot de passe administrateur demandé une fois, ~5 min de download. Le sandbox bind ensuite `/var/lib/partagpu/venv/` automatiquement et fait pointer `python3` dessus. Pas de pollution du Python système.
+**Recommandée — via l'UI (venv géré)** : sur chaque machine cible, *Mon partage* → *Environnement Python pour les tâches reçues* → cliquer **Installer la toolkit ML (~3 Go)**. Mot de passe administrateur demandé une fois, 5 à 10 min de download. Installe `torch`, `torchvision`, `numpy`, `scipy`, `pandas`, `scikit-learn`, `matplotlib`, `pillow`. Le sandbox bind ensuite `/var/lib/partagpu/venv/` automatiquement et fait pointer `python3` dessus. Pas de pollution du Python système.
 
 **Alternative — install système** :
 ```bash
 sudo apt install -y python3-pip
-sudo /usr/bin/python3 -m pip install --break-system-packages torch numpy
+sudo /usr/bin/python3 -m pip install --break-system-packages \
+  torch torchvision numpy scipy pandas scikit-learn matplotlib pillow
 ```
 
 À faire sur **chaque machine** qui doit recevoir des tâches PyTorch.
+
+**Pour ajouter un package au venv géré** (ex: transformers, jax) :
+
+```bash
+sudo /var/lib/partagpu/venv/bin/pip install transformers
+```
+
+(Pas d'UI dédiée pour ça aujourd'hui ; l'install se fait directement avec le pip du venv. À condition d'avoir d'abord cliqué *Installer la toolkit ML*.)
 
 ### `Failed to initialize NumPy: No module named 'numpy'` (warning au démarrage de torch)
 

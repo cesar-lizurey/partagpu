@@ -212,7 +212,7 @@ L'application a **3 onglets** :
 
 - **Statut** : Actif / En pause / Désactivé. Trois actions distinctes :
   - **Pause** (depuis Actif) : arrêt **temporaire**. Ferme le pare-feu, refuse les tâches entrantes. Le compte `partagpu`, le cgroup, le venv géré, tout reste en place. Cliquer **Reprendre** redémarre instantanément, sans pkexec.
-  - **Désactiver** (depuis Actif ou Paused) : **nettoyage complet**. Demande confirmation, puis tue les tâches en cours, supprime le compte `partagpu`, vire le venv géré (~2 Go), libère le cgroup, retire les règles SSH/sudo deny, ferme le pare-feu. Pour ré-utiliser ensuite il faudra cliquer **Activer** à nouveau (re-pkexec + ré-install du venv si voulu).
+  - **Désactiver** (depuis Actif ou Paused) : **nettoyage complet**. Demande confirmation, puis tue les tâches en cours, supprime le compte `partagpu`, vire le venv géré (~3 Go), libère le cgroup, retire les règles SSH/sudo deny, ferme le pare-feu. Pour ré-utiliser ensuite il faudra cliquer **Activer** à nouveau (re-pkexec + ré-install du venv si voulu).
   - **Activer** (depuis Désactivé) : crée le compte, configure le cgroup, ouvre le pare-feu. Demande pkexec.
 - **Compte partagpu** : statut du compte, formulaire de mot de passe
 - **Jauges de ressources** : CPU, RAM, GPU en temps réel, avec un curseur rouge draggable directement sur la jauge pour fixer la limite de partage (apparaît seulement quand le partage est Actif)
@@ -529,11 +529,12 @@ dist.destroy_process_group()
 **Pré-requis sur chaque machine cible** (pas seulement la machine de lancement) :
 - `bubblewrap` installé (`sudo apt install bubblewrap`)
 - `torch` accessible côté sandbox. Deux options :
-  - **Recommandé** : utiliser le **venv géré** (UI → *Mon partage* → *Environnement Python pour les tâches reçues* → *Installer torch + numpy*). PartaGPU provisionne `/var/lib/partagpu/venv/` avec torch+numpy et le bind dans le sandbox. Pas de pollution du Python système.
-  - **Alternative** : installer torch en Python système :
+  - **Recommandé** : utiliser le **venv géré** (UI → *Mon partage* → *Environnement Python pour les tâches reçues* → *Installer la toolkit ML*). PartaGPU provisionne `/var/lib/partagpu/venv/` avec une toolkit complète : `torch`, `torchvision`, `numpy`, `scipy`, `pandas`, `scikit-learn`, `matplotlib`, `pillow`. Le sandbox bind le venv automatiquement. Pas de pollution du Python système.
+  - **Alternative** : installer les packages en Python système :
     ```bash
     sudo apt install -y python3-pip
-    sudo /usr/bin/python3 -m pip install --break-system-packages torch numpy
+    sudo /usr/bin/python3 -m pip install --break-system-packages \
+      torch torchvision numpy scipy pandas scikit-learn matplotlib pillow
     ```
 
 ### API HTTP

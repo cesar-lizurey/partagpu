@@ -552,12 +552,36 @@ fn cmd_setup_venv() {
     // recent torch wheels). Failure is non-fatal.
     let _ = run(&pip, &["install", "--upgrade", "pip"]);
 
-    // Install / upgrade torch + numpy. This is the long part (~2 GB download
-    // for torch on first install). Output goes to the helper's stdout/stderr
-    // and back to the Tauri command via pkexec.
-    println!("Installation de torch + numpy (peut prendre plusieurs minutes)…");
-    if !run(&pip, &["install", "--upgrade", "torch", "numpy"]) {
-        die("pip install torch numpy a échoué.");
+    // Curated "ML basics" toolkit — what most data science / ML courses
+    // need on day one. Tradeoff : larger initial install (~3 GB vs ~2 GB
+    // for torch alone) but the user doesn't have to manually pip install
+    // pandas/sklearn/matplotlib for every task.
+    //
+    // - torch + torchvision : core deep learning + image utilities
+    // - numpy + scipy       : foundation
+    // - pandas              : tabular data
+    // - scikit-learn        : classical ML
+    // - matplotlib          : plots
+    // - pillow              : image I/O (transitive of torchvision but
+    //                         explicit for clarity / robustness)
+    let packages = [
+        "torch",
+        "torchvision",
+        "numpy",
+        "scipy",
+        "pandas",
+        "scikit-learn",
+        "matplotlib",
+        "pillow",
+    ];
+    println!(
+        "Installation de la toolkit ML : {} (peut prendre 5-10 minutes, ~3 Go)…",
+        packages.join(" + ")
+    );
+    let mut args = vec!["install", "--upgrade"];
+    args.extend(packages.iter().copied());
+    if !run(&pip, &args) {
+        die("pip install de la toolkit ML a échoué.");
     }
 
     // Hand ownership to partagpu so the sandbox UID can read the files

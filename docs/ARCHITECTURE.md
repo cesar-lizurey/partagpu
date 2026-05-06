@@ -609,7 +609,22 @@ La page *Mon partage* affiche un panneau **Répartition par utilisateur** qui em
 
 ## Venv géré côté pair
 
-PartaGPU peut provisionner un venv Python pré-rempli (`torch`, `numpy`) sur chaque machine, pour éviter à l'utilisateur de faire `sudo pip install --break-system-packages …` côté système (qui ne marche que pour le user `partagpu`, demande un mot de passe sudo, et pollue le Python système).
+PartaGPU peut provisionner un venv Python pré-rempli avec une **toolkit ML** classique sur chaque machine, pour éviter à l'utilisateur de faire `sudo pip install --break-system-packages …` côté système (qui ne marche que pour le user `partagpu`, demande un mot de passe sudo, et pollue le Python système).
+
+Liste des packages pré-installés (curatée pour couvrir 95 % des cours ML/data science sans pip install supplémentaire) :
+
+| Package | Pour quoi |
+|---|---|
+| `torch` | Deep learning, GPU compute |
+| `torchvision` | Datasets / transforms / modèles vision |
+| `numpy` | Tableaux N-dim, fondation de tout le reste |
+| `scipy` | Statistiques, FFT, optim, sparse |
+| `pandas` | Données tabulaires |
+| `scikit-learn` | ML classique (régression, clustering, métriques…) |
+| `matplotlib` | Plots |
+| `pillow` | Image I/O (transitive de torchvision) |
+
+Total : ~3 Go installés. Pas de `transformers` / `datasets` / HuggingFace par défaut — ajoutables manuellement via `sudo /var/lib/partagpu/venv/bin/pip install <package>` ou en attendant une UI dédiée.
 
 ### Provisionnement
 
@@ -623,7 +638,7 @@ sudo /usr/local/lib/partagpu/partagpu-helper remove-venv
 `setup-venv` :
 1. Crée `/var/lib/partagpu/venv` via `python3 -m venv`.
 2. Met à jour pip dans le venv.
-3. Installe `torch` + `numpy` (best effort — torch est le gros download, ~2 Go).
+3. Installe la toolkit (best effort — torch + torchvision sont les plus lourds, ~2.5 Go à eux seuls).
 4. `chown -R partagpu:partagpu /var/lib/partagpu/venv` pour que la sandbox UID puisse y lire.
 
 `remove-venv` : `rm -rf /var/lib/partagpu/venv`.
@@ -632,7 +647,7 @@ sudo /usr/local/lib/partagpu/partagpu-helper remove-venv
 
 Page *Mon partage* → section *Environnement Python pour les tâches reçues*. Composant [`ManagedVenvPanel`](../src/components/ManagedVenvPanel.tsx) :
 - Status (installé / non installé) + chemin
-- Bouton **Installer torch + numpy (~2 Go)** → invoke `setup_managed_venv` async (qui lance le helper via pkexec)
+- Bouton **Installer la toolkit ML (~3 Go)** → invoke `setup_managed_venv` async (qui lance le helper via pkexec)
 - Bouton **Mettre à jour** (re-run de l'install pour upgrader)
 - Bouton **Supprimer** → invoke `remove_managed_venv`
 
@@ -656,7 +671,7 @@ Si le venv n'est pas installé, le sandbox tombe sur le `python3` système comme
 
 ### Limites actuelles
 
-- Liste fixe de packages : `torch + numpy`. Pour ajouter (`pandas`, `scikit-learn`, `transformers`…), il faut soit éditer le helper, soit que l'utilisateur fasse `sudo /var/lib/partagpu/venv/bin/pip install <package>` à la main. Pas d'UI pour ajouter / retirer un package — viendrait dans une itération future.
+- Liste fixe de packages (cf. tableau plus haut). Pour ajouter (`transformers`, `jax`, `optuna`, `lightning`…), il faut soit éditer le helper, soit que l'utilisateur fasse `sudo /var/lib/partagpu/venv/bin/pip install <package>` à la main. Pas d'UI pour ajouter / retirer un package — viendrait dans une itération future, voire un mode "requirements par tâche" pour les cas niche.
 - Pas d'indicateur de progression pendant l'install (pkexec masque le stdout du helper). L'UI affiche un spinner et le terminal de `npm run tauri:dev` montre la sortie pip si on veut suivre.
 - Pas d'auto-update. Si torch sort une nouvelle version, l'utilisateur doit cliquer "Mettre à jour".
 
@@ -698,7 +713,7 @@ Les opérations qui demandent root passent par un binaire séparé `partagpu-hel
 | `open-port` | Ouvre TCP 7654, **TCP 7655 (peer)**, **TCP 29500–29510 (DDP)**, UDP 5353 (mDNS) via `ufw` ou `iptables` |
 | `close-port` | Ferme les mêmes ports |
 | `remove-user` | Supprime complètement `partagpu` + cgroup + règles SSH/sudo. Aussi vire `/var/lib/partagpu` y compris le venv géré (via `userdel --remove`). Tue d'abord les processus de l'utilisateur (`pkill -u partagpu`). Idempotent : no-op si l'utilisateur n'existe pas. |
-| `setup-venv` / `remove-venv` | Provisionne / supprime `/var/lib/partagpu/venv` avec torch + numpy. |
+| `setup-venv` / `remove-venv` | Provisionne / supprime `/var/lib/partagpu/venv` avec la toolkit ML (torch, torchvision, numpy, scipy, pandas, scikit-learn, matplotlib, pillow). |
 
 ### Quand pkexec est-il invoqué ?
 

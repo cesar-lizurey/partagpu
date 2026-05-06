@@ -30,8 +30,9 @@ export function ManagedVenvPanel() {
   const handleInstall = async () => {
     if (
       !confirm(
-        "Installer torch et numpy dans le venv géré ?\n\n" +
-          "Téléchargement de ~2 Go, prend 3 à 10 minutes selon votre connexion.\n" +
+        "Installer la toolkit ML dans le venv géré ?\n\n" +
+          "Packages : torch, torchvision, numpy, scipy, pandas, scikit-learn, matplotlib, pillow.\n" +
+          "Téléchargement de ~3 Go, prend 5 à 10 minutes selon votre connexion.\n" +
           "Le mot de passe administrateur sera demandé.",
       )
     ) {
@@ -79,10 +80,14 @@ export function ManagedVenvPanel() {
     <div className="managed-venv">
       <p className="managed-venv__intro">
         Pour que les tâches Python reçues puissent <code>import torch</code>{" "}
-        sans que vous ayez à <code>sudo pip install</code>, PartaGPU peut
-        provisionner un venv Python à <code>{status.path}</code> avec torch
-        et numpy. Le sandbox le bind automatiquement et fait pointer{" "}
-        <code>python3</code> dessus.
+        (et tout l'écosystème data science classique) sans que vous ayez à{" "}
+        <code>sudo pip install</code>, PartaGPU peut provisionner un venv
+        Python à <code>{status.path}</code> avec une <strong>toolkit ML
+        complète</strong> : <code>torch</code>, <code>torchvision</code>,{" "}
+        <code>numpy</code>, <code>scipy</code>, <code>pandas</code>,{" "}
+        <code>scikit-learn</code>, <code>matplotlib</code>,{" "}
+        <code>pillow</code>. Le sandbox bind ce venv automatiquement et fait
+        pointer <code>python3</code> dessus.
       </p>
 
       <div className="managed-venv__status">
@@ -97,7 +102,8 @@ export function ManagedVenvPanel() {
           <>
             <span className="badge badge--disabled">Non installé</span>
             <span className="managed-venv__hint">
-              Sans ça, les pairs doivent <code>sudo pip install --break-system-packages torch numpy</code> manuellement.
+              Sans ça, les pairs doivent installer torch + ses dépendances
+              manuellement (<code>sudo pip install --break-system-packages …</code>).
             </span>
           </>
         )}
@@ -132,8 +138,8 @@ export function ManagedVenvPanel() {
             className="btn btn--primary"
           >
             {busy === "install"
-              ? "Installation… (~5 min)"
-              : "Installer torch + numpy (~2 Go)"}
+              ? "Installation… (5 à 10 min)"
+              : "Installer la toolkit ML (~3 Go)"}
           </button>
         )}
       </div>
