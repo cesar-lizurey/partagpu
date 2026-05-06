@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 540" font-family="Inter, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="bg-rr" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1d27"/>
+      <stop offset="100%" stop-color="#0f1117"/>
+    </linearGradient>
+    <filter id="sh-rr">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.25"/>
+    </filter>
+    <marker id="arr-rr" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="10" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#a78bfa"/>
+    </marker>
+    <marker id="arr-rr-back" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="10" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#10b981"/>
+    </marker>
+  </defs>
+
+  <rect width="880" height="540" rx="16" fill="url(#bg-rr)"/>
+
+  <text x="440" y="34" text-anchor="middle" fill="#e4e6eb" font-size="15" font-weight="700">Flux complet d'un partagpu.run_remote</text>
+
+  <!-- Lifelines -->
+  <g font-size="11" font-weight="600">
+    <rect x="40"  y="60" width="160" height="36" rx="6" fill="#222632" stroke="#10b981"/>
+    <text x="120" y="84" text-anchor="middle" fill="#10b981">Notebook</text>
+
+    <rect x="230" y="60" width="180" height="36" rx="6" fill="#222632" stroke="#6366f1"/>
+    <text x="320" y="84" text-anchor="middle" fill="#6366f1">App locale (machine A)</text>
+
+    <rect x="450" y="60" width="180" height="36" rx="6" fill="#222632" stroke="#a78bfa"/>
+    <text x="540" y="84" text-anchor="middle" fill="#a78bfa">App distante (machine B)</text>
+
+    <rect x="670" y="60" width="160" height="36" rx="6" fill="#222632" stroke="#f59e0b"/>
+    <text x="750" y="84" text-anchor="middle" fill="#f59e0b">Sandbox (bwrap)</text>
+  </g>
+
+  <line x1="120" y1="96"  x2="120" y2="500" stroke="#2a2e3a" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="320" y1="96"  x2="320" y2="500" stroke="#2a2e3a" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="540" y1="96"  x2="540" y2="500" stroke="#2a2e3a" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="750" y1="96"  x2="750" y2="500" stroke="#2a2e3a" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <!-- Step 1 : Notebook -> App locale -->
+  <line x1="120" y1="125" x2="320" y2="125" stroke="#10b981" stroke-width="1.5" marker-end="url(#arr-rr-back)"/>
+  <text x="220" y="118" text-anchor="middle" fill="#10b981" font-size="10">POST /api/dispatch</text>
+  <text x="220" y="140" text-anchor="middle" fill="#8b8fa3" font-size="9">{ peer_ip, args, workspace, local_id, … }</text>
+
+  <!-- Step 2 : App locale prepare -->
+  <rect x="240" y="155" width="160" height="56" rx="6" fill="#1f232d" stroke="#6366f1" stroke-width="1"/>
+  <text x="320" y="173" text-anchor="middle" fill="#e4e6eb" font-size="10" font-weight="600">prépare le dispatch</text>
+  <text x="320" y="188" text-anchor="middle" fill="#8b8fa3" font-size="9">gzip workspace + ECDH X25519</text>
+  <text x="320" y="203" text-anchor="middle" fill="#8b8fa3" font-size="9">envelope v=2 + TOTP</text>
+
+  <!-- Step 3 : App locale -> App distante -->
+  <line x1="320" y1="235" x2="540" y2="235" stroke="#a78bfa" stroke-width="2" marker-end="url(#arr-rr)"/>
+  <text x="430" y="228" text-anchor="middle" fill="#a78bfa" font-size="10">POST /peer/v1/tasks (chiffré v=2)</text>
+  <text x="430" y="250" text-anchor="middle" fill="#8b8fa3" font-size="9">X-PartaGPU-TOTP : 6 chiffres</text>
+
+  <!-- Step 4 : App distante validates -->
+  <rect x="460" y="265" width="160" height="56" rx="6" fill="#1f232d" stroke="#a78bfa" stroke-width="1"/>
+  <text x="540" y="283" text-anchor="middle" fill="#e4e6eb" font-size="10" font-weight="600">vérifie + déchiffre</text>
+  <text x="540" y="298" text-anchor="middle" fill="#8b8fa3" font-size="9">TOTP, sharing actif, room-key</text>
+  <text x="540" y="313" text-anchor="middle" fill="#8b8fa3" font-size="9">create_and_run → cgroup task</text>
+
+  <!-- Step 5 : exec dans sandbox -->
+  <line x1="540" y1="345" x2="750" y2="345" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arr-rr-back)"/>
+  <text x="640" y="338" text-anchor="middle" fill="#f59e0b" font-size="10">spawn bwrap (UID partagpu)</text>
+  <text x="640" y="360" text-anchor="middle" fill="#8b8fa3" font-size="9">/workspace + GPU + cgroup</text>
+
+  <!-- Step 6 : ack 200 -->
+  <line x1="540" y1="385" x2="320" y2="385" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arr-rr)"/>
+  <text x="430" y="378" text-anchor="middle" fill="#a78bfa" font-size="10">200 OK { task_id } (chiffré)</text>
+
+  <!-- Step 7 : poll loop -->
+  <rect x="240" y="405" width="380" height="50" rx="6" fill="#1f232d" stroke="#6366f1" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="430" y="423" text-anchor="middle" fill="#e4e6eb" font-size="10" font-weight="600">poll GET /peer/v1/tasks/&lt;id&gt;  toutes les 500 ms</text>
+  <text x="430" y="440" text-anchor="middle" fill="#8b8fa3" font-size="9">stdout/stderr partiels + progression CPU/RAM/GPU mirrorés en local</text>
+
+  <!-- Step 8 : Notebook gets result -->
+  <line x1="320" y1="478" x2="120" y2="478" stroke="#10b981" stroke-width="1.5" marker-end="url(#arr-rr-back)"/>
+  <text x="220" y="471" text-anchor="middle" fill="#10b981" font-size="10">TaskResult { stdout, stderr, exit }</text>
+
+  <!-- Caption -->
+  <text x="440" y="520" text-anchor="middle" fill="#8b8fa3" font-size="10">UI mise à jour en temps réel via événements Tauri (incoming-/outgoing-tasks-changed) — pas de polling 3 s côté frontend</text>
+</svg>

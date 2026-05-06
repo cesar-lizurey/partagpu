@@ -86,7 +86,7 @@ Le TOTP authentifie le pair, mais ne chiffre rien. Sans chiffrement, un attaquan
 
 Tous les bodies HTTP échangés sur le port pair-à-pair (`7655`, sauf `/peer/v1/health`) sont chiffrés en **AES-256-GCM** (chiffrement authentifié — confidentialité + intégrité dans une seule primitive).
 
-#### Dérivation de la clé
+#### Dérivation de la clé (v=1, fallback)
 
 ```
 key = HKDF-SHA256(
@@ -98,6 +98,25 @@ key = HKDF-SHA256(
 ```
 
 Le `room_secret` est le même que celui qui sert au TOTP — déjà partagé entre membres de la salle via la passphrase de 4 mots. Aucun nouveau matériel à distribuer.
+
+#### Dérivation de la clé (v=2, par défaut depuis 1.7.0)
+
+À chaque démarrage, chaque pair génère un keypair X25519 éphémère (gardé **uniquement en RAM**) et publie sa pubkey via mDNS (champ TXT `eph_pk`). Toutes les 10 minutes, un thread de fond fait tourner ce keypair et l'ancien reste valide ~60 s pour absorber les requêtes en vol.
+
+Pour chaque requête, le client génère sa **propre** paire X25519 éphémère, calcule le secret partagé `ECDH(client_eph_priv, server_eph_pub)` et dérive la clé de session :
+
+```
+session_key = HKDF-SHA256(
+    ikm    = ECDH_shared_secret,
+    salt   = HKDF(room_secret),               // sert de salt en v=2
+    info   = "AES-256-GCM session key v2 (room|ecdh)",
+    length = 32 bytes,
+)
+```
+
+La même clé sert pour la requête **et** la réponse — le serveur la dérive identiquement de son côté via `ECDH(server_eph_priv, client_eph_pub)`. La pubkey du client voyage avec l'envelope (`eph_pk`) ; la privkey ne quitte jamais sa machine.
+
+C'est ce qui donne la **forward secrecy** : capturer le trafic chiffré + voler la passphrase de salle plus tard ne suffit plus, il faudrait aussi avoir la moitié privée d'un keypair éphémère qui n'a jamais été persisté.
 
 #### Format
 

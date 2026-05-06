@@ -15,13 +15,18 @@ Ce document explique **comment PartaGPU fonctionne en interne** : les composants
 7. [Orchestration DDP avec `distribute`](#orchestration-ddp-avec-distribute)
 8. [Multi-GPU par machine](#multi-gpu-par-machine)
 9. [Annulation des tâches](#annulation-des-tâches)
-10. [UI dispatcher](#ui-dispatcher)
-11. [Streaming des logs en temps réel](#streaming-des-logs-en-temps-réel)
-12. [Monitoring des ressources par tâche](#monitoring-des-ressources-par-tâche)
-13. [Venv géré côté pair](#venv-géré-côté-pair)
-14. [Découverte mDNS](#découverte-mdns)
-15. [Privilèges et helper](#privilèges-et-helper)
-16. [Modèle de sécurité](#modèle-de-sécurité)
+10. [UI dispatcher (single + DDP groupé)](#ui-dispatcher)
+11. [Cap de tâches concurrentes](#cap-de-taches-concurrentes)
+12. [Streaming via événements Tauri](#streaming-via-evenements-tauri)
+13. [Streaming des logs en temps réel](#streaming-des-logs-en-temps-réel)
+14. [Monitoring des ressources par tâche](#monitoring-des-ressources-par-tâche)
+15. [Persistance des tâches](#persistance-des-taches)
+16. [Compression du workspace](#compression-du-workspace)
+17. [Per-task cgroup isolation](#per-task-cgroup-isolation)
+18. [Venv géré côté pair](#venv-géré-côté-pair)
+19. [Découverte mDNS](#découverte-mdns)
+20. [Privilèges et helper](#privilèges-et-helper)
+21. [Modèle de sécurité](#modèle-de-sécurité)
 
 ---
 
@@ -31,25 +36,7 @@ PartaGPU est une application Tauri (backend Rust + frontend React) qui transform
 
 ### Composants
 
-```
-┌──────────────────────── Machine A (mon poste) ────────────────────────┐
-│                                                                       │
-│   ┌────────────┐     ┌─────────────────┐     ┌──────────────────┐   │
-│   │ Notebook   │     │  App PartaGPU   │     │   peer A (sandbox │   │
-│   │ Python     │ ──> │   (Tauri + UI)  │ ──> │   bubblewrap)     │   │
-│   └────────────┘     │                 │     └──────────────────┘   │
-│                      │  http_api 7654  │                             │
-│                      │  peer_api 7655  │ <───── peers d'autres machines
-│                      │  mDNS browse    │                             │
-│                      └─────────────────┘                             │
-└───────────────────────────────────────────────────────────────────────┘
-                                ▲
-                                │ peer-to-peer over LAN (TOTP-signed)
-                                ▼
-┌──────────────────────── Machine B (autre poste) ──────────────────────┐
-│   App PartaGPU + sandbox bubblewrap exécutant les tâches de A         │
-└───────────────────────────────────────────────────────────────────────┘
-```
+![Vue d'ensemble des composants](images/components-overview.svg)
 
 - **Frontend** (React + TypeScript, Vite) : 3 onglets *Mon partage* / *Mon utilisation* / *Guide*. Communique avec le backend via Tauri `invoke`.
 - **Backend Rust** (`src-tauri/src/`) : modules pour auth, discovery, sandbox, sharing, monitoring, deux serveurs HTTP, journal de sécurité.
@@ -158,7 +145,16 @@ Pour `POST /peer/v1/tasks` et `GET /peer/v1/tasks/<id>`, le client envoie son co
 
 Tous les bodies échangés sur le peer-API (port 7655, sauf `/peer/v1/health`) sont chiffrés en **AES-256-GCM** avec une clé dérivée du secret de salle.
 
-### Dérivation de la clé
+### Deux versions d'enveloppes
+
+Le format wire évolue par version. Le serveur accepte les deux ; le client préfère v=2 dès qu'il connaît la pubkey éphémère du pair.
+
+| Version | Clé AES dérivée de | Forward secrecy | Quand |
+|---|---|---|---|
+| **v=1** | HKDF(room_secret) seul | non | rétro-compat avec un pair qui n'a pas encore publié sa pubkey éphémère |
+| **v=2** | HKDF(room_secret \|\| ECDH(client_eph, server_eph)) | **oui** (10 min, cf. rotation) | par défaut depuis 1.7.0 |
+
+### Dérivation de la clé v=1 (fallback)
 
 ```
 key = HKDF-SHA256(
@@ -169,34 +165,52 @@ key = HKDF-SHA256(
 )
 ```
 
-Tous les membres de la salle dérivent la **même** clé puisqu'ils partagent le secret. Personne en dehors de la salle ne peut la dériver.
+### Dérivation de la clé v=2 (forward-secret, par défaut)
+
+Côté **serveur**, à chaque démarrage de l'app on génère un keypair X25519 (`StaticSecret`, public 32 octets) gardé **uniquement en RAM**. La pubkey est annoncée en mDNS (champ TXT `eph_pk`). Toutes les 10 minutes, un thread de fond appelle `EphemeralKey::rotate()` qui génère un nouveau keypair, retrograde l'ancien en *previous* (encore valide ~60 s pour les requêtes en vol), et re-publie la nouvelle pubkey en mDNS.
+
+Côté **client**, pour chaque requête on génère **une autre** paire X25519 éphémère, on calcule le secret partagé `ECDH(client_eph_priv, server_eph_pub)` et on dérive la clé de session :
+
+```
+session_key = HKDF-SHA256(
+    ikm    = ECDH_shared_secret,
+    salt   = HKDF(room_secret),              // utilisé comme salt en v=2
+    info   = "AES-256-GCM session key v2 (room|ecdh)",
+    length = 32 bytes,
+)
+```
+
+La même clé de session sert pour la requête **et** la réponse (le serveur la dérive identiquement de son côté grâce à `ECDH(server_eph_priv, client_eph_pub)`).
 
 ### Format d'enveloppe
 
-Chaque body de requête (POST) ou de réponse (2xx) est sérialisé ainsi :
-
 ```json
 {
-  "v": 1,
-  "nonce": "<12 octets random, base64>",
-  "ct":    "<ciphertext + tag GCM, base64>"
+  "v":      2,
+  "nonce":  "<12 octets random, base64>",
+  "ct":     "<ciphertext + tag GCM, base64>",
+  "eph_pk": "<32 octets pubkey X25519 du client, base64>"
 }
 ```
 
-Le Content-Type est `application/x-partagpu-encrypted-v1`.
+`eph_pk` est absent en v=1 et dans les **réponses** v=2 (l'autre côté a déjà la clé de session). Content-Type dans les deux cas : `application/x-partagpu-encrypted-v1`.
 
 ### Ordre d'opérations côté serveur ([peer_api.rs](../src-tauri/src/peer_api.rs))
 
 ```
 1. read_request                         # parse method/path/headers/body
-2. si route ∈ /peer/v1/tasks* :
+2. si route ∈ /peer/v1/tasks* et body non vide :
    - check Content-Type == ENCRYPTED_CONTENT_TYPE  (sinon 415)
    - check room_key disponible                     (sinon 415)
+   - selon env.v :
+       v=1 : session_key = room_key
+       v=2 : session_key = HKDF(room|ECDH(server_eph, env.eph_pk))
+             essaie current puis previous (grace window 60 s)
    - decrypt(body) -> plaintext JSON               (sinon 415)
    - replace req.body par plaintext
 3. dispatch vers handle_submit / handle_get_task / handle_cancel_task
 4. si status 2xx ET route encrypted :
-   - encrypt(response_body, room_key) -> envelope
+   - encrypt(response_body, session_key) -> envelope (eph_pk omis)
    - write_response avec Content-Type = ENCRYPTED_CONTENT_TYPE
 5. sinon (4xx, 5xx) : envoyer en clair
 ```
@@ -207,9 +221,11 @@ Les erreurs (4xx, 5xx) restent en clair parce que le client peut ne pas avoir la
 
 ```
 1. derive_room_key depuis auth.get_secret()
-2. encrypt(body) -> envelope JSON
-3. ureq::post(url, Content-Type: ENCRYPTED..., X-PartaGPU-TOTP: code, body=envelope)
-4. si 2xx : decrypt(response_body) -> Task JSON
+2. lookup peer.eph_pk via Discovery (vide → fallback v=1)
+3. si v=2 : (envelope, session_key) = encrypt_v2(room, peer_eph_pk, body)
+   sinon  : envelope = encrypt(room_key, body) ; session_key = room_key
+4. ureq::post(url, Content-Type: ENCRYPTED..., X-PartaGPU-TOTP: code, body=envelope)
+5. si 2xx : decrypt(response_body, session_key) -> Task JSON
    sinon : lire response.text() en clair
 ```
 
@@ -218,16 +234,17 @@ Les erreurs (4xx, 5xx) restent en clair parce que le client peut ne pas avoir la
 - **Confidentialité** : un attaquant qui écoute le trafic LAN ne peut rien lire (script Python, données workspace, stdout/stderr).
 - **Intégrité** : tout flip de bit dans le ciphertext fait échouer le déchiffrement (tag GCM rejeté). Le serveur retourne 415.
 - **Authenticité au niveau salle** : seul un détenteur du secret peut produire un envelope qui se déchiffre proprement. Combiné au TOTP, on a auth + intégrité + replay-protect (TOTP fenêtre 30 s).
+- **Forward secrecy (v=2)** : la moitié privée des keypairs éphémères ne quitte jamais la RAM et est rotée toutes les 10 min. Un attaquant qui capture du trafic et obtient la passphrase de salle plus tard **ne peut plus déchiffrer** les sessions de plus de 10 minutes.
 
 ### Hors scope
 
-- **Forward secrecy** : pas d'échange de clé éphémère. Si le secret est leaké un jour, tout l'historique enregistré devient lisible.
-- **Protection contre un membre de la salle** : par construction, tout pair dans la salle a la clé. Le modèle de menace est "attaquant LAN qui n'est PAS dans la salle".
-- **Compatibilité ascendante** : avant `1.6.0`, les bodies passaient en clair. Les pairs en `< 1.6.0` ne peuvent plus parler à des pairs en `>= 1.6.0`. Upgrade simultané requis.
+- **Protection contre un membre de la salle** : par construction, tout pair dans la salle a la clé de salle. Le modèle de menace est "attaquant LAN qui n'est PAS dans la salle".
+- **Compatibilité ascendante** : avant `1.6.0`, les bodies passaient en clair. Les pairs en `< 1.6.0` ne peuvent plus parler à des pairs en `>= 1.6.0` (upgrade simultané requis). Entre `1.6.0` et `1.7.0`, les enveloppes v=1 restent acceptées par le serveur.
 
 ### Tests
 
-`crypto.rs` a des tests unitaires : round-trip, mauvaise clé, ciphertext altéré, JSON round-trip (`cargo test --lib crypto::`).
+- **Unitaires** (8 tests, `cargo test --lib crypto::`) : round-trip v=1 et v=2, mauvaise clé, ciphertext altéré, mauvaise clé éphémère serveur, rotation grace window, forward secrecy après rotation, JSON round-trip.
+- **Intégration** (5 tests, `cargo test --test peer_api_e2e`) : rejet du plaintext (415), rejet sans TOTP (401), rejet d'un envelope chiffré avec un mauvais secret (415/401), round-trip v=2 complet contre un vrai serveur localhost, 404 sur cancel inconnu.
 
 ---
 
@@ -291,60 +308,20 @@ Seules les commandes dans `Sandbox::allowlist` peuvent être lancées. Defaults 
 
 ## Flux d'une tâche `run_remote`
 
-```
-┌─ NOTEBOOK ─────────────────────────┐
-│ partagpu.run_remote(peer, args,    │
-│                     network=…,     │
-│                     workspace=…)   │
-└────────────┬───────────────────────┘
-             │ POST http://127.0.0.1:7654/api/dispatch
-             ▼
-┌─ APP LOCALE (machine A) ───────────┐
-│ http_api::handle_dispatch          │
-│  1. auth.current_code() → "123456" │
-│  2. OutgoingTasks::add(Queued)     │
-│  3. spawn_blocking task            │
-└────────────┬───────────────────────┘
-             │ POST http://<peer_ip>:7655/peer/v1/tasks
-             │ X-PartaGPU-TOTP: 123456
-             │ body: {args, source_user, timeout_secs,
-             │        network_enabled, workspace}
-             ▼
-┌─ APP DISTANTE (machine B) ─────────┐
-│ peer_api::handle_submit            │
-│  1. check_auth (TOTP, in_room,     │
-│     sharing active)                │
-│  2. resolve source_machine from IP │
-│  3. log "task accepted"            │
-│  4. IncomingTasks::create_and_run  │
-│     → spawn thread → Sandbox::exec │
-│        (bwrap, GPU passthrough,    │
-│         /workspace tmpfs, etc.)    │
-│  5. retourne {task_id, accepted}   │
-└────────────┬───────────────────────┘
-             │ 200 OK + task_id
-             │
-             │ ◄── machine A poll : GET /peer/v1/tasks/<id>
-             │     toutes les 500 ms
-             │
-             │ ◄── tâche en cours : status=Running
-             │
-             │ ◄── tâche terminée : status=Completed,
-             │     stdout/stderr/exit_code remplis
-             ▼
-┌─ APP LOCALE ───────────────────────┐
-│ Met à jour OutgoingTasks (Completed│
-│ + output/error/exit_code)          │
-│ Retourne Task complet au notebook  │
-└────────────┬───────────────────────┘
-             │ JSON Task
-             ▼
-┌─ NOTEBOOK ─────────────────────────┐
-│ TaskResult avec stdout, stderr, …  │
-└────────────────────────────────────┘
-```
+![Flux complet d'un dispatch](images/run-remote-flow.svg)
 
-Pendant l'exécution, **l'UI de la machine A** affiche 1 outgoing task (page *Mon utilisation*), et **l'UI de la machine B** affiche 1 incoming task (page *Mon partage*).
+Étapes détaillées :
+
+1. **Notebook → App locale** : `partagpu.run_remote(...)` envoie un POST sur `127.0.0.1:7654/api/dispatch` avec les args, le workspace et un `local_id` UUID préalloué (utilisé pour propager une éventuelle annulation).
+2. **App locale prépare** : compresse chaque fichier du workspace en gzip, dérive la clé de session via ECDH X25519 (envelope v=2) en utilisant la pubkey éphémère du pair lue dans `Discovery`, ajoute le code TOTP courant.
+3. **App locale → App distante** : POST chiffré sur `<peer_ip>:7655/peer/v1/tasks` avec `Content-Type: application/x-partagpu-encrypted-v1` et `X-PartaGPU-TOTP: <code>`.
+4. **App distante valide + déchiffre** : vérifie le TOTP, que la machine est dans la salle, que sharing est actif, que le room key + ECDH déverrouillent l'envelope. Crée la tâche dans `IncomingTasks::create_and_run` avec un sous-cgroup `/sys/fs/cgroup/partagpu/task-<uuid>` dédié.
+5. **Sandbox spawn** : bwrap démarre comme UID `partagpu`, bind les `/dev/nvidia*`, monte un `/workspace` tmpfs avec les fichiers du POST, applique le cgroup. Si la file `IncomingTasks::pending` est pleine (cf. cap configurable), la tâche reste en `Queued` et démarre quand un slot se libère.
+6. **ACK 200 chiffré** : la réponse `{ task_id }` est chiffrée avec la même clé de session, le client la déchiffre et l'enregistre dans `OutgoingTasks::remote_refs`.
+7. **Poll loop** : l'App locale fait un `GET /peer/v1/tasks/<id>` toutes les 500 ms, reflète stdout/stderr partiels + progression CPU/RAM/GPU dans le miroir local. Cette boucle vit côté backend Rust ; **l'UI ne polle pas** — elle écoute les événements Tauri `outgoing-tasks-changed` poussés à chaque mutation.
+8. **Notebook reçoit le résultat** : quand le pair retourne un statut terminal (Completed/Failed/Cancelled), `dispatch_task_blocking` retourne le `Task` complet, le client Python construit un `TaskResult`.
+
+Pendant l'exécution, **l'UI de la machine A** affiche 1 outgoing task (page *Mon utilisation*), et **l'UI de la machine B** affiche 1 incoming task (page *Mon partage*), les deux mises à jour en temps réel via les événements Tauri.
 
 ---
 
@@ -497,9 +474,19 @@ Le formulaire inclut une section **Fichiers du workspace** : un file picker mult
 
 Le user référence un fichier dans la commande par son nom de base : par ex. après upload de `train.py`, taper la commande `python3 train.py` lance le script poussé.
 
+### DDP Dispatcher (F4, depuis 1.7.0)
+
+Une seconde section sur la même page, le composant [`DDPDispatcher`](../src/components/DDPDispatcher.tsx), permet de lancer un entraînement DDP **multi-machines** sans passer par Python. L'utilisateur :
+1. Coche les pairs cibles (un champ numérique permet de choisir combien de GPU utiliser sur chaque pair, max = `gpu_count` annoncé en mDNS).
+2. Upload un script `.py` + des fichiers compagnons.
+3. Choisit le backend (`nccl` / `gloo`), le port maître (29500 par défaut, plage ouverte par le helper 29500–29510) et un timeout.
+4. Click sur **Lancer**. Le composant calcule `WORLD_SIZE` (= total des GPU sélectionnés), assigne un `RANK` global et un `LOCAL_RANK` par pair (via une map seen-per-IP), construit la commande `env MASTER_ADDR=… MASTER_PORT=… RANK=i WORLD_SIZE=N CUDA_VISIBLE_DEVICES=k python3 script.py args...`, et fait `dispatchTask` en parallèle pour chaque rang.
+5. Un tableau de progression par rang se met à jour live via les événements Tauri `outgoing-tasks-changed`.
+
+Auto-cancel des siblings : si un rang échoue (`status === Failed` ou `dispatchTask` lève), tous les autres ranks encore en vie sont annulés via `cancelOutgoingTask` pour ne pas rester bloqués dans une rendezvous NCCL impossible.
+
 ### Limites volontaires
 
-- **Pas de DDP** depuis l'UI. L'UI dispatcher est pour des tâches single-worker. DDP reste l'API Python `partagpu.distribute(...)`.
 - **Pas d'arborescence dans le workspace** depuis l'UI (uniquement des fichiers à plat). Pour pousser un sous-dossier, utilisez `partagpu.run_remote(..., workspace={"sub/file.py": "..."})` côté Python.
 
 ---
@@ -541,15 +528,18 @@ loop:
 
 ### Côté UI
 
-Pendant qu'un dispatch est en cours, le composant `TaskDispatcher` :
-1. Pré-alloue un `local_id` (UUID) et le passe à la commande Tauri `dispatch_task`.
-2. Démarre un `setInterval(500ms)` qui appelle `getOutgoingTasks()` et trouve la tâche par cet id, puis met à jour un `livePartial` state.
-3. Le panneau résultat affiche `displayedTask = result ?? livePartial` : avant la fin du dispatch, on voit l'output partiel grandir ; après, le `result` final remplace.
-4. Stop l'interval quand l'invoke résout.
+Le frontend ne polle PAS les tâches. Le backend pousse les changements via les événements Tauri `incoming-tasks-changed` et `outgoing-tasks-changed` (cf. [Streaming via événements Tauri](#streaming-via-evenements-tauri)) :
+
+1. Au mount, les pages *Mon utilisation* / *Mon partage* font un seul fetch initial de `getOutgoingTasks` / `getIncomingTasks`.
+2. Elles s'abonnent à l'événement Tauri correspondant via `listen<Task[]>(...)`.
+3. Chaque mutation côté backend (add, update_progress, mirror_running, set_failed, etc.) déclenche un `notify()` qui émet la liste fraîche.
+4. Le composant `TaskDispatcher` fait pareil mais filtre par `local_id` pour suivre la tâche en cours et alimente son `livePartial` state.
+
+Un `setInterval(3000ms)` reste pour rafraîchir les données qui ne sont pas poussées (peers mDNS, ressources globales, sharing config). Il sert aussi de filet de sécurité au cas où un événement serait perdu.
 
 ### Pourquoi `dispatch_task` est `async`
 
-Si `dispatch_task` était sync, Tauri exécuterait sa logique sur le thread IPC principal — bloqué pour toute la durée de la tâche. Pendant ce temps, `getOutgoingTasks` queue, le polling de `livePartial` ne tourne pas, et l'UI gèle (potentiellement avec un message OS "ne répond pas"). En async + `tokio::task::spawn_blocking` pour la partie ureq, le thread IPC reste libre, le polling continue, l'output défile en direct.
+Si `dispatch_task` était sync, Tauri exécuterait sa logique sur le thread IPC principal — bloqué pour toute la durée de la tâche. Pendant ce temps, l'UI ne pourrait plus invoke quoi que ce soit (rafraîchissements, bouton cancel, navigation), et les événements `outgoing-tasks-changed` ne seraient pas non plus traités côté front. En async + `tokio::task::spawn_blocking` pour la partie ureq, le thread IPC reste libre, les events sont consommés, l'output défile en direct.
 
 Idem pour `cancel_outgoing_task` qui fait aussi du ureq sync vers le pair.
 
@@ -591,7 +581,7 @@ loop forever:
 
 - **Progression = elapsed/timeout** : pas de mesure intrinsèque "30% du job" possible pour une commande arbitraire ; on utilise donc le ratio temps écoulé / timeout, capé à 99 % jusqu'à ce que la tâche atteigne réellement un état terminal. Approximation imparfaite mais visible et utile.
 
-- **GPU per-task** : pas implémenté dans cette version. `nvidia-smi` ne donne pas la consommation GPU par PID directement (il faudrait NVML via `nvml-wrapper` ou un cgroup v2 GPU resource controller). La colonne GPU des tâches reste à 0 % ; la jauge globale "Ressources de cette machine" continue de remonter le GPU usage agrégé.
+- **GPU per-task** (depuis 1.7.0) : à chaque tick de monitor, on lance `nvidia-smi pmon -c 1 -s u` pour obtenir la SM-utilization par PID. Pour chaque tâche, on somme les utilisations sur l'arbre de processus (bwrap + python + descendants) et on alimente `task.gpu_usage`. Tombe gracieusement à 0 si nvidia-smi est absent ou échoue, sans affecter le suivi CPU/RAM.
 
 - **`task_starts` + `task_timeouts`** : deux maps `HashMap<task_id, _>` dans `IncomingTasks`, peuplées dans `spawn_execution` quand la tâche transitionne en Running, et nettoyées à la fin du thread d'exécution.
 
@@ -604,6 +594,84 @@ Résultat : l'UI de la machine de lancement (page *Mon utilisation*) voit les m�
 ### Répartition par utilisateur
 
 La page *Mon partage* affiche un panneau **Répartition par utilisateur** qui empile les conso CPU/RAM/GPU des tâches courantes par `source_user`. Avec le monitoring temps réel, ce panneau est désormais peuplé en direct au lieu de rester à 0 %. Couleurs distinctes par user (jusqu'à 8). C'est ce qu'un prof regarde pour voir quel élève saturate la machine.
+
+---
+
+<a id="cap-de-taches-concurrentes"></a>
+## Cap de tâches concurrentes
+
+Pour empêcher un pair (ou un script en boucle) de saturer une machine en submitant 100 tâches d'un coup, `IncomingTasks` impose une limite **N** sur le nombre de tâches en état `Running` simultanément. Réglable depuis l'UI (page *Mon partage* → champ "Tâches simultanées maximum"), borne 1–64, défaut 4.
+
+Au-delà du cap :
+1. La tâche reste en statut `Queued` dans `IncomingTasks::tasks` (déjà visible dans le panneau du pair).
+2. Sa `SandboxOptions` + son timeout sont stockés dans une file FIFO `pending: VecDeque<PendingTask>`.
+3. Dès qu'une tâche se termine, le wait loop appelle `try_start_pending()` qui dépile le prochain élément valide et `spawn_execution`.
+
+La file est purement en mémoire : un redémarrage de l'app fait passer toutes les `Queued` en `Cancelled` (via le chemin `load_from_disk` → matches `Running | Queued` → Cancelled). Acceptable au vu du modèle de menace.
+
+Tauri commands exposées : `get_max_concurrent_tasks` / `set_max_concurrent_tasks`. Lever le cap ré-amorce immédiatement un pull depuis la file (pas besoin d'attendre une fin de tâche).
+
+---
+
+<a id="streaming-via-evenements-tauri"></a>
+## Streaming via événements Tauri
+
+Plutôt qu'un polling 3 s côté frontend pour rafraîchir les listes de tâches, le backend **pousse** chaque mutation au frontend via les événements Tauri `incoming-tasks-changed` et `outgoing-tasks-changed`. Architecture :
+
+1. Au démarrage, `lib.rs::run` injecte l'`AppHandle` dans `IncomingTasks` et `OutgoingTasks` via `set_emitter()` (dans le callback `setup` de `tauri::Builder`).
+2. Chaque méthode mutatrice (`add`, `update_progress`, `mirror_running`, `set_failed`, `cancel`, `remove`...) appelle `notify()` après avoir libéré le lock sur `tasks`.
+3. `notify()` snapshot la liste fraîche et appelle `app.emit("..-tasks-changed", &payload)`.
+4. Le thread `spawn_monitor` qui tourne toutes les secondes émet aussi un événement à la fin de chaque cycle si une tâche `Running` a vu son CPU/RAM/GPU/progression bouger.
+
+Côté frontend, les pages se contentent d'un fetch initial puis écoutent l'événement :
+```typescript
+listen<Task[]>("outgoing-tasks-changed", (e) => setTasks(e.payload));
+```
+
+Un `setInterval(3000ms)` reste pour les données qui ne sont pas poussées (peers mDNS, ressources globales, sharing config) et sert de filet de sécurité.
+
+---
+
+## Persistance des tâches
+
+À la fermeture inopinée de l'app (crash, kill, reboot), les listes `IncomingTasks` / `OutgoingTasks` étaient perdues. Depuis 1.6.0, un thread de fond persiste leur état toutes les 5 s vers `~/.config/partagpu/{incoming,outgoing}-tasks.json` via une écriture atomique (fichier `.tmp` + `rename`).
+
+Au redémarrage, `IncomingTasks::new` :
+1. Charge le JSON s'il existe.
+2. Pour chaque tâche, si son statut était `Running` ou `Queued`, le passe à `Cancelled` avec un message d'erreur explicatif (les processus sont morts avec l'app, on ne peut pas les rattraper).
+3. Garde toutes les tâches `Completed` / `Failed` / `Cancelled` telles quelles pour l'historique.
+
+Pour ne pas écrire 100 Mo de stdout dans le JSON sur 100 tâches volubiles, on tronque chaque `output` / `error_output` à `PERSIST_OUTPUT_CAP = 50 KB` au moment de la sérialisation (`task_for_persist`). La copie en mémoire reste intacte.
+
+Le format est `HashMap<String, Task>` pour `IncomingTasks` ; pour `OutgoingTasks` c'est un struct `OutgoingPersisted { tasks, remote_refs }` parce qu'on veut aussi recharger les `remote_refs` (pour pouvoir continuer à propager des cancels après redémarrage si jamais on garde la même session).
+
+---
+
+## Compression du workspace
+
+Les fichiers du workspace passent par AES-GCM (qui produit du ciphertext incompressible). Donc on **gzip avant chiffrement** côté `dispatch_task_blocking` :
+
+```rust
+if !workspace.is_empty() {
+    crate::sandbox::compress_workspace(&mut workspace)?;
+}
+```
+
+`compress_workspace` itère chaque `WorkspaceFile`, encode en gzip via `flate2::write::GzEncoder`, et place une marque `compression: Some("gzip")` sur le fichier. Côté pair, `peer_api` détecte cette marque et décompresse via `flate2::read::GzDecoder` avant d'écrire dans le tempdir bind-monté en `/workspace`. Idempotent pour les clients qui ont déjà pré-compressé (Python pourrait gzip de son côté).
+
+Gain typique sur des datasets texte : 60–90 % sur du JSON / CSV / code source. Inutile sur des images / archives déjà compressées (gzip plafonne à 0 % mais ne déteriore pas).
+
+---
+
+## Per-task cgroup isolation
+
+Avant 1.6.0, toutes les tâches reçues partageaient `/sys/fs/cgroup/partagpu/`, ce qui voulait dire qu'une tâche pouvait OOM les voisines en consommant tout le quota RAM. Depuis, chaque tâche reçoit son propre sous-cgroup `/sys/fs/cgroup/partagpu/task-<uuid>/` :
+
+1. Au boot, le helper privilégié (`partagpu-helper setup-cgroup`) initialise `/sys/fs/cgroup/partagpu/` avec `subtree_control = "+cpu +memory"` et chowne le dossier en `partagpu:partagpu` pour permettre la création de sous-cgroups par l'utilisateur sans pkexec.
+2. À chaque `Sandbox::execute`, on crée le sous-dir `task-<uuid>`, on duplique les limites parentes (`cpu.max`, `memory.max`), on lance `bwrap` avec `--cgroup-bind`, on attend la fin, on supprime le sous-dir.
+3. Si la création du sous-cgroup échoue (kernel sans cgroup v2, droits manquants), on fallback sur le cgroup parent — comportement dégradé mais fonctionnel.
+
+Limite actuelle : pas de **sub-allocation** des limites (chaque sous-cgroup hérite de 100 % du parent). Tant que `max_concurrent` reste petit (4 par défaut), ça ne pose pas de problème en pratique.
 
 ---
 
@@ -686,8 +754,9 @@ Properties annoncées :
 - `display_name` (nom personnalisé via UI, persisté)
 - `sharing` (`true` si Active)
 - `cpu_limit`, `ram_limit`, `gpu_limit` (limites des sliders)
-- `gpu_count` (nombre de CUDA devices détectés, **nouveau Phase 3**)
+- `gpu_count` (nombre de CUDA devices détectés)
 - `totp` (code à 6 chiffres courant, change toutes les 30 s)
+- `eph_pk` (pubkey X25519 éphémère pour le chiffrement v=2 forward-secret, regénérée à chaque démarrage et tournée toutes les 10 min)
 
 Le browser (`Discovery::start_browsing`) consomme les events `ServiceResolved` / `ServiceRemoved`, applique :
 - **Rate limiting** par pair : 1 update / 2 s (anti-flood)
@@ -753,9 +822,9 @@ Voir [SECURITY.md](../SECURITY.md) pour le détail. En résumé :
 
 ### Limites connues
 
-- **Pas de chiffrement** entre pairs sur le LAN (Phase 4 : AES-GCM dérivé du secret de salle)
-- **Pas d'isolation par tâche** au niveau cgroup (toutes les tâches partagent le cgroup `partagpu`). Une tâche peut consommer toutes les ressources allouées à `partagpu`.
-- **Workspace lit/écrit comme partagpu UID** — deux tâches sur le même pair ont chacune leur dir mais n'ont pas d'isolation forte au-delà de l'UUID du dir.
+- **Workspace lit/écrit comme partagpu UID** — deux tâches sur le même pair ont chacune leur dir mais n'ont pas d'isolation forte au-delà de l'UUID du dir et de leur sous-cgroup respectif.
+- **Forward secrecy bornée à ~10 min** : un attaquant qui accède à la RAM **pendant qu'un poste tourne** peut déchiffrer les sessions des 10 dernières minutes (taille de la fenêtre de rotation `EphemeralKey`).
+- Cf. [SECURITY.md](../SECURITY.md) pour la liste complète et les justifications.
 
 ---
 

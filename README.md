@@ -220,15 +220,16 @@ L'application a **3 onglets** :
   ![Répartition par utilisateur](docs/images/usage-breakdown.svg)
 
   Chaque segment a la couleur de l'utilisateur. Survolez pour voir le détail.
-- **Tableau détaillé** : commande, source (display_name du pair), statut, **progression et CPU/RAM en temps réel** (mise à jour chaque seconde, agrégés sur tout le sous-arbre de processus de la sandbox), **bouton Stop** pour annuler une tâche entrante en cours (utile si vous pensez qu'un camarade pousse n'importe quoi). GPU per-task pas mesuré pour l'instant — voyez la jauge globale.
+- **Tableau détaillé** : commande, source (display_name du pair), statut, **progression et CPU/RAM/GPU en temps réel** (mise à jour chaque seconde, agrégés sur tout le sous-arbre de processus de la sandbox ; le GPU par tâche est échantillonné via `nvidia-smi pmon`), **bouton Stop** pour annuler une tâche entrante en cours (utile si vous pensez qu'un camarade pousse n'importe quoi).
+- **Tâches simultanées maximum** : champ numérique pour borner combien de tâches peuvent tourner en même temps sur cette machine. Au-delà, les nouvelles arrivantes restent en file d'attente.
 
 ### Onglet « Mon utilisation »
 
 *Ce que j'utilise sur les autres machines.*
 
-- **Machines disponibles** : liste des postes qui partagent, avec leur capacité et leur statut d'authentification (colonne **Auth**)
-- **Toutes les machines** : y compris celles qui ne partagent pas encore
-- **Lancer une commande sur un pair** : formulaire pour dispatcher une commande sur un pair sans passer par Python (sélection du pair, commande avec parsing shell, timeout, accès réseau opt-in, **upload de fichiers du workspace** par file picker, panneau résultat avec stdout/stderr **qui défile en direct** pendant l'exécution — utile pour voir les `print()` d'un long entraînement arriver ligne par ligne)
+- **Machines détectées** : tableau unique avec tous les postes vus en mDNS, leur capacité et leur statut d'authentification (colonne **Auth**). Triées : utilisables (Auth OK + Partage Actif) en haut, le reste en bas.
+- **Lancer une commande sur un pair** : formulaire pour dispatcher une commande sur un pair sans passer par Python (sélection du pair, commande avec parsing shell ou fichier uploadé, timeout, accès réseau opt-in, **upload de fichiers du workspace** par file picker, panneau résultat avec stdout/stderr **qui défile en direct** pendant l'exécution).
+- **Entraînement DDP multi-machines** : panneau dédié pour lancer un script PyTorch DDP sans Python — coche les pairs cibles (avec un champ pour combien de GPU utiliser sur chacun), upload le script + fichiers compagnons, choisis le backend (NCCL/Gloo) et le port maître. Tableau de progression par rang en live, bouton **Tout annuler** qui propage l'arrêt à tous les rangs en cas de plantage.
 - **Mes tâches en cours** : progression en temps réel de ce que j'ai soumis. Bouton **Stop** sur les tâches Queued/Running pour les annuler proprement (SIGTERM côté pair, propagation aux rangs siblings dans un DDP).
 
 ### Onglet « Guide »
@@ -388,6 +389,7 @@ Les ajustements de sliders, la consultation du statut, et le monitoring **n'appe
 
 - **Authentification par salle** : un code d'accès de 4 mots génère un secret TOTP partagé. Chaque poste prouve son appartenance en présentant un code temporaire à 6 chiffres qui change toutes les 30 secondes. Les postes non vérifiés sont clairement identifiés.
 - **Chiffrement pair-à-pair** (depuis 1.6.0) : les bodies HTTP entre pairs (port 7655) sont chiffrés en AES-256-GCM avec une clé HKDF dérivée du secret de salle. Confidentialité + intégrité contre l'écoute LAN passive. Tous les pairs doivent être en `>= 1.6.0`.
+- **Forward secrecy** (depuis 1.7.0) : la clé AES est désormais dérivée d'un échange Diffie-Hellman X25519 éphémère par requête. La clé éphémère du serveur reste **uniquement en RAM**, est regénérée à chaque démarrage et tournée toutes les 10 minutes. Un attaquant qui capture le trafic puis obtient la passphrase plus tard ne peut plus déchiffrer les sessions de plus de 10 minutes.
 - **Isolation** : le compte `partagpu` est dédié au partage, il n'a pas accès aux fichiers personnels des autres utilisateurs
 - **Cgroups v2** : les tâches ne peuvent pas dépasser les limites CPU/RAM définies par les sliders
 - **PolicyKit** : les opérations root passent par `pkexec` avec une règle explicite, pas de sudo en dur. Le mot de passe transite par stdin, jamais en argument CLI.
