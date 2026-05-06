@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use crate::sandbox::{OutputSink, Sandbox, SandboxOptions, SandboxResult};
 
@@ -83,17 +83,94 @@ pub struct IncomingTasks {
     /// spawn_execution, removed when the task reaches a terminal state.
     /// Lets `get(id)` return a fresh snapshot of partial output.
     sinks: Arc<Mutex<HashMap<String, OutputSink>>>,
+    /// When each running task entered the Running state. Used by the monitor
+    /// thread to compute progress as elapsed/timeout.
+    task_starts: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Timeout in seconds per task, for the same progress computation.
+    task_timeouts: Arc<Mutex<HashMap<String, u64>>>,
     sandbox: Sandbox,
 }
 
 impl IncomingTasks {
     pub fn new(sandbox: Sandbox) -> Self {
-        Self {
+        let this = Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             pids: Arc::new(Mutex::new(HashMap::new())),
             sinks: Arc::new(Mutex::new(HashMap::new())),
+            task_starts: Arc::new(Mutex::new(HashMap::new())),
+            task_timeouts: Arc::new(Mutex::new(HashMap::new())),
             sandbox,
-        }
+        };
+        this.spawn_monitor();
+        this
+    }
+
+    /// Background thread that walks running tasks every second, updating
+    /// progress (elapsed/timeout) + CPU/RAM usage per task by aggregating
+    /// the bwrap process tree via sysinfo. Lifelong (runs as long as the
+    /// IncomingTasks Arcs are alive).
+    fn spawn_monitor(&self) {
+        let tasks = self.tasks.clone();
+        let pids = self.pids.clone();
+        let starts = self.task_starts.clone();
+        let timeouts = self.task_timeouts.clone();
+
+        std::thread::spawn(move || {
+            use sysinfo::{Pid, ProcessesToUpdate, System};
+            let mut sys = System::new();
+            // Two refreshes back-to-back so cpu_usage has a baseline.
+            sys.refresh_processes(ProcessesToUpdate::All, true);
+
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                sys.refresh_processes(ProcessesToUpdate::All, true);
+
+                let snapshot_pids: HashMap<String, u32> =
+                    pids.lock().unwrap().clone();
+                if snapshot_pids.is_empty() {
+                    continue;
+                }
+                let snapshot_starts: HashMap<String, Instant> =
+                    starts.lock().unwrap().clone();
+                let snapshot_timeouts: HashMap<String, u64> =
+                    timeouts.lock().unwrap().clone();
+
+                for (task_id, root_pid) in snapshot_pids {
+                    // Walk the process tree rooted at the bwrap PID, summing
+                    // CPU% and RAM. The sandbox creates child processes
+                    // (python, etc.) that account for most of the work.
+                    let tree = collect_descendants(&sys, Pid::from_u32(root_pid));
+                    let mut cpu_sum: f32 = 0.0;
+                    let mut ram_sum: u64 = 0;
+                    for pid in &tree {
+                        if let Some(p) = sys.process(*pid) {
+                            cpu_sum += p.cpu_usage();
+                            ram_sum += p.memory();
+                        }
+                    }
+                    let ram_mb = ram_sum / (1024 * 1024);
+
+                    let progress = match (
+                        snapshot_starts.get(&task_id),
+                        snapshot_timeouts.get(&task_id),
+                    ) {
+                        (Some(start), Some(timeout)) if *timeout > 0 => {
+                            let elapsed = start.elapsed().as_secs_f32();
+                            ((elapsed / *timeout as f32) * 100.0).min(99.0)
+                        }
+                        _ => 50.0,
+                    };
+
+                    if let Some(task) = tasks.lock().unwrap().get_mut(&task_id) {
+                        if task.status == TaskStatus::Running {
+                            task.progress = progress;
+                            task.cpu_usage = cpu_sum;
+                            task.ram_usage_mb = ram_mb;
+                        }
+                    }
+                }
+            }
+        });
     }
 
     pub fn list(&self) -> Vec<Task> {
@@ -188,6 +265,19 @@ impl IncomingTasks {
         let sink = OutputSink::new();
         sinks.lock().unwrap().insert(id.clone(), sink.clone());
 
+        // Record start time + timeout so the monitor thread can compute
+        // progress as elapsed/timeout.
+        self.task_starts
+            .lock()
+            .unwrap()
+            .insert(id.clone(), Instant::now());
+        self.task_timeouts
+            .lock()
+            .unwrap()
+            .insert(id.clone(), timeout_secs);
+        let task_starts = self.task_starts.clone();
+        let task_timeouts = self.task_timeouts.clone();
+
         {
             let mut map = tasks.lock().unwrap();
             if let Some(task) = map.get_mut(&id) {
@@ -244,6 +334,8 @@ impl IncomingTasks {
             // Drop the live sink — subsequent get(id) calls will return the
             // final output captured in the Task itself, not the sink mirror.
             sinks.lock().unwrap().remove(&id);
+            task_starts.lock().unwrap().remove(&id);
+            task_timeouts.lock().unwrap().remove(&id);
         });
     }
 
@@ -366,6 +458,21 @@ impl OutgoingTasks {
         }
     }
 
+    /// Mirror live metrics (output + progress + CPU/RAM/GPU) from a still
+    /// -running peer task into the local OutgoingTask. Status field is left
+    /// alone — the caller manages the lifecycle.
+    pub fn mirror_running(&self, id: &str, peer: &Task) {
+        let mut map = self.tasks.lock().unwrap();
+        if let Some(task) = map.get_mut(id) {
+            task.output = peer.output.clone();
+            task.error_output = peer.error_output.clone();
+            task.progress = peer.progress;
+            task.cpu_usage = peer.cpu_usage;
+            task.ram_usage_mb = peer.ram_usage_mb;
+            task.gpu_usage = peer.gpu_usage;
+        }
+    }
+
     pub fn set_remote_ref(&self, local_id: &str, peer_ip: &str, remote_task_id: &str) {
         self.remote_refs.lock().unwrap().insert(
             local_id.to_string(),
@@ -388,4 +495,28 @@ impl OutgoingTasks {
         self.tasks.lock().unwrap().remove(id);
         self.remote_refs.lock().unwrap().remove(id);
     }
+}
+
+/// Collect the BFS process tree rooted at `root`, using the parent-child
+/// links exposed by sysinfo. Used to aggregate CPU/RAM of a sandbox task
+/// (the bwrap parent + python + any further children).
+fn collect_descendants(sys: &sysinfo::System, root: sysinfo::Pid) -> HashSet<sysinfo::Pid> {
+    let mut tree: HashSet<sysinfo::Pid> = HashSet::new();
+    tree.insert(root);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (pid, process) in sys.processes() {
+            if tree.contains(pid) {
+                continue;
+            }
+            if let Some(parent) = process.parent() {
+                if tree.contains(&parent) {
+                    tree.insert(*pid);
+                    changed = true;
+                }
+            }
+        }
+    }
+    tree
 }

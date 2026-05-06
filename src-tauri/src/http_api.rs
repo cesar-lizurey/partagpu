@@ -530,19 +530,24 @@ fn run_remote_blocking(
             }
         };
 
-        // Mirror the peer's partial stdout/stderr into the local OutgoingTask
-        // so UI clients polling getOutgoingTasks see live output. The peer
-        // exposes growing buffers via GET /peer/v1/tasks/<id>.
-        outgoing.update_outputs(local_id, &task.output, &task.error_output);
+        // Mirror everything live from the peer (output, progress, CPU/RAM/GPU)
+        // into the local OutgoingTask so the UI shows real-time state — not
+        // just at terminal but during the whole run.
+        outgoing.mirror_running(local_id, &task);
 
         match task.status {
             TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
                 return Ok(task);
             }
-            TaskStatus::Running => {
-                outgoing.update_progress(local_id, 50.0, TaskStatus::Running);
+            TaskStatus::Running | TaskStatus::Queued => {
+                // Make sure status is reflected (mirror_running doesn't touch
+                // status). Use update_progress to flip Running on first poll.
+                let mut map_status = task.status;
+                if map_status == TaskStatus::Queued {
+                    map_status = TaskStatus::Running;
+                }
+                outgoing.update_progress(local_id, task.progress, map_status);
             }
-            TaskStatus::Queued => {}
         }
     }
 }
