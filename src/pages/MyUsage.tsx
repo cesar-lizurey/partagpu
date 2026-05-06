@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { PeerTable } from "../components/PeerTable";
 import { TaskList } from "../components/TaskList";
 import { TaskDispatcher } from "../components/TaskDispatcher";
+import { DDPDispatcher } from "../components/DDPDispatcher";
 import { getPeers, getOutgoingTasks } from "../lib/api";
 import type { Peer, Task } from "../lib/api";
 
@@ -82,6 +83,11 @@ export function MyUsage() {
       <section className="section">
         <h3>Lancer une commande sur un pair</h3>
         <TaskDispatcher peers={peers} onDispatched={refresh} />
+      </section>
+
+      <section className="section">
+        <h3>Entraînement DDP multi-machines</h3>
+        <DDPDispatcher peers={peers} />
       </section>
 
       <section className="section">
