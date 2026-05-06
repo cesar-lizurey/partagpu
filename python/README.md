@@ -1,3 +1,5 @@
+🇬🇧 [English version](README.en.md)
+
 # partagpu
 
 Client Python pour [PartaGPU](https://github.com/cesar-lizurey/partagpu) — utilisez les GPU de plusieurs machines d'une salle de cours pour l'entraînement distribué.

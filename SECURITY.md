@@ -1,3 +1,5 @@
+🇬🇧 [English version](SECURITY.en.md)
+
 # Sécurité de PartaGPU
 
 Ce document détaille les mesures de sécurité implémentées dans PartaGPU. L'application est conçue pour fonctionner dans un environnement de salle de cours où les postes sont sur le même réseau local, avec un niveau de confiance modéré entre les utilisateurs.
@@ -391,13 +393,13 @@ Toutes les entrées utilisateur et réseau sont validées avant traitement :
 
 ## Mesures restantes à implémenter
 
-Voir [TODO.md](TODO.md) pour la liste complète. Les principales :
+Voir [TODO.md](TODO.md) pour le détail à jour. Plus aucune mesure critique : le chiffrement (AES-256-GCM + forward secrecy X25519), l'isolation par tâche (cgroup/sub-tree) et le cap de tâches concurrentes sont livrés. Restent uniquement des améliorations de priorité faible :
 
 | Priorité | Mesure | Description |
 |----------|--------|-------------|
-| Haut | Chiffrement des communications | Chiffrer les échanges entre pairs (AES dérivé du secret de salle) |
+| Faible | Tests d'intégration plus poussés | Test à deux instances pour exercer le dispatch end-to-end (impose de simuler mDNS) |
+| Nulle | Re-keying à granularité plus fine | Tourner aussi après N requêtes traitées, pas seulement toutes les 10 min |
 | Moyen | Audit des dépendances | `cargo audit` + `npm audit` en CI, Dependabot |
-| Bas | Journalisation | Logger les événements de sécurité dans l'interface |
 
 ---
 

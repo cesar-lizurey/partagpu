@@ -1,3 +1,5 @@
+🇬🇧 [English version](TROUBLESHOOTING.en.md)
+
 # Diagnostic — Que faire si ça ne marche pas
 
 Liste des erreurs courantes rencontrées en utilisant l'app **et** le package Python `partagpu`, avec leur cause et leur fix. Pour les bases d'utilisation, voir le [README](../README.md). Pour le détail technique, voir [ARCHITECTURE.md](ARCHITECTURE.md).

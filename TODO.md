@@ -1,3 +1,5 @@
+🇬🇧 [English version](TODO.en.md)
+
 # TODO — Sécurité
 
 Mesures de sécurité restantes à implémenter. Les mesures déjà en place sont documentées dans [SECURITY.md](SECURITY.md).

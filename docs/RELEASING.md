@@ -1,3 +1,5 @@
+🇬🇧 [English version](RELEASING.en.md)
+
 # Publier une nouvelle version
 
 Deux artefacts indépendants, deux tags séparés.

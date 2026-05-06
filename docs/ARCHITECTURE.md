@@ -1,3 +1,5 @@
+🇬🇧 [English version](ARCHITECTURE.en.md)
+
 # Architecture de PartaGPU
 
 Ce document explique **comment PartaGPU fonctionne en interne** : les composants, les protocoles, la sécurité, et comment l'orchestration DDP se branche sur l'infrastructure pair-à-pair. Pour le guide utilisateur, voir le [README principal](../README.md) et le [README du package Python](../python/README.md).

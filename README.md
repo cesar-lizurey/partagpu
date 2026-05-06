@@ -1,3 +1,5 @@
+🇬🇧 [English version](README.en.md)
+
 # PartaGPU
 
 Application de partage de puissance de calcul (CPU/GPU/RAM) entre les ordinateurs d'une salle de cours, construite avec [Tauri](https://tauri.app/) (Rust + React/TypeScript).
@@ -404,25 +406,26 @@ Pour le détail de toutes les mesures restantes, voir [TODO.md](TODO.md).
 
 ## CI/CD
 
-Le projet utilise GitLab CI/CD. Le pipeline s'exécute automatiquement à chaque push :
+Le projet utilise GitHub Actions. Deux workflows :
 
-| Étape | Ce qui est vérifié |
-|-------|-------------------|
-| **check** | TypeScript (`tsc --noEmit`), formatage (Prettier), lint (ESLint), compilation Rust (`cargo check`) |
-| **audit** | `npm audit` et `cargo audit` — détection de vulnérabilités dans les dépendances |
-| **build** | Construction du `.deb` (frontend + backend + helper) — uniquement sur `main` et les tags |
-| **release** | Publication automatique sur la page des releases avec le `.deb` en téléchargement |
+| Workflow | Déclencheur | Étapes |
+|---|---|---|
+| `.github/workflows/release.yml` | tag `vX.Y.Z` | **test** (`cargo test --all-targets --locked`) puis **build** (helper + `.deb` + AppImage) puis création d'une GitHub Release |
+| `.github/workflows/pypi.yml` | tag `python-vX.Y.Z` | build du package Python + publish PyPI via trusted publishing |
 
 ### Publier une nouvelle version
 
+Voir [docs/RELEASING.md](docs/RELEASING.md) pour la procédure complète et la liste des fichiers à synchroniser. En résumé :
+
 ```bash
-# Mettre à jour la version dans package.json, Cargo.toml et tauri.conf.json
-# Puis taguer et pousser :
-git tag v0.2.0
-git push origin v0.2.0
+# 1. Bump dans Cargo.toml + tauri.conf.json + package.json (3 endroits)
+# 2. Commit + tag + push :
+git commit -am "Bump version to X.Y.Z"
+git tag vX.Y.Z
+git push origin main vX.Y.Z
 ```
 
-Le pipeline construit le `.deb` et le publie automatiquement dans une release GitLab. Le lien de téléchargement dans la section [Installation](#installation) pointe vers la dernière release.
+La CI exécute `cargo test` avant de bundle ; un test cassé bloque la release.
 
 ---
 
