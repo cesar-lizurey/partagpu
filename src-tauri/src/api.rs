@@ -301,12 +301,12 @@ pub fn clear_security_log(sec_log: State<'_, SecurityLog>) {
 
 // ── Dispatch (UI) ──────────────────────────────────────────────────────────
 
-/// Dispatcher une tâche sur un pair depuis l'UI. Bloquant : retourne le Task
-/// final quand la tâche se termine côté pair (succès, échec ou annulation).
-/// Si `local_id` est fourni, c'est cet id qui est utilisé pour l'OutgoingTask
-/// — utile pour que l'UI puisse poller la tâche pendant qu'elle tourne.
+/// Dispatcher une tâche sur un pair depuis l'UI. Async : libère le thread IPC
+/// principal pendant que le dispatch bloque côté ureq, ce qui permet à l'UI
+/// de continuer à poller `getOutgoingTasks` (live output) en parallèle.
+/// Si `local_id` est fourni, c'est cet id qui est utilisé pour l'OutgoingTask.
 #[tauri::command]
-pub fn dispatch_task(
+pub async fn dispatch_task(
     auth: State<'_, AuthManager>,
     discovery: State<'_, Discovery>,
     outgoing: State<'_, crate::task_runner::OutgoingTasks>,
@@ -317,18 +317,30 @@ pub fn dispatch_task(
     user: Option<String>,
     local_id: Option<String>,
 ) -> Result<Task, String> {
-    crate::http_api::dispatch_task_blocking(
-        auth.inner(),
-        discovery.inner(),
-        outgoing.inner(),
-        &peer_ip,
-        args,
-        user,
-        timeout_secs.unwrap_or(3600).min(24 * 3600),
-        network.unwrap_or(false),
-        Vec::new(),
-        local_id,
-    )
+    // Clone the state out of the lifetime-bound State references so we can
+    // move into a blocking worker task. The inner types are all Clone (Arc).
+    let auth = auth.inner().clone();
+    let discovery = discovery.inner().clone();
+    let outgoing = outgoing.inner().clone();
+    let timeout = timeout_secs.unwrap_or(3600).min(24 * 3600);
+    let network = network.unwrap_or(false);
+
+    tokio::task::spawn_blocking(move || {
+        crate::http_api::dispatch_task_blocking(
+            &auth,
+            &discovery,
+            &outgoing,
+            &peer_ip,
+            args,
+            user,
+            timeout,
+            network,
+            Vec::new(),
+            local_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("dispatch interrompu : {e}"))?
 }
 
 // ── Cancel ─────────────────────────────────────────────────────────────────
@@ -344,13 +356,20 @@ pub fn cancel_incoming_task(
 
 /// Annule une tâche sortante (que la machine a soumise à un pair).
 /// Propage l'annulation au pair via `DELETE /peer/v1/tasks/<id>`.
+/// Async pour ne pas bloquer le thread IPC pendant la requête HTTP au pair.
 #[tauri::command]
-pub fn cancel_outgoing_task(
+pub async fn cancel_outgoing_task(
     auth: State<'_, AuthManager>,
     outgoing: State<'_, crate::task_runner::OutgoingTasks>,
     local_id: String,
 ) -> Result<bool, String> {
-    crate::http_api::cancel_outgoing_task(auth.inner(), outgoing.inner(), &local_id)
+    let auth = auth.inner().clone();
+    let outgoing = outgoing.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        crate::http_api::cancel_outgoing_task(&auth, &outgoing, &local_id)
+    })
+    .await
+    .map_err(|e| format!("cancel interrompu : {e}"))?
 }
 
 #[tauri::command]
