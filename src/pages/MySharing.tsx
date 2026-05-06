@@ -17,6 +17,8 @@ import {
   getIncomingTasks,
   getUserStatus,
   setUserPassword,
+  getMaxConcurrentTasks,
+  setMaxConcurrentTasks,
 } from "../lib/api";
 import type { ResourceUsage, SharingConfig, Task, UserStatus } from "../lib/api";
 
@@ -118,25 +120,38 @@ export function MySharing() {
   const [config, setConfig] = useState<SharingConfig | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [userStatus, setUserStatus] = useState<UserStatus>("Missing");
+  const [maxConcurrent, setMaxConcurrent] = useState<number>(4);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [res, cfg, t, us] = await Promise.all([
+      const [res, cfg, t, us, mc] = await Promise.all([
         getResources(),
         getSharingConfig(),
         getIncomingTasks(),
         getUserStatus(),
+        getMaxConcurrentTasks(),
       ]);
       setResources(res);
       setConfig(cfg);
       setTasks(t);
       setUserStatus(us);
+      setMaxConcurrent(mc);
       setError(null);
     } catch (e) {
       setError(String(e));
     }
   }, []);
+
+  const handleConcurrencyChange = async (n: number) => {
+    const clamped = Math.max(1, Math.min(64, Math.floor(n)));
+    setMaxConcurrent(clamped);
+    try {
+      await setMaxConcurrentTasks(clamped);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
 
   useEffect(() => {
     refresh();
@@ -304,6 +319,26 @@ export function MySharing() {
 
       <section className="section">
         <h3>Qui utilise mes ressources ?</h3>
+        <div className="concurrency-cap">
+          <label className="concurrency-cap__label">
+            Tâches simultanées maximum :
+            <input
+              type="number"
+              min={1}
+              max={64}
+              value={maxConcurrent}
+              onChange={(e) =>
+                void handleConcurrencyChange(Number(e.target.value))
+              }
+              className="concurrency-cap__input"
+            />
+          </label>
+          <p className="concurrency-cap__hint">
+            Au-delà de cette limite, les tâches reçues attendent leur tour
+            (statut « En attente »). Évite qu'un pair sature votre machine en
+            envoyant 100 tâches d'un coup.
+          </p>
+        </div>
         <TaskList tasks={tasks} direction="incoming" onCancelled={refresh} />
       </section>
 

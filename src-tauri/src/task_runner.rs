@@ -1,10 +1,15 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
 use crate::sandbox::{OutputSink, Sandbox, SandboxOptions, SandboxResult};
+
+/// Default cap on tasks running concurrently on this machine. Anything beyond
+/// this stays Queued and starts when a slot frees. Picked so a peer can't
+/// flood us with 100 simultaneous bwraps; tweakable later via the UI.
+const DEFAULT_MAX_CONCURRENT: usize = 4;
 
 /// Per-task output cap when persisting to disk. Avoids saving 1 MB stdout
 /// for every task across restarts (x100 tasks would be 100 MB on disk).
@@ -133,6 +138,19 @@ pub struct IncomingTasks {
     /// AppHandle used to push "incoming-tasks-changed" Tauri events whenever
     /// the task list mutates. Set once after Tauri starts via `set_emitter`.
     emitter: Arc<Mutex<Option<tauri::AppHandle>>>,
+    /// Tasks waiting for a free slot. Each entry carries the runtime params
+    /// the executor will need when it becomes runnable.
+    pending: Arc<Mutex<VecDeque<PendingTask>>>,
+    /// Max concurrent Running tasks. Anything more goes to `pending`.
+    max_concurrent: Arc<Mutex<usize>>,
+}
+
+/// Backing data for a Queued task waiting for a free execution slot. We hold
+/// the SandboxOptions / timeout off-band because they're not part of `Task`.
+struct PendingTask {
+    id: String,
+    timeout_secs: u64,
+    options: SandboxOptions,
 }
 
 impl IncomingTasks {
@@ -145,11 +163,59 @@ impl IncomingTasks {
             task_timeouts: Arc::new(Mutex::new(HashMap::new())),
             sandbox,
             emitter: Arc::new(Mutex::new(None)),
+            pending: Arc::new(Mutex::new(VecDeque::new())),
+            max_concurrent: Arc::new(Mutex::new(DEFAULT_MAX_CONCURRENT)),
         };
         this.load_from_disk();
         this.spawn_monitor();
         this.spawn_persistence();
         this
+    }
+
+    /// Read the current concurrency cap. Used by the UI to display it.
+    pub fn max_concurrent(&self) -> usize {
+        *self.max_concurrent.lock().unwrap()
+    }
+
+    /// Set the max number of tasks that may run at once. Lowering it doesn't
+    /// kill in-flight tasks, only delays new arrivals. Raising it pulls from
+    /// the pending queue immediately.
+    pub fn set_max_concurrent(&self, n: usize) {
+        let new = n.max(1);
+        *self.max_concurrent.lock().unwrap() = new;
+        // Pull as many as we can now that the cap rose.
+        while self.try_start_pending() {}
+    }
+
+    /// Count Running tasks. Pending ones are still Queued.
+    fn running_count(&self) -> usize {
+        self.tasks
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|t| t.status == TaskStatus::Running)
+            .count()
+    }
+
+    /// If there's a free slot AND a queued task, dequeue + spawn it.
+    /// Returns true if it actually started something.
+    fn try_start_pending(&self) -> bool {
+        if self.running_count() >= self.max_concurrent() {
+            return false;
+        }
+        let next = self.pending.lock().unwrap().pop_front();
+        let Some(p) = next else { return false };
+        // The task may have been cancelled while waiting in the queue —
+        // skip it and try the next one.
+        let still_queued = matches!(
+            self.tasks.lock().unwrap().get(&p.id).map(|t| t.status),
+            Some(TaskStatus::Queued)
+        );
+        if !still_queued {
+            return self.try_start_pending();
+        }
+        self.spawn_execution(&p.id, p.timeout_secs, p.options);
+        true
     }
 
     /// Plug in the AppHandle so subsequent mutations push events to the UI.
@@ -352,6 +418,8 @@ impl IncomingTasks {
 
     /// Create a Task, add it to the queue, and execute it asynchronously.
     /// Returns the queued Task immediately. Use `get(id)` to poll for completion.
+    /// If the concurrency cap is reached, the task stays Queued and will be
+    /// started by `try_start_pending` when a slot frees.
     pub fn create_and_run(
         &self,
         args: Vec<String>,
@@ -369,7 +437,19 @@ impl IncomingTasks {
         let task_id = task.id.clone();
         let task_clone = task.clone();
         self.add(task);
-        self.spawn_execution(&task_id, timeout_secs, options);
+
+        if self.running_count() < self.max_concurrent() {
+            self.spawn_execution(&task_id, timeout_secs, options);
+        } else {
+            // Park it: stays in `tasks` as Queued, gets executed when a slot
+            // frees up. The persistence loop will save the Queued status.
+            self.pending.lock().unwrap().push_back(PendingTask {
+                id: task_id,
+                timeout_secs,
+                options,
+            });
+            self.notify();
+        }
         Ok(task_clone)
     }
 
@@ -469,6 +549,10 @@ impl IncomingTasks {
             task_starts.lock().unwrap().remove(&id);
             task_timeouts.lock().unwrap().remove(&id);
             this.notify();
+
+            // A slot just freed — pull the next Queued task from the pending
+            // queue if any. Loops if a head entry was already cancelled.
+            this.try_start_pending();
         });
     }
 

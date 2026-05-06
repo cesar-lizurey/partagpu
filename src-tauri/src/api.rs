@@ -256,6 +256,22 @@ pub fn submit_task(
     )
 }
 
+// ── Concurrency cap ───────────────────────────────────────
+
+/// Read the max number of incoming tasks that may run at once on this peer.
+/// Tasks beyond this stay Queued until a slot frees.
+#[tauri::command]
+pub fn get_max_concurrent_tasks(tasks: State<'_, IncomingTasks>) -> usize {
+    tasks.max_concurrent()
+}
+
+/// Update the concurrency cap. Lowering it doesn't kill in-flight tasks;
+/// raising it pulls from the pending queue immediately.
+#[tauri::command]
+pub fn set_max_concurrent_tasks(tasks: State<'_, IncomingTasks>, n: usize) {
+    tasks.set_max_concurrent(n);
+}
+
 // ── Sandbox allowlist ─────────────────────────────────────
 
 #[tauri::command]

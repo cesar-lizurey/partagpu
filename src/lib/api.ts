@@ -162,6 +162,16 @@ export const setupManagedVenv = () => invoke<void>("setup_managed_venv");
 
 export const removeManagedVenv = () => invoke<void>("remove_managed_venv");
 
+// ── Concurrency cap ──────────────────────────────────────────────────────
+
+/** Max number of incoming tasks that may run at once on this machine.
+ *  Tasks beyond the cap stay Queued until a running task ends. */
+export const getMaxConcurrentTasks = () =>
+  invoke<number>("get_max_concurrent_tasks");
+
+export const setMaxConcurrentTasks = (n: number) =>
+  invoke<void>("set_max_concurrent_tasks", { n });
+
 /** Dispatch a command to a peer from the UI. Blocks until the task ends. */
 export const dispatchTask = (
   peerIp: string,

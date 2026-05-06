@@ -143,6 +143,8 @@ pub fn run() {
             api::get_managed_venv_status,
             api::setup_managed_venv,
             api::remove_managed_venv,
+            api::get_max_concurrent_tasks,
+            api::set_max_concurrent_tasks,
             api::get_allowlist,
             api::add_to_allowlist,
             api::remove_from_allowlist,
