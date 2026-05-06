@@ -435,7 +435,11 @@ PartaGPU fournit un package Python (`partagpu`) qui transforme l'application en 
 
 ### Installation
 
-Le package n'est **pas encore publié sur PyPI**. Installez-le en mode éditable depuis le clone du repo (le package suit l'état du checkout) :
+```bash
+pip install partagpu
+```
+
+Pour développer avec un checkout local du repo (mode éditable, le package suit le code) :
 
 ```bash
 git clone https://github.com/cesar-lizurey/partagpu.git
