@@ -1,9 +1,50 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
 use crate::sandbox::{OutputSink, Sandbox, SandboxOptions, SandboxResult};
+
+/// Per-task output cap when persisting to disk. Avoids saving 1 MB stdout
+/// for every task across restarts (x100 tasks would be 100 MB on disk).
+const PERSIST_OUTPUT_CAP: usize = 50 * 1024;
+const PERSIST_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn config_dir() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("partagpu")
+}
+
+fn save_atomic<T: Serialize>(path: &std::path::Path, value: &T) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(tmp, path)
+}
+
+/// Truncate output fields before persisting so a chatty task doesn't blow
+/// up the saved file. Never modifies the in-memory Task — only the saved
+/// copy.
+fn task_for_persist(task: &Task) -> Task {
+    let mut t = task.clone();
+    if t.output.len() > PERSIST_OUTPUT_CAP {
+        t.output.truncate(PERSIST_OUTPUT_CAP);
+        t.output.push_str("\n[…tronqué pour persistance]");
+    }
+    if t.error_output.len() > PERSIST_OUTPUT_CAP {
+        t.error_output.truncate(PERSIST_OUTPUT_CAP);
+        t.error_output.push_str("\n[…tronqué pour persistance]");
+    }
+    t
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
@@ -101,8 +142,61 @@ impl IncomingTasks {
             task_timeouts: Arc::new(Mutex::new(HashMap::new())),
             sandbox,
         };
+        this.load_from_disk();
         this.spawn_monitor();
+        this.spawn_persistence();
         this
+    }
+
+    fn save_path() -> PathBuf {
+        config_dir().join("incoming-tasks.json")
+    }
+
+    fn load_from_disk(&self) {
+        let path = Self::save_path();
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return, // first run, no file yet
+        };
+        let loaded: HashMap<String, Task> = match serde_json::from_str(&content) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("incoming-tasks.json corrompu, ignoré : {e}");
+                return;
+            }
+        };
+        let mut map = self.tasks.lock().unwrap();
+        for (id, mut task) in loaded {
+            // Tasks that were Running/Queued at shutdown are dead now.
+            if matches!(task.status, TaskStatus::Running | TaskStatus::Queued) {
+                task.status = TaskStatus::Cancelled;
+                task.error_output = if task.error_output.is_empty() {
+                    "Tâche interrompue par redémarrage de l'application.".to_string()
+                } else {
+                    task.error_output
+                };
+            }
+            map.insert(id, task);
+        }
+    }
+
+    fn spawn_persistence(&self) {
+        let tasks = self.tasks.clone();
+        std::thread::spawn(move || {
+            let path = Self::save_path();
+            loop {
+                std::thread::sleep(PERSIST_FLUSH_INTERVAL);
+                let snapshot: HashMap<String, Task> = tasks
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), task_for_persist(v)))
+                    .collect();
+                if let Err(e) = save_atomic(&path, &snapshot) {
+                    eprintln!("persist incoming-tasks: {e}");
+                }
+            }
+        });
     }
 
     /// Background thread that walks running tasks every second, updating
@@ -398,12 +492,105 @@ pub struct RemoteRef {
     pub remote_task_id: String,
 }
 
+#[derive(Serialize, Deserialize, Default)]
+struct OutgoingPersisted {
+    #[serde(default)]
+    tasks: HashMap<String, Task>,
+    #[serde(default)]
+    remote_refs: HashMap<String, RemoteRef>,
+}
+
+// Make RemoteRef serializable for persistence
+impl Serialize for RemoteRef {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("RemoteRef", 2)?;
+        st.serialize_field("peer_ip", &self.peer_ip)?;
+        st.serialize_field("remote_task_id", &self.remote_task_id)?;
+        st.end()
+    }
+}
+impl<'de> Deserialize<'de> for RemoteRef {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct R {
+            peer_ip: String,
+            remote_task_id: String,
+        }
+        let r = R::deserialize(d)?;
+        Ok(RemoteRef {
+            peer_ip: r.peer_ip,
+            remote_task_id: r.remote_task_id,
+        })
+    }
+}
+
 impl OutgoingTasks {
     pub fn new() -> Self {
-        Self {
+        let this = Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             remote_refs: Arc::new(Mutex::new(HashMap::new())),
+        };
+        this.load_from_disk();
+        this.spawn_persistence();
+        this
+    }
+
+    fn save_path() -> PathBuf {
+        config_dir().join("outgoing-tasks.json")
+    }
+
+    fn load_from_disk(&self) {
+        let path = Self::save_path();
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let loaded: OutgoingPersisted = match serde_json::from_str(&content) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("outgoing-tasks.json corrompu, ignoré : {e}");
+                return;
+            }
+        };
+        let mut tasks = self.tasks.lock().unwrap();
+        for (id, mut task) in loaded.tasks {
+            if matches!(task.status, TaskStatus::Running | TaskStatus::Queued) {
+                task.status = TaskStatus::Cancelled;
+                task.error_output = if task.error_output.is_empty() {
+                    "Dispatch interrompu par redémarrage de l'application.".to_string()
+                } else {
+                    task.error_output
+                };
+            }
+            tasks.insert(id, task);
         }
+        // remote_refs are stale once we restart (the peer's task is gone),
+        // but loading them is harmless. They get cleared as the cancelled
+        // tasks above don't reach the cleanup paths. Skip loading.
+    }
+
+    fn spawn_persistence(&self) {
+        let tasks = self.tasks.clone();
+        let remote_refs = self.remote_refs.clone();
+        std::thread::spawn(move || {
+            let path = Self::save_path();
+            loop {
+                std::thread::sleep(PERSIST_FLUSH_INTERVAL);
+                let payload = OutgoingPersisted {
+                    tasks: tasks
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|(k, v)| (k.clone(), task_for_persist(v)))
+                        .collect(),
+                    remote_refs: remote_refs.lock().unwrap().clone(),
+                };
+                if let Err(e) = save_atomic(&path, &payload) {
+                    eprintln!("persist outgoing-tasks: {e}");
+                }
+            }
+        });
     }
 
     pub fn list(&self) -> Vec<Task> {

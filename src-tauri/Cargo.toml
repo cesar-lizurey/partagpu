@@ -43,3 +43,5 @@ aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
 rand = "0.8"
+# Gzip for workspace compression on the dispatcher → peer hop.
+flate2 = "1"

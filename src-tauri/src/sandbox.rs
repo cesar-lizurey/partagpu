@@ -35,8 +35,14 @@ const MANAGED_VENV_SANDBOX: &str = "/opt/partagpu-venv";
 pub struct WorkspaceFile {
     /// Relative path inside the workspace (no leading `/`, no `..`).
     pub path: String,
-    /// File contents, base64-encoded.
+    /// File contents, base64-encoded. If `compression == Some("gzip")`, the
+    /// underlying bytes (after base64 decode) are gzipped — the peer must
+    /// decompress before writing the file.
     pub content_b64: String,
+    /// Optional compression scheme. Currently only `"gzip"` is recognised.
+    /// Absent / `None` means raw bytes (legacy format from older clients).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<String>,
 }
 
 /// Options for a single sandbox execution.
@@ -293,7 +299,20 @@ impl Sandbox {
 
         let pid = child.id();
         on_pid(pid);
-        let procs_path = format!("{CGROUP_PATH}/cgroup.procs");
+
+        // Per-task sub-cgroup. If creation succeeds, the bwrap process (and
+        // all its children, thanks to cgroup inheritance) get isolated CPU
+        // and memory accounting within the parent partagpu cgroup. If it
+        // fails (cgroup not set up, perms wrong, kernel without cgroup v2),
+        // we fall back to the parent cgroup.procs.
+        let task_cgroup =
+            std::path::Path::new(CGROUP_PATH).join(format!("task-{}", uuid::Uuid::new_v4()));
+        let in_task_cgroup = std::fs::create_dir(&task_cgroup).is_ok();
+        let procs_path = if in_task_cgroup {
+            task_cgroup.join("cgroup.procs")
+        } else {
+            std::path::PathBuf::from(format!("{CGROUP_PATH}/cgroup.procs"))
+        };
         let _ = std::fs::write(&procs_path, pid.to_string());
 
         // Live capture buffers. If the caller provided a sink, reuse it so the
@@ -343,6 +362,13 @@ impl Sandbox {
                 Err(e)
             }
         };
+
+        // Remove the per-task sub-cgroup. Should be empty after the bwrap
+        // tree is gone (due to --die-with-parent). Fails silently if the
+        // dir is somehow non-empty or never existed.
+        if in_task_cgroup {
+            let _ = std::fs::remove_dir(&task_cgroup);
+        }
 
         // Manual cleanup (Drop on TempWorkspace also handles it, but be defensive).
         drop(workspace_host);
@@ -450,9 +476,26 @@ fn prepare_workspace(files: &[WorkspaceFile]) -> Result<TempWorkspace, String> {
             // Sub-dirs created here also need to be writable by the sandbox UID.
             let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o777));
         }
-        let bytes = data_encoding::BASE64
+        let raw = data_encoding::BASE64
             .decode(f.content_b64.as_bytes())
             .map_err(|e| format!("base64 invalide pour {}: {e}", f.path))?;
+        // Decompress if the sender flagged the bytes as gzipped. Older
+        // clients (legacy) send raw bytes without the compression field.
+        let bytes = match f.compression.as_deref() {
+            Some("gzip") => {
+                use std::io::Read;
+                let mut decoder = flate2::read::GzDecoder::new(raw.as_slice());
+                let mut decompressed = Vec::with_capacity(raw.len() * 2);
+                decoder
+                    .read_to_end(&mut decompressed)
+                    .map_err(|e| format!("gunzip invalide pour {}: {e}", f.path))?;
+                decompressed
+            }
+            None | Some("none") => raw,
+            Some(other) => {
+                return Err(format!("compression inconnue pour {}: {other}", f.path));
+            }
+        };
         total_bytes = total_bytes.saturating_add(bytes.len() as u64);
         if total_bytes > MAX_WORKSPACE_BYTES {
             return Err(format!(
@@ -468,6 +511,33 @@ fn prepare_workspace(files: &[WorkspaceFile]) -> Result<TempWorkspace, String> {
     }
 
     Ok(TempWorkspace { path: dir })
+}
+
+/// Compress a list of WorkspaceFile in-place : their `content_b64` is
+/// re-encoded to hold gzipped bytes (`compression = Some("gzip")`).
+/// Used by the dispatcher to shrink the network payload sent to the peer.
+/// Files are compressed individually (per-file gzip) so the peer can
+/// stream-decode each.
+pub fn compress_workspace(files: &mut [WorkspaceFile]) -> Result<(), String> {
+    use flate2::{write::GzEncoder, Compression};
+    use std::io::Write;
+    for f in files {
+        if matches!(f.compression.as_deref(), Some("gzip")) {
+            continue; // already compressed, idempotent
+        }
+        let raw = data_encoding::BASE64
+            .decode(f.content_b64.as_bytes())
+            .map_err(|e| format!("base64 invalide pour {}: {e}", f.path))?;
+        let mut enc = GzEncoder::new(Vec::with_capacity(raw.len() / 2), Compression::default());
+        enc.write_all(&raw)
+            .map_err(|e| format!("gzip écriture {}: {e}", f.path))?;
+        let gz = enc
+            .finish()
+            .map_err(|e| format!("gzip finish {}: {e}", f.path))?;
+        f.content_b64 = data_encoding::BASE64.encode(&gz);
+        f.compression = Some("gzip".to_string());
+    }
+    Ok(())
 }
 
 /// Validate a workspace-relative path: no absolute, no `..`, no NUL.

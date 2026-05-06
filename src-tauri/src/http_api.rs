@@ -262,9 +262,15 @@ pub fn dispatch_task_blocking(
     user: Option<String>,
     timeout_secs: u64,
     network: bool,
-    workspace: Vec<WorkspaceFile>,
+    mut workspace: Vec<WorkspaceFile>,
     local_id_override: Option<String>,
 ) -> Result<Task, String> {
+    // Compress the workspace before encryption (gzip is much faster on the
+    // pre-encrypted plaintext than after — and ciphertext is incompressible).
+    // Idempotent for clients that already pre-compressed.
+    if !workspace.is_empty() {
+        crate::sandbox::compress_workspace(&mut workspace)?;
+    }
     if peer_ip.is_empty() {
         return Err("peer_ip vide.".into());
     }

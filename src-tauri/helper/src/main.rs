@@ -425,17 +425,29 @@ fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
     };
     write_file(&format!("{CGROUP_PATH}/memory.max"), &mem_val);
 
-    // Grant calling user write access (PKEXEC_UID)
+    // Enable cpu + memory controllers for sub-cgroups so per-task
+    // child cgroups can use them.
+    let _ = fs::write(
+        format!("{CGROUP_PATH}/cgroup.subtree_control"),
+        "+cpu +memory",
+    );
+
+    // Grant calling user write access (PKEXEC_UID) so the main app can
+    // adjust limits AND create per-task sub-cgroups (mkdir under
+    // /sys/fs/cgroup/partagpu/) without re-elevation.
     if let Ok(uid_str) = env::var("PKEXEC_UID") {
         if let Ok(uid) = uid_str.parse::<u32>() {
-            for file in ["cpu.max", "memory.max", "cgroup.procs"] {
+            // Limit + procs files of the parent cgroup.
+            for file in ["cpu.max", "memory.max", "cgroup.procs", "cgroup.subtree_control"] {
                 let path = format!("{CGROUP_PATH}/{file}");
                 let _ = chown(&path, Some(uid), None);
             }
+            // The directory itself, so the user can mkdir sub-cgroups.
+            let _ = chown(CGROUP_PATH, Some(uid), None);
         }
     }
 
-    println!("Cgroup configured: cpu={cpu_percent}% ram={ram_limit_mb}M");
+    println!("Cgroup configured: cpu={cpu_percent}% ram={ram_limit_mb}M (per-task sub-cgroups enabled)");
 }
 
 fn cmd_remove_cgroup() {
