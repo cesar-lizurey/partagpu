@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { PeerTable } from "../components/PeerTable";
 import { TaskList } from "../components/TaskList";
 import { TaskDispatcher } from "../components/TaskDispatcher";
@@ -23,8 +24,20 @@ export function MyUsage() {
 
   useEffect(() => {
     refresh();
+    // Peers come from mDNS — keep polling at 3s. Outgoing tasks are pushed
+    // by the backend via the "outgoing-tasks-changed" Tauri event below, so
+    // we don't need a fast poll for live progress / output.
     const interval = setInterval(refresh, 3000);
-    return () => clearInterval(interval);
+    let unlisten: UnlistenFn | undefined;
+    listen<Task[]>("outgoing-tasks-changed", (e) => {
+      setTasks(e.payload);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      clearInterval(interval);
+      unlisten?.();
+    };
   }, [refresh]);
 
   // Sort : usable peers (verified AND sharing) at the very top, since

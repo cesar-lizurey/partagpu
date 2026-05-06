@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ManagedVenvPanel } from "../components/ManagedVenvPanel";
 import { ResourceGauge } from "../components/ResourceGauge";
 import { SharingToggle } from "../components/SharingToggle";
@@ -139,8 +140,20 @@ export function MySharing() {
 
   useEffect(() => {
     refresh();
+    // Resources/sharing-config still polled at 3 s. Incoming tasks are pushed
+    // via the "incoming-tasks-changed" Tauri event for instant progress / output
+    // updates without a tight polling loop.
     const interval = setInterval(refresh, 3000);
-    return () => clearInterval(interval);
+    let unlisten: UnlistenFn | undefined;
+    listen<Task[]>("incoming-tasks-changed", (e) => {
+      setTasks(e.payload);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      clearInterval(interval);
+      unlisten?.();
+    };
   }, [refresh]);
 
   const handleAction = async (action: () => Promise<SharingConfig>) => {

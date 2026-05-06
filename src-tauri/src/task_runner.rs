@@ -130,6 +130,9 @@ pub struct IncomingTasks {
     /// Timeout in seconds per task, for the same progress computation.
     task_timeouts: Arc<Mutex<HashMap<String, u64>>>,
     sandbox: Sandbox,
+    /// AppHandle used to push "incoming-tasks-changed" Tauri events whenever
+    /// the task list mutates. Set once after Tauri starts via `set_emitter`.
+    emitter: Arc<Mutex<Option<tauri::AppHandle>>>,
 }
 
 impl IncomingTasks {
@@ -141,11 +144,30 @@ impl IncomingTasks {
             task_starts: Arc::new(Mutex::new(HashMap::new())),
             task_timeouts: Arc::new(Mutex::new(HashMap::new())),
             sandbox,
+            emitter: Arc::new(Mutex::new(None)),
         };
         this.load_from_disk();
         this.spawn_monitor();
         this.spawn_persistence();
         this
+    }
+
+    /// Plug in the AppHandle so subsequent mutations push events to the UI.
+    /// Called once from `lib.rs::run` after the Tauri builder hands us a handle.
+    pub fn set_emitter(&self, app: tauri::AppHandle) {
+        *self.emitter.lock().unwrap() = Some(app);
+    }
+
+    /// Emit the current task list to the frontend. Must be called WITHOUT
+    /// holding the `tasks` lock (it locks internally).
+    fn notify(&self) {
+        let app = match self.emitter.lock().unwrap().clone() {
+            Some(a) => a,
+            None => return,
+        };
+        use tauri::Emitter;
+        let payload = self.list();
+        let _ = app.emit("incoming-tasks-changed", &payload);
     }
 
     fn save_path() -> PathBuf {
@@ -208,6 +230,7 @@ impl IncomingTasks {
         let pids = self.pids.clone();
         let starts = self.task_starts.clone();
         let timeouts = self.task_timeouts.clone();
+        let this = self.clone();
 
         std::thread::spawn(move || {
             use sysinfo::{Pid, ProcessesToUpdate, System};
@@ -224,6 +247,7 @@ impl IncomingTasks {
                 if snapshot_pids.is_empty() {
                     continue;
                 }
+                let mut changed = false;
                 let snapshot_starts: HashMap<String, Instant> =
                     starts.lock().unwrap().clone();
                 let snapshot_timeouts: HashMap<String, u64> =
@@ -260,8 +284,13 @@ impl IncomingTasks {
                             task.progress = progress;
                             task.cpu_usage = cpu_sum;
                             task.ram_usage_mb = ram_mb;
+                            changed = true;
                         }
                     }
+                }
+
+                if changed {
+                    this.notify();
                 }
             }
         });
@@ -299,19 +328,26 @@ impl IncomingTasks {
     }
 
     pub fn add(&self, task: Task) {
-        let mut map = self.tasks.lock().unwrap();
-        map.insert(task.id.clone(), task);
+        {
+            let mut map = self.tasks.lock().unwrap();
+            map.insert(task.id.clone(), task);
+        }
+        self.notify();
     }
 
     pub fn update_status(&self, id: &str, status: TaskStatus) {
-        let mut map = self.tasks.lock().unwrap();
-        if let Some(task) = map.get_mut(id) {
-            task.status = status;
+        {
+            let mut map = self.tasks.lock().unwrap();
+            if let Some(task) = map.get_mut(id) {
+                task.status = status;
+            }
         }
+        self.notify();
     }
 
     pub fn remove(&self, id: &str) {
         self.tasks.lock().unwrap().remove(id);
+        self.notify();
     }
 
     /// Create a Task, add it to the queue, and execute it asynchronously.
@@ -345,6 +381,7 @@ impl IncomingTasks {
         let sinks = self.sinks.clone();
         let sandbox = self.sandbox.clone();
         let id = task_id.to_string();
+        let this = self.clone();
 
         let args = {
             let map = tasks.lock().unwrap();
@@ -378,6 +415,7 @@ impl IncomingTasks {
                 task.status = TaskStatus::Running;
             }
         }
+        this.notify();
 
         std::thread::spawn(move || {
             let pids_for_callback = pids.clone();
@@ -430,6 +468,7 @@ impl IncomingTasks {
             sinks.lock().unwrap().remove(&id);
             task_starts.lock().unwrap().remove(&id);
             task_timeouts.lock().unwrap().remove(&id);
+            this.notify();
         });
     }
 
@@ -450,6 +489,7 @@ impl IncomingTasks {
                 },
             }
         }
+        self.notify();
 
         let pid = self.pids.lock().unwrap().get(task_id).copied();
         if let Some(pid) = pid {
@@ -484,6 +524,9 @@ pub struct OutgoingTasks {
     /// For each local outgoing task id, the (peer_ip, remote_task_id) on the
     /// peer that runs it. Used to propagate cancellation via DELETE.
     remote_refs: Arc<Mutex<HashMap<String, RemoteRef>>>,
+    /// AppHandle used to push "outgoing-tasks-changed" Tauri events whenever
+    /// the task list mutates. Set once after Tauri starts via `set_emitter`.
+    emitter: Arc<Mutex<Option<tauri::AppHandle>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -530,10 +573,28 @@ impl OutgoingTasks {
         let this = Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             remote_refs: Arc::new(Mutex::new(HashMap::new())),
+            emitter: Arc::new(Mutex::new(None)),
         };
         this.load_from_disk();
         this.spawn_persistence();
         this
+    }
+
+    /// Plug in the AppHandle so subsequent mutations push events to the UI.
+    pub fn set_emitter(&self, app: tauri::AppHandle) {
+        *self.emitter.lock().unwrap() = Some(app);
+    }
+
+    /// Emit the current task list to the frontend. Must be called WITHOUT
+    /// holding the `tasks` lock.
+    fn notify(&self) {
+        let app = match self.emitter.lock().unwrap().clone() {
+            Some(a) => a,
+            None => return,
+        };
+        use tauri::Emitter;
+        let payload = self.list();
+        let _ = app.emit("outgoing-tasks-changed", &payload);
     }
 
     fn save_path() -> PathBuf {
@@ -602,62 +663,83 @@ impl OutgoingTasks {
     }
 
     pub fn add(&self, task: Task) {
-        let mut map = self.tasks.lock().unwrap();
-        map.insert(task.id.clone(), task);
+        {
+            let mut map = self.tasks.lock().unwrap();
+            map.insert(task.id.clone(), task);
+        }
+        self.notify();
     }
 
     /// Replace the full Task record (used when polling refreshes from the peer).
     pub fn replace(&self, task: Task) {
-        let mut map = self.tasks.lock().unwrap();
-        map.insert(task.id.clone(), task);
+        {
+            let mut map = self.tasks.lock().unwrap();
+            map.insert(task.id.clone(), task);
+        }
+        self.notify();
     }
 
     pub fn update_progress(&self, id: &str, progress: f32, status: TaskStatus) {
-        let mut map = self.tasks.lock().unwrap();
-        if let Some(task) = map.get_mut(id) {
-            task.progress = progress;
-            task.status = status;
+        {
+            let mut map = self.tasks.lock().unwrap();
+            if let Some(task) = map.get_mut(id) {
+                task.progress = progress;
+                task.status = status;
+            }
         }
+        self.notify();
     }
 
     pub fn set_failed(&self, id: &str, error: &str) {
-        let mut map = self.tasks.lock().unwrap();
-        if let Some(task) = map.get_mut(id) {
-            task.status = TaskStatus::Failed;
-            task.error_output = error.to_string();
+        {
+            let mut map = self.tasks.lock().unwrap();
+            if let Some(task) = map.get_mut(id) {
+                task.status = TaskStatus::Failed;
+                task.error_output = error.to_string();
+            }
         }
+        self.notify();
     }
 
     pub fn set_cancelled(&self, id: &str) {
-        let mut map = self.tasks.lock().unwrap();
-        if let Some(task) = map.get_mut(id) {
-            task.status = TaskStatus::Cancelled;
+        {
+            let mut map = self.tasks.lock().unwrap();
+            if let Some(task) = map.get_mut(id) {
+                task.status = TaskStatus::Cancelled;
+            }
         }
+        self.notify();
     }
 
     /// Mirror partial stdout/stderr from a peer into the local OutgoingTask.
     /// Called by the dispatch poll loop so the UI can show live output.
     pub fn update_outputs(&self, id: &str, stdout: &str, stderr: &str) {
-        let mut map = self.tasks.lock().unwrap();
-        if let Some(task) = map.get_mut(id) {
-            task.output = stdout.to_string();
-            task.error_output = stderr.to_string();
+        {
+            let mut map = self.tasks.lock().unwrap();
+            if let Some(task) = map.get_mut(id) {
+                task.output = stdout.to_string();
+                task.error_output = stderr.to_string();
+            }
         }
+        self.notify();
     }
 
     /// Mirror live metrics (output + progress + CPU/RAM/GPU) from a still
     /// -running peer task into the local OutgoingTask. Status field is left
     /// alone — the caller manages the lifecycle.
     pub fn mirror_running(&self, id: &str, peer: &Task) {
-        let mut map = self.tasks.lock().unwrap();
-        if let Some(task) = map.get_mut(id) {
-            task.output = peer.output.clone();
-            task.error_output = peer.error_output.clone();
-            task.progress = peer.progress;
-            task.cpu_usage = peer.cpu_usage;
-            task.ram_usage_mb = peer.ram_usage_mb;
-            task.gpu_usage = peer.gpu_usage;
+        {
+            let mut map = self.tasks.lock().unwrap();
+            if let Some(task) = map.get_mut(id) {
+                task.output = peer.output.clone();
+                task.error_output = peer.error_output.clone();
+                task.progress = peer.progress;
+                task.cpu_usage = peer.cpu_usage;
+                task.ram_usage_mb = peer.ram_usage_mb;
+                task.gpu_usage = peer.gpu_usage;
+            }
         }
+        self.notify();
     }
 
     pub fn set_remote_ref(&self, local_id: &str, peer_ip: &str, remote_task_id: &str) {
@@ -681,6 +763,7 @@ impl OutgoingTasks {
     pub fn remove(&self, id: &str) {
         self.tasks.lock().unwrap().remove(id);
         self.remote_refs.lock().unwrap().remove(id);
+        self.notify();
     }
 }
 

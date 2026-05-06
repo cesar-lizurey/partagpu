@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   dispatchTask,
-  getOutgoingTasks,
   type Peer,
   type Task,
   type WorkspaceFile,
@@ -119,7 +119,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
   const [livePartial, setLivePartial] = useState<Task | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const pollTimerRef = useRef<number | null>(null);
+  const unlistenRef = useRef<UnlistenFn | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const workspaceBytes = useMemo(
@@ -138,13 +138,11 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
     }
   }, [targets, selectedIp]);
 
-  // Stop polling on unmount
+  // Stop listening on unmount
   useEffect(() => {
     return () => {
-      if (pollTimerRef.current !== null) {
-        clearInterval(pollTimerRef.current);
-        pollTimerRef.current = null;
-      }
+      unlistenRef.current?.();
+      unlistenRef.current = null;
     };
   }, []);
 
@@ -157,10 +155,8 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
   }, [mode, commandInput, fileInterpreter, fileName, fileArgs]);
 
   const stopPolling = () => {
-    if (pollTimerRef.current !== null) {
-      clearInterval(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
+    unlistenRef.current?.();
+    unlistenRef.current = null;
   };
 
   const handleAddFiles = (files: FileList | null) => {
@@ -245,17 +241,21 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
       }
     }
 
-    pollTimerRef.current = window.setInterval(async () => {
-      try {
-        const tasks = await getOutgoingTasks();
-        const t = tasks.find((task) => task.id === localId);
-        if (t) {
-          setLivePartial(t);
-        }
-      } catch {
-        // ignore transient polling errors — the final result will tell us
-      }
-    }, 500);
+    // Subscribe to the live "outgoing-tasks-changed" event so we see
+    // progress / output updates the moment the backend pushes them, instead
+    // of polling every 500 ms.
+    try {
+      unlistenRef.current = await listen<Task[]>(
+        "outgoing-tasks-changed",
+        (e) => {
+          const t = e.payload.find((task) => task.id === localId);
+          if (t) setLivePartial(t);
+        },
+      );
+    } catch {
+      // listen() failure is non-fatal — final result is still delivered
+      // by the dispatchTask() promise below.
+    }
 
     try {
       const task = await dispatchTask(selectedIp, parsedArgs, {

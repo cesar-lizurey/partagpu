@@ -95,8 +95,19 @@ pub fn run() {
         sec_log.clone(),
     );
 
+    let incoming_for_setup = incoming.clone();
+    let outgoing_for_setup = outgoing.clone();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .setup(move |app| {
+            // Hand the AppHandle to the task stores so they can push live
+            // "{incoming,outgoing}-tasks-changed" events whenever state
+            // mutates — replacing UI polling with push updates.
+            incoming_for_setup.set_emitter(app.handle().clone());
+            outgoing_for_setup.set_emitter(app.handle().clone());
+            Ok(())
+        })
         .manage(sec_log)
         .manage(auth)
         .manage(discovery)
