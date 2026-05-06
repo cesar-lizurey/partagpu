@@ -37,6 +37,17 @@ jobs:
           key: rust-test-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: rust-test-${{ runner.os }}-
 
+      - name: Stub helper resource for tests
+        # tauri-build verifies that every file listed in `tauri.conf.json`
+        # `bundle.resources` exists, even at `cargo test` time. The real
+        # helper is built in the `build` job ; tests don't invoke it, so
+        # we just create an executable placeholder. Real binary always
+        # ships from the build job — this stub never reaches users.
+        run: |
+          mkdir -p src-tauri/resources
+          printf '#!/bin/sh\nexit 0\n' > src-tauri/resources/partagpu-helper
+          chmod +x src-tauri/resources/partagpu-helper
+
       - name: Run unit + integration tests
         working-directory: src-tauri
         run: cargo test --all-targets --locked
