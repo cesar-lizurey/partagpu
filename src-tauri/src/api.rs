@@ -303,6 +303,8 @@ pub fn clear_security_log(sec_log: State<'_, SecurityLog>) {
 
 /// Dispatcher une tâche sur un pair depuis l'UI. Bloquant : retourne le Task
 /// final quand la tâche se termine côté pair (succès, échec ou annulation).
+/// Si `local_id` est fourni, c'est cet id qui est utilisé pour l'OutgoingTask
+/// — utile pour que l'UI puisse poller la tâche pendant qu'elle tourne.
 #[tauri::command]
 pub fn dispatch_task(
     auth: State<'_, AuthManager>,
@@ -313,6 +315,7 @@ pub fn dispatch_task(
     timeout_secs: Option<u64>,
     network: Option<bool>,
     user: Option<String>,
+    local_id: Option<String>,
 ) -> Result<Task, String> {
     crate::http_api::dispatch_task_blocking(
         auth.inner(),
@@ -324,7 +327,7 @@ pub fn dispatch_task(
         timeout_secs.unwrap_or(3600).min(24 * 3600),
         network.unwrap_or(false),
         Vec::new(),
-        None,
+        local_id,
     )
 }
 

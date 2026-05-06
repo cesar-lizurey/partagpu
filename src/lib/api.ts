@@ -155,6 +155,9 @@ export const dispatchTask = (
     timeoutSecs?: number;
     network?: boolean;
     user?: string;
+    /** Pre-allocated outgoing task id. Lets the UI poll the live task while
+     *  the dispatch is still in flight. */
+    localId?: string;
   } = {},
 ) =>
   invoke<Task>("dispatch_task", {
@@ -163,6 +166,7 @@ export const dispatchTask = (
     timeoutSecs: options.timeoutSecs,
     network: options.network,
     user: options.user,
+    localId: options.localId,
   });
 
 export const cancelIncomingTask = (taskId: string) =>

@@ -530,6 +530,11 @@ fn run_remote_blocking(
             }
         };
 
+        // Mirror the peer's partial stdout/stderr into the local OutgoingTask
+        // so UI clients polling getOutgoingTasks see live output. The peer
+        // exposes growing buffers via GET /peer/v1/tasks/<id>.
+        outgoing.update_outputs(local_id, &task.output, &task.error_output);
+
         match task.status {
             TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
                 return Ok(task);

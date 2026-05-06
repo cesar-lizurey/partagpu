@@ -53,6 +53,30 @@ pub struct SandboxResult {
     pub stderr: String,
 }
 
+/// Shared buffers the sandbox progressively fills with stdout / stderr as the
+/// process runs (instead of only at exit). Lets the task runner expose live
+/// output to clients polling the task status.
+#[derive(Clone)]
+pub struct OutputSink {
+    pub stdout: Arc<Mutex<String>>,
+    pub stderr: Arc<Mutex<String>>,
+}
+
+impl OutputSink {
+    pub fn new() -> Self {
+        Self {
+            stdout: Arc::new(Mutex::new(String::new())),
+            stderr: Arc::new(Mutex::new(String::new())),
+        }
+    }
+
+    pub fn snapshot(&self) -> (String, String) {
+        let out = self.stdout.lock().map(|s| s.clone()).unwrap_or_default();
+        let err = self.stderr.lock().map(|s| s.clone()).unwrap_or_default();
+        (out, err)
+    }
+}
+
 /// Manages the allowlist and runs sandboxed commands.
 #[derive(Clone)]
 pub struct Sandbox {
@@ -137,13 +161,31 @@ impl Sandbox {
 
     /// Same as `execute_with_options`, but invokes `on_pid` with the bwrap
     /// PID as soon as the child is spawned. Used by the task runner to
-    /// register the PID for cancellation.
+    /// register the PID for cancellation. If `sink` is provided, stdout and
+    /// stderr are appended to it as the bytes arrive (live streaming);
+    /// otherwise the sandbox uses internal buffers and only the final
+    /// SandboxResult exposes the output.
     pub fn execute_with_callbacks<F>(
         &self,
         args: &[String],
         timeout_secs: u64,
         opts: &SandboxOptions,
         on_pid: F,
+    ) -> Result<SandboxResult, String>
+    where
+        F: FnOnce(u32),
+    {
+        self.execute_with_callbacks_and_sink(args, timeout_secs, opts, on_pid, None)
+    }
+
+    /// Variant that also accepts an external `OutputSink` for live streaming.
+    pub fn execute_with_callbacks_and_sink<F>(
+        &self,
+        args: &[String],
+        timeout_secs: u64,
+        opts: &SandboxOptions,
+        on_pid: F,
+        sink: Option<&OutputSink>,
     ) -> Result<SandboxResult, String>
     where
         F: FnOnce(u32),
@@ -228,24 +270,41 @@ impl Sandbox {
         let procs_path = format!("{CGROUP_PATH}/cgroup.procs");
         let _ = std::fs::write(&procs_path, pid.to_string());
 
-        let result = wait_with_timeout(&mut child, timeout_secs);
+        // Live capture buffers. If the caller provided a sink, reuse it so the
+        // task runner sees output in real time; otherwise use local buffers
+        // that only matter at process exit.
+        let stdout_buf: Arc<Mutex<String>> = sink
+            .map(|s| s.stdout.clone())
+            .unwrap_or_else(|| Arc::new(Mutex::new(String::new())));
+        let stderr_buf: Arc<Mutex<String>> = sink
+            .map(|s| s.stderr.clone())
+            .unwrap_or_else(|| Arc::new(Mutex::new(String::new())));
 
-        // Always clean up the workspace directory (drops on scope, but be explicit
-        // about errors so a leak is logged).
-        let res = match result {
+        let stdout_handle = child.stdout.take().map(|out| {
+            let buf = stdout_buf.clone();
+            std::thread::spawn(move || drain_stream(out, buf, MAX_STDOUT_BYTES))
+        });
+        let stderr_handle = child.stderr.take().map(|err| {
+            let buf = stderr_buf.clone();
+            std::thread::spawn(move || drain_stream(err, buf, MAX_STDERR_BYTES))
+        });
+
+        let wait_result = wait_with_timeout(&mut child, timeout_secs);
+
+        // After the child exits (or is killed), the pipes EOF; the reader
+        // threads finish on their own. Join them to ensure all bytes are
+        // captured before we read the buffers.
+        if let Some(h) = stdout_handle {
+            let _ = h.join();
+        }
+        if let Some(h) = stderr_handle {
+            let _ = h.join();
+        }
+
+        let res = match wait_result {
             Ok(status) => {
-                let mut stdout = String::new();
-                let mut stderr = String::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_string(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_string(&mut stderr);
-                }
-
-                stdout.truncate(MAX_STDOUT_BYTES);
-                stderr.truncate(MAX_STDERR_BYTES);
-
+                let stdout = stdout_buf.lock().map(|s| s.clone()).unwrap_or_default();
+                let stderr = stderr_buf.lock().map(|s| s.clone()).unwrap_or_default();
                 Ok(SandboxResult {
                     exit_code: status,
                     stdout,
@@ -262,6 +321,64 @@ impl Sandbox {
         // Manual cleanup (Drop on TempWorkspace also handles it, but be defensive).
         drop(workspace_host);
         res
+    }
+}
+
+/// Continuously read 4 KB chunks from `stream` and append them (as UTF-8) to
+/// `buf`, capping the total length at `cap` bytes. Excess bytes after the cap
+/// are dropped silently. Exits cleanly on EOF or read error.
+fn drain_stream<R: Read>(mut stream: R, buf: Arc<Mutex<String>>, cap: usize) {
+    let mut chunk = [0u8; 4096];
+    let mut leftover: Vec<u8> = Vec::new();
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                let mut data = if leftover.is_empty() {
+                    chunk[..n].to_vec()
+                } else {
+                    let mut combined = std::mem::take(&mut leftover);
+                    combined.extend_from_slice(&chunk[..n]);
+                    combined
+                };
+
+                // Trim a possible split UTF-8 multibyte at the end of the
+                // chunk so from_utf8_lossy doesn't insert a replacement char
+                // mid-character. The leftover bytes carry over to next round.
+                let valid_up_to = match std::str::from_utf8(&data) {
+                    Ok(_) => data.len(),
+                    Err(e) => e.valid_up_to(),
+                };
+                let tail = data.split_off(valid_up_to);
+                leftover = tail;
+
+                let s = match std::str::from_utf8(&data) {
+                    Ok(s) => s,
+                    Err(_) => continue, // shouldn't happen; defensively skip
+                };
+
+                let mut locked = match buf.lock() {
+                    Ok(l) => l,
+                    Err(_) => break,
+                };
+                if locked.len() >= cap {
+                    continue;
+                }
+                let remaining = cap - locked.len();
+                if s.len() <= remaining {
+                    locked.push_str(s);
+                } else {
+                    // Find a char boundary at or before `remaining` so we
+                    // never split a UTF-8 codepoint.
+                    let mut idx = remaining;
+                    while idx > 0 && !s.is_char_boundary(idx) {
+                        idx -= 1;
+                    }
+                    locked.push_str(&s[..idx]);
+                }
+            }
+            Err(_) => break,
+        }
     }
 }
 

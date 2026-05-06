@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use crate::sandbox::{Sandbox, SandboxOptions, SandboxResult};
+use crate::sandbox::{OutputSink, Sandbox, SandboxOptions, SandboxResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
@@ -79,6 +79,10 @@ pub struct IncomingTasks {
     /// PID of the bwrap process per running task. Populated when the task
     /// transitions to Running, removed when the wait loop returns.
     pids: Arc<Mutex<HashMap<String, u32>>>,
+    /// Live stdout/stderr sinks while a task is running. Populated by
+    /// spawn_execution, removed when the task reaches a terminal state.
+    /// Lets `get(id)` return a fresh snapshot of partial output.
+    sinks: Arc<Mutex<HashMap<String, OutputSink>>>,
     sandbox: Sandbox,
 }
 
@@ -87,16 +91,40 @@ impl IncomingTasks {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             pids: Arc::new(Mutex::new(HashMap::new())),
+            sinks: Arc::new(Mutex::new(HashMap::new())),
             sandbox,
         }
     }
 
     pub fn list(&self) -> Vec<Task> {
-        self.tasks.lock().unwrap().values().cloned().collect()
+        let sinks = self.sinks.lock().unwrap();
+        self.tasks
+            .lock()
+            .unwrap()
+            .values()
+            .map(|t| {
+                let mut task = t.clone();
+                if let Some(sink) = sinks.get(&task.id) {
+                    let (out, err) = sink.snapshot();
+                    task.output = out;
+                    task.error_output = err;
+                }
+                task
+            })
+            .collect()
     }
 
+    /// Return a snapshot of the task. If the task is still running, the
+    /// `output` / `error_output` fields are taken from the live OutputSink
+    /// (latest partial bytes); otherwise from the final state stored at exit.
     pub fn get(&self, id: &str) -> Option<Task> {
-        self.tasks.lock().unwrap().get(id).cloned()
+        let mut task = self.tasks.lock().unwrap().get(id).cloned()?;
+        if let Some(sink) = self.sinks.lock().unwrap().get(id) {
+            let (out, err) = sink.snapshot();
+            task.output = out;
+            task.error_output = err;
+        }
+        Some(task)
     }
 
     pub fn add(&self, task: Task) {
@@ -143,6 +171,7 @@ impl IncomingTasks {
     fn spawn_execution(&self, task_id: &str, timeout_secs: u64, options: SandboxOptions) {
         let tasks = self.tasks.clone();
         let pids = self.pids.clone();
+        let sinks = self.sinks.clone();
         let sandbox = self.sandbox.clone();
         let id = task_id.to_string();
 
@@ -154,6 +183,11 @@ impl IncomingTasks {
             }
         };
 
+        // Register a live output sink BEFORE starting the sandbox so polling
+        // clients see partial output as soon as the first chunk arrives.
+        let sink = OutputSink::new();
+        sinks.lock().unwrap().insert(id.clone(), sink.clone());
+
         {
             let mut map = tasks.lock().unwrap();
             if let Some(task) = map.get_mut(&id) {
@@ -164,45 +198,52 @@ impl IncomingTasks {
         std::thread::spawn(move || {
             let pids_for_callback = pids.clone();
             let id_for_callback = id.clone();
-            let result = sandbox.execute_with_callbacks(
+            let result = sandbox.execute_with_callbacks_and_sink(
                 &args,
                 timeout_secs,
                 &options,
                 move |pid| {
                     pids_for_callback.lock().unwrap().insert(id_for_callback, pid);
                 },
+                Some(&sink),
             );
 
             // Always remove the PID entry when the wait loop exits (process is dead).
             pids.lock().unwrap().remove(&id);
 
-            let mut map = tasks.lock().unwrap();
-            if let Some(task) = map.get_mut(&id) {
-                let already_cancelled = task.status == TaskStatus::Cancelled;
-                match result {
-                    Ok(SandboxResult { exit_code, stdout, stderr }) => {
-                        task.output = stdout;
-                        task.error_output = stderr;
-                        task.exit_code = Some(exit_code);
-                        if !already_cancelled {
-                            task.progress = 100.0;
-                            task.status = if exit_code == 0 {
-                                TaskStatus::Completed
-                            } else {
-                                TaskStatus::Failed
-                            };
+            {
+                let mut map = tasks.lock().unwrap();
+                if let Some(task) = map.get_mut(&id) {
+                    let already_cancelled = task.status == TaskStatus::Cancelled;
+                    match result {
+                        Ok(SandboxResult { exit_code, stdout, stderr }) => {
+                            task.output = stdout;
+                            task.error_output = stderr;
+                            task.exit_code = Some(exit_code);
+                            if !already_cancelled {
+                                task.progress = 100.0;
+                                task.status = if exit_code == 0 {
+                                    TaskStatus::Completed
+                                } else {
+                                    TaskStatus::Failed
+                                };
+                            }
+                            // For cancelled tasks, keep the progress at whatever
+                            // value was set when cancellation arrived.
                         }
-                        // For cancelled tasks, keep the progress at whatever
-                        // value was set when cancellation arrived.
-                    }
-                    Err(e) => {
-                        if !already_cancelled {
-                            task.error_output = e;
-                            task.status = TaskStatus::Failed;
+                        Err(e) => {
+                            if !already_cancelled {
+                                task.error_output = e;
+                                task.status = TaskStatus::Failed;
+                            }
                         }
                     }
                 }
             }
+
+            // Drop the live sink — subsequent get(id) calls will return the
+            // final output captured in the Task itself, not the sink mirror.
+            sinks.lock().unwrap().remove(&id);
         });
     }
 
@@ -312,6 +353,16 @@ impl OutgoingTasks {
         let mut map = self.tasks.lock().unwrap();
         if let Some(task) = map.get_mut(id) {
             task.status = TaskStatus::Cancelled;
+        }
+    }
+
+    /// Mirror partial stdout/stderr from a peer into the local OutgoingTask.
+    /// Called by the dispatch poll loop so the UI can show live output.
+    pub fn update_outputs(&self, id: &str, stdout: &str, stderr: &str) {
+        let mut map = self.tasks.lock().unwrap();
+        if let Some(task) = map.get_mut(id) {
+            task.output = stdout.to_string();
+            task.error_output = stderr.to_string();
         }
     }
 

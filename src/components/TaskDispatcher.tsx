@@ -1,5 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import { dispatchTask, type Peer, type Task } from "../lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  dispatchTask,
+  getOutgoingTasks,
+  type Peer,
+  type Task,
+} from "../lib/api";
 
 interface TaskDispatcherProps {
   /** Verified peers that have sharing enabled (the only ones we can target). */
@@ -80,7 +85,10 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
   const [timeoutSecs, setTimeoutSecs] = useState(60);
   const [isLaunching, setIsLaunching] = useState(false);
   const [result, setResult] = useState<Task | null>(null);
+  const [livePartial, setLivePartial] = useState<Task | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const pollTimerRef = useRef<number | null>(null);
 
   // Auto-select first target when the list changes
   useEffect(() => {
@@ -92,7 +100,24 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
     }
   }, [targets, selectedIp]);
 
+  // Stop polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current !== null) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const parsedArgs = useMemo(() => parseCommand(commandInput), [commandInput]);
+
+  const stopPolling = () => {
+    if (pollTimerRef.current !== null) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
 
   const handleLaunch = async () => {
     if (!selectedIp) {
@@ -106,17 +131,43 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
     setError(null);
     setIsLaunching(true);
     setResult(null);
+    setLivePartial(null);
+
+    // Pre-allocate the outgoing task id so we can poll for live output
+    // while the dispatch is still in flight.
+    const localId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `task-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    pollTimerRef.current = window.setInterval(async () => {
+      try {
+        const tasks = await getOutgoingTasks();
+        const t = tasks.find((task) => task.id === localId);
+        if (t) {
+          setLivePartial(t);
+        }
+      } catch {
+        // ignore transient polling errors — the final result will tell us
+      }
+    }, 500);
+
     try {
       const task = await dispatchTask(selectedIp, parsedArgs, {
         timeoutSecs,
         network: networkEnabled,
+        localId,
       });
       setResult(task);
       onDispatched?.();
     } catch (e) {
       setError(String(e));
     } finally {
+      stopPolling();
       setIsLaunching(false);
+      // Keep livePartial visible if we have a final result; clear otherwise
+      // to free state.
+      setLivePartial(null);
     }
   };
 
@@ -132,8 +183,14 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
     );
   }
 
-  const statusInfo = result
-    ? STATUS_LABELS[result.status] ?? { label: result.status, className: "" }
+  // Prefer the final result once available; otherwise show the live partial
+  // task being polled while the dispatch is in flight.
+  const displayedTask = result ?? livePartial;
+  const statusInfo = displayedTask
+    ? STATUS_LABELS[displayedTask.status] ?? {
+        label: displayedTask.status,
+        className: "",
+      }
     : null;
 
   return (
@@ -223,36 +280,42 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
 
       {error ? <div className="alert alert--error">{error}</div> : null}
 
-      {result ? (
+      {displayedTask ? (
         <div className="task-dispatcher__result">
           <div className="task-dispatcher__result-header">
             <span className={`badge ${statusInfo!.className}`}>
               {statusInfo!.label}
             </span>
-            <span style={{ marginLeft: 12, opacity: 0.7 }}>
-              cible : <strong>{result.target_machine}</strong>
-              {" · "}
-              exit code :{" "}
-              <strong>{result.exit_code ?? "—"}</strong>
+            <span style={{ marginLeft: 12 }}>
+              cible : <strong>{displayedTask.target_machine}</strong>
+              {result ? (
+                <>
+                  {" · "}exit code : <strong>{result.exit_code ?? "—"}</strong>
+                </>
+              ) : (
+                <> · sortie en direct…</>
+              )}
             </span>
           </div>
-          {result.output ? (
+          {displayedTask.output ? (
             <details open>
-              <summary>stdout ({result.output.length} car.)</summary>
-              <pre className="task-dispatcher__pre">{result.output}</pre>
+              <summary>stdout ({displayedTask.output.length} car.)</summary>
+              <pre className="task-dispatcher__pre">{displayedTask.output}</pre>
             </details>
           ) : null}
-          {result.error_output ? (
-            <details open={!result.output}>
-              <summary>stderr ({result.error_output.length} car.)</summary>
+          {displayedTask.error_output ? (
+            <details open={!displayedTask.output}>
+              <summary>
+                stderr ({displayedTask.error_output.length} car.)
+              </summary>
               <pre className="task-dispatcher__pre task-dispatcher__pre--err">
-                {result.error_output}
+                {displayedTask.error_output}
               </pre>
             </details>
           ) : null}
-          {!result.output && !result.error_output ? (
+          {!displayedTask.output && !displayedTask.error_output ? (
             <p style={{ opacity: 0.6, fontStyle: "italic" }}>
-              (aucune sortie)
+              {result ? "(aucune sortie)" : "En attente de la première ligne de sortie…"}
             </p>
           ) : null}
         </div>
