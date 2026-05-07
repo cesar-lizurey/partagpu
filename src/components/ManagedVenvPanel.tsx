@@ -113,23 +113,7 @@ export function ManagedVenvPanel() {
 
   return (
     <div className="managed-venv">
-      <p className="managed-venv__intro">
-        {t("venv.intro_p1")}
-        <code>import torch</code>
-        {t("venv.intro_p2")}
-        <code>sudo pip install</code>
-        {t("venv.intro_p3")}
-        <code>{status.path}</code>
-        {t("venv.intro_p4")}
-        <strong>{t("venv.intro_p5")}</strong>
-        {" : "}
-        <code>torch</code>, <code>torchvision</code>, <code>numpy</code>,{" "}
-        <code>scipy</code>, <code>pandas</code>, <code>scikit-learn</code>,{" "}
-        <code>matplotlib</code>, <code>pillow</code>
-        {t("venv.intro_p6")}
-        <code>python3</code>
-        {t("venv.intro_p7")}
-      </p>
+      <p className="managed-venv__intro">{t("venv.intro")}</p>
 
       <div className="managed-venv__status">
         {status.installed ? (

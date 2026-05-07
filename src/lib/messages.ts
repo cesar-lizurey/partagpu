@@ -114,17 +114,8 @@ const fr = {
     "Désactiver le partage va NETTOYER COMPLÈTEMENT PartaGPU sur cette machine :\n\n  • Le compte système 'partagpu' est supprimé\n  • Les tâches en cours sur ce poste sont tuées\n  • Le venv géré (torch + numpy, ~2 Go) est supprimé\n  • Le cgroup et les règles SSH/sudo sont nettoyés\n  • Le pare-feu PartaGPU est fermé\n\nPour ré-utiliser PartaGPU ensuite, il faudra tout re-créer (mot de\npasse administrateur + ré-installer le venv ~5 min).\n\nPour un arrêt temporaire, utilisez plutôt « Pause ».\n\nConfirmer la désactivation complète ?",
 
   // ── ManagedVenvPanel ───────────────────────────────────────
-  "venv.intro_p1":
-    "Pour que les tâches Python reçues puissent ",
-  "venv.intro_p2":
-    " (et tout l'écosystème data science classique) sans que vous ayez à ",
-  "venv.intro_p3":
-    ", PartaGPU peut provisionner un venv Python à ",
-  "venv.intro_p4": " avec une ",
-  "venv.intro_p5": "toolkit ML complète",
-  "venv.intro_p6":
-    ". Le sandbox bind ce venv automatiquement et fait pointer ",
-  "venv.intro_p7": " dessus.",
+  "venv.intro":
+    "Venv géré pour torch + dépendances data science, monté en bind dans le sandbox des tâches reçues. Voir le Guide pour les détails.",
   "venv.installed": "Installé",
   "venv.not_installed": "Non installé",
   "venv.not_installed_hint_p1":
@@ -453,17 +444,8 @@ const en: Record<keyof typeof fr, string> = {
     "Disabling sharing will FULLY CLEAN UP PartaGPU on this machine:\n\n  • The 'partagpu' system account is deleted\n  • Running tasks on this host are killed\n  • The managed venv (torch + numpy, ~2 GB) is removed\n  • The cgroup and SSH/sudo rules are cleaned up\n  • The PartaGPU firewall is closed\n\nTo use PartaGPU again afterwards, everything will need to be re-created\n(admin password + re-install the venv ~5 min).\n\nFor a temporary pause, use \"Pause\" instead.\n\nConfirm full deactivation?",
 
   // ── ManagedVenvPanel ───────────────────────────────────────
-  "venv.intro_p1":
-    "So that incoming Python tasks can ",
-  "venv.intro_p2":
-    " (and the rest of the standard data science stack) without you having to ",
-  "venv.intro_p3":
-    ", PartaGPU can provision a Python venv at ",
-  "venv.intro_p4": " with a ",
-  "venv.intro_p5": "complete ML toolkit",
-  "venv.intro_p6":
-    ". The sandbox bind-mounts this venv automatically and points ",
-  "venv.intro_p7": " at it.",
+  "venv.intro":
+    "Managed venv for torch + data science dependencies, bind-mounted into the sandbox of incoming tasks. See the Guide for details.",
   "venv.installed": "Installed",
   "venv.not_installed": "Not installed",
   "venv.not_installed_hint_p1":
