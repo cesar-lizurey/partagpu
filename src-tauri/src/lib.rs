@@ -154,7 +154,6 @@ pub fn run() {
             api::leave_room,
             api::get_room_status,
             api::get_room_secret,
-            api::verify_peer_code,
             api::get_peers,
             api::get_display_name,
             api::set_display_name,

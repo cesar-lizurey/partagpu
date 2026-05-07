@@ -1,12 +1,31 @@
+//! Room state + HMAC-based peer authentication.
+//!
+//! A "room" is a shared cryptographic secret materialised as a 4-word
+//! passphrase. Every peer in the room derives the same secret and uses it
+//! to compute :
+//!
+//! - **mDNS auth proofs** ([`crypto::current_auth_proof`]) : a truncated
+//!   `HMAC-SHA256(auth_key, current_30s_window)` broadcast in the TXT
+//!   record. Other peers recompute and constant-time compare to verify
+//!   without an HTTP round-trip.
+//! - **HTTP request auth headers** ([`crypto::compute_request_auth`]) :
+//!   `X-PartaGPU-AUTH: <unix_ts>:<full HMAC>` where the HMAC binds the
+//!   timestamp + method + path + body hash. Anti-replay window of
+//!   `crypto::AUTH_WINDOW_SECS` (30 s by default).
+//!
+//! This replaces the earlier TOTP scheme (RFC 6238) since 1.9.0 — the
+//! security guarantees are identical at the LAN-classroom threat model
+//! while removing the `totp-rs` / `base32` dependencies and binding the
+//! HTTP header to the request body (a captured TOTP code could be
+//! reused on any other request within 30 s).
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
-use totp_rs::{Algorithm, Secret, TOTP};
 
-const TOTP_STEP: u64 = 30;
-const TOTP_DIGITS: usize = 6;
+use crate::crypto;
+
 const CONFIG_DIR: &str = "partagpu";
 const ROOM_FILE: &str = "room.json";
 /// 256 common French words — short, easy to spell, easy to dictate.
@@ -45,7 +64,10 @@ pub struct RoomStatus {
     pub joined: bool,
     pub room_name: String,
     pub passphrase: String,
-    pub current_code: String,
+    /// Current mDNS auth proof (truncated HMAC over the current 30-s window).
+    /// Surfaced for diagnostics ; the user typically doesn't need to read it.
+    pub current_auth_proof: String,
+    /// Seconds until the current auth-proof window flips over.
     pub seconds_remaining: u64,
 }
 
@@ -56,7 +78,7 @@ pub struct AuthManager {
 
 struct RoomState {
     room_name: String,
-    totp: TOTP,
+    auth_key: [u8; 32],
     secret_base32: String,
     passphrase: String,
 }
@@ -105,6 +127,13 @@ fn delete_room_file() {
     let _ = fs::remove_file(&path);
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 impl Default for AuthManager {
     fn default() -> Self {
         Self::new()
@@ -119,11 +148,11 @@ impl AuthManager {
 
         // Restore saved room from disk
         if let Some(saved) = load_room() {
-            if let Ok(totp) = build_totp(&saved.secret_base32, &saved.room_name) {
+            if let Ok(auth_key) = crypto::derive_auth_key(&saved.secret_base32) {
                 let passphrase = secret_to_passphrase(&saved.secret_base32);
                 *mgr.state.lock().unwrap() = Some(RoomState {
                     room_name: saved.room_name,
-                    totp,
+                    auth_key,
                     secret_base32: saved.secret_base32,
                     passphrase,
                 });
@@ -134,22 +163,23 @@ impl AuthManager {
     }
 
     /// Create a new room: generate a random 4-word passphrase, then derive
-    /// the TOTP secret from it (same path as join_room) so both sides match.
+    /// the auth key from it (same path as join_room) so both sides match.
     pub fn create_room(&self, room_name: &str) -> Result<CreateRoomOutput, String> {
-        // Generate 4 random bytes → 4-word passphrase
-        let secret = Secret::generate_secret();
-        let raw_b32 = secret.to_encoded().to_string();
-        let passphrase = secret_to_passphrase(&raw_b32);
+        // Generate 4 random bytes → 4-word passphrase. We rely on the OS
+        // RNG via rand instead of pulling in totp-rs's `Secret::generate`.
+        use rand::RngCore;
+        let mut seed = [0u8; 4];
+        rand::thread_rng().fill_bytes(&mut seed);
+        let passphrase = build_passphrase_from_seed(&seed);
 
         // Derive the canonical secret from the passphrase (same as a joiner would)
         let secret_b32 = passphrase_to_secret(&passphrase)?;
-
-        let totp = build_totp(&secret_b32, room_name)?;
+        let auth_key = crypto::derive_auth_key(&secret_b32).map_err(|e| e.to_string())?;
 
         let mut state = self.state.lock().unwrap();
         *state = Some(RoomState {
             room_name: room_name.to_string(),
-            totp,
+            auth_key,
             secret_base32: secret_b32.clone(),
             passphrase: passphrase.clone(),
         });
@@ -177,12 +207,12 @@ impl AuthManager {
         };
 
         let passphrase = secret_to_passphrase(&secret_b32);
-        let totp = build_totp(&secret_b32, room_name)?;
+        let auth_key = crypto::derive_auth_key(&secret_b32).map_err(|e| e.to_string())?;
 
         let mut state = self.state.lock().unwrap();
         *state = Some(RoomState {
             room_name: room_name.to_string(),
-            totp,
+            auth_key,
             secret_base32: secret_b32.clone(),
             passphrase,
         });
@@ -197,26 +227,51 @@ impl AuthManager {
         delete_room_file();
     }
 
-    pub fn current_code(&self) -> Option<String> {
+    /// Current mDNS auth proof (truncated HMAC over the current 30-s window).
+    /// Returned as `None` if no room is joined. Broadcast in the `auth_proof`
+    /// TXT field by [`crate::discovery`].
+    pub fn current_auth_proof(&self) -> Option<String> {
         let state = self.state.lock().unwrap();
-        state.as_ref().map(|s| s.totp.generate(now_secs()))
+        state
+            .as_ref()
+            .map(|s| crypto::current_auth_proof(&s.auth_key))
     }
 
-    /// Verify a TOTP code (allows +/- 1 step of clock skew).
-    pub fn verify_code(&self, code: &str) -> bool {
+    /// Verify an mDNS auth proof received from a peer (±1 window of skew).
+    /// Used by `Discovery` to flip the `verified` flag on a peer entry.
+    pub fn verify_auth_proof(&self, candidate: &str) -> bool {
         let state = self.state.lock().unwrap();
         match state.as_ref() {
             None => false,
-            Some(s) => {
-                let time = now_secs();
-                for offset in [0i64, -1, 1] {
-                    let t = (time as i64 + offset * TOTP_STEP as i64) as u64;
-                    if s.totp.generate(t) == code {
-                        return true;
-                    }
-                }
-                false
-            }
+            Some(s) => crypto::verify_auth_proof(&s.auth_key, candidate),
+        }
+    }
+
+    /// Compute the `X-PartaGPU-AUTH` header value for an outgoing HTTP
+    /// request. Binds the auth to the specific request via timestamp +
+    /// method + path + body hash (anti-replay + body integrity).
+    /// Returns `None` if no room is joined.
+    pub fn compute_request_auth(&self, method: &str, path: &str, body: &[u8]) -> Option<String> {
+        let state = self.state.lock().unwrap();
+        state
+            .as_ref()
+            .map(|s| crypto::compute_request_auth(&s.auth_key, method, path, body))
+    }
+
+    /// Verify an `X-PartaGPU-AUTH` header on an incoming HTTP request.
+    /// Returns `Ok(())` if the room is joined and the HMAC matches within
+    /// the AUTH_WINDOW_SECS clock-skew window.
+    pub fn verify_request_auth(
+        &self,
+        header_value: &str,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> Result<(), crypto::AuthVerifyError> {
+        let state = self.state.lock().unwrap();
+        match state.as_ref() {
+            None => Err(crypto::AuthVerifyError::Mismatch),
+            Some(s) => crypto::verify_request_auth(&s.auth_key, header_value, method, path, body),
         }
     }
 
@@ -231,18 +286,17 @@ impl AuthManager {
                 joined: false,
                 room_name: String::new(),
                 passphrase: String::new(),
-                current_code: String::new(),
+                current_auth_proof: String::new(),
                 seconds_remaining: 0,
             },
             Some(s) => {
-                let time = now_secs();
-                let code = s.totp.generate(time);
-                let remaining = TOTP_STEP - (time % TOTP_STEP);
+                let proof = crypto::current_auth_proof(&s.auth_key);
+                let remaining = crypto::AUTH_WINDOW_SECS - (now_secs() % crypto::AUTH_WINDOW_SECS);
                 RoomStatus {
                     joined: true,
                     room_name: s.room_name.clone(),
                     passphrase: s.passphrase.clone(),
-                    current_code: code,
+                    current_auth_proof: proof,
                     seconds_remaining: remaining,
                 }
             }
@@ -263,25 +317,16 @@ pub struct CreateRoomOutput {
     pub secret_base32: String,
 }
 
-// ── TOTP helpers ───────────────────────────────────────────
-
-fn build_totp(secret_base32: &str, _room_name: &str) -> Result<TOTP, String> {
-    let secret = Secret::Encoded(secret_base32.to_string())
-        .to_bytes()
-        .map_err(|e| format!("Secret invalide : {e}"))?;
-
-    TOTP::new(Algorithm::SHA1, TOTP_DIGITS, 1, TOTP_STEP, secret)
-        .map_err(|e| format!("Erreur TOTP : {e}"))
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 // ── Passphrase <-> secret conversion ───────────────────────
+
+/// Build a 4-word passphrase from a 4-byte seed.
+fn build_passphrase_from_seed(seed: &[u8; 4]) -> String {
+    let mut words = Vec::with_capacity(4);
+    for b in seed {
+        words.push(WORDLIST[*b as usize]);
+    }
+    words.join("-")
+}
 
 /// Convert a base32 secret to a 4-word passphrase.
 /// Takes the first 4 bytes of the decoded secret as word indices.
@@ -299,7 +344,7 @@ fn secret_to_passphrase(secret_b32: &str) -> String {
 
 /// Convert a 4-word passphrase back to a base32 secret.
 /// We reconstruct the 4 bytes, then pad to 20 bytes using a deterministic
-/// expansion (SHA1 of the 4 bytes) to get a proper TOTP secret length.
+/// expansion (SHA1 of the 4 bytes) to get a proper key length.
 fn passphrase_to_secret(passphrase: &str) -> Result<String, String> {
     let parts: Vec<&str> = passphrase.split('-').collect();
     if parts.len() != 4 {
@@ -320,7 +365,10 @@ fn passphrase_to_secret(passphrase: &str) -> Result<String, String> {
     }
 
     // Build a 20-byte secret: the 4 seed bytes first (so secret_to_passphrase
-    // can recover the words), then 16 bytes of SHA1(seed) as padding.
+    // can recover the words), then 16 bytes of SHA1(seed) as deterministic
+    // padding. The total length isn't load-bearing anymore (HMAC takes
+    // arbitrary key sizes), but we keep the same shape for backward compat
+    // with persisted room.json files from older versions.
     use sha1::Digest;
     let mut hasher = sha1::Sha1::new();
     hasher.update(seed);
@@ -339,10 +387,11 @@ mod tests {
 
     #[test]
     fn passphrase_roundtrip() {
-        // Simulate create_room: random secret → passphrase → canonical secret
-        let secret = Secret::generate_secret();
-        let raw_b32 = secret.to_encoded().to_string();
-        let passphrase = secret_to_passphrase(&raw_b32);
+        // Simulate create_room: random seed → passphrase → canonical secret
+        let mut seed = [0u8; 4];
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(&mut seed);
+        let passphrase = build_passphrase_from_seed(&seed);
         let canonical_secret = passphrase_to_secret(&passphrase).unwrap();
 
         // Simulate join_room: passphrase → secret → recovered passphrase
@@ -364,15 +413,18 @@ mod tests {
     }
 
     #[test]
-    fn totp_codes_match() {
+    fn auth_keys_match_for_same_passphrase() {
         let passphrase = "arbre-coeur-lundi-verre";
         let secret1 = passphrase_to_secret(passphrase).unwrap();
         let secret2 = passphrase_to_secret(passphrase).unwrap();
-
-        let totp1 = build_totp(&secret1, "test").unwrap();
-        let totp2 = build_totp(&secret2, "test").unwrap();
-
-        let time = now_secs();
-        assert_eq!(totp1.generate(time), totp2.generate(time));
+        let key1 = crypto::derive_auth_key(&secret1).unwrap();
+        let key2 = crypto::derive_auth_key(&secret2).unwrap();
+        assert_eq!(key1, key2);
+        // And the auth proofs also match (they would by construction if the
+        // keys do, but the assertion documents the property).
+        assert_eq!(
+            crypto::current_auth_proof(&key1),
+            crypto::current_auth_proof(&key2)
+        );
     }
 }

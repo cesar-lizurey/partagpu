@@ -99,11 +99,6 @@ pub fn get_room_secret(auth: State<'_, AuthManager>) -> Option<String> {
     auth.get_secret()
 }
 
-#[tauri::command]
-pub fn verify_peer_code(auth: State<'_, AuthManager>, code: String) -> bool {
-    auth.verify_code(code.trim())
-}
-
 // ── User management ───────────────────────────────────────
 
 #[tauri::command]

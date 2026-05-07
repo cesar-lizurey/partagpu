@@ -273,13 +273,12 @@ pub fn dispatch_task_blocking(
         return Err("args vide.".into());
     }
 
-    let totp = auth
-        .current_code()
-        .filter(|c| !c.is_empty())
-        .ok_or_else(|| {
+    if !auth.is_joined() {
+        return Err(
             "Cette machine n'est dans aucune salle PartaGPU. Joignez une salle pour pouvoir dispatcher des tâches."
-                .to_string()
-        })?;
+                .to_string(),
+        );
+    }
     let secret_b32 = auth.get_secret().ok_or_else(|| {
         "Impossible de dériver la clé de chiffrement (secret de salle indisponible).".to_string()
     })?;
@@ -349,7 +348,7 @@ pub fn dispatch_task_blocking(
         &args,
         &user,
         timeout_secs,
-        &totp,
+        auth,
         &key,
         &peer_eph_pk,
         network,
@@ -398,17 +397,15 @@ pub fn cancel_outgoing_task(
             return Ok(false);
         }
     };
-    let totp = auth
-        .current_code()
-        .filter(|c| !c.is_empty())
+    let path = format!("/peer/v1/tasks/{}", remote.remote_task_id);
+    // DELETE has no body, so the HMAC is computed over the empty byte slice.
+    let auth_header = auth
+        .compute_request_auth("DELETE", &path, b"")
         .ok_or_else(|| "Cette machine n'est dans aucune salle PartaGPU.".to_string())?;
 
-    let url = format!(
-        "http://{}:{PEER_PORT}/peer/v1/tasks/{}",
-        remote.peer_ip, remote.remote_task_id
-    );
+    let url = format!("http://{}:{PEER_PORT}{path}", remote.peer_ip);
     let resp = ureq::delete(&url)
-        .set("X-PartaGPU-TOTP", &totp)
+        .set("X-PartaGPU-AUTH", &auth_header)
         .timeout(Duration::from_secs(10))
         .call();
 
@@ -477,7 +474,7 @@ fn run_remote_blocking(
     args: &[String],
     user: &str,
     timeout_secs: u64,
-    totp: &str,
+    auth: &AuthManager,
     key: &[u8; 32],
     peer_eph_pk: &str,
     network_enabled: bool,
@@ -485,6 +482,18 @@ fn run_remote_blocking(
     outgoing: OutgoingTasks,
     local_id: &str,
 ) -> Result<Task, String> {
+    /// Compute the auth header for an outgoing request, bound to the
+    /// (method, path, body) triple. Bubbles up "no room" as an error.
+    fn auth_header(
+        auth: &AuthManager,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> Result<String, String> {
+        auth.compute_request_auth(method, path, body)
+            .ok_or_else(|| "Cette machine n'est dans aucune salle PartaGPU.".to_string())
+    }
+
     /// Encrypt with v=2 if peer publishes an ephemeral pubkey, otherwise v=1.
     /// Returns (envelope_json, session_key_for_response_decrypt).
     fn encrypt_for(
@@ -508,7 +517,8 @@ fn run_remote_blocking(
         }
     }
 
-    let url_submit = format!("http://{peer_ip}:{PEER_PORT}/peer/v1/tasks");
+    let submit_path = "/peer/v1/tasks";
+    let url_submit = format!("http://{peer_ip}:{PEER_PORT}{submit_path}");
     let body = serde_json::json!({
         "args": args,
         "source_user": user,
@@ -518,9 +528,10 @@ fn run_remote_blocking(
     });
     let body_str = serde_json::to_string(&body).map_err(|e| format!("JSON sérialisation : {e}"))?;
     let (body_env, submit_session_key) = encrypt_for(key, peer_eph_pk, &body_str)?;
+    let submit_auth = auth_header(auth, "POST", submit_path, body_env.as_bytes())?;
 
     let resp = ureq::post(&url_submit)
-        .set("X-PartaGPU-TOTP", totp)
+        .set("X-PartaGPU-AUTH", &submit_auth)
         .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
         .timeout(Duration::from_secs(15))
         .send_string(&body_env)
@@ -551,10 +562,8 @@ fn run_remote_blocking(
 
     // Poll until terminal state, with a wall-clock budget = task timeout + grace.
     let deadline = Instant::now() + Duration::from_secs(timeout_secs.saturating_add(30));
-    let url_get = format!(
-        "http://{peer_ip}:{PEER_PORT}/peer/v1/tasks/{}",
-        submit.task_id
-    );
+    let get_path = format!("/peer/v1/tasks/{}", submit.task_id);
+    let url_get = format!("http://{peer_ip}:{PEER_PORT}{get_path}");
 
     loop {
         if Instant::now() > deadline {
@@ -562,11 +571,12 @@ fn run_remote_blocking(
         }
         std::thread::sleep(POLL_INTERVAL);
 
-        // Each poll generates its own ephemeral keypair (when v=2). The
-        // server replies with an encrypted task snapshot keyed by that
-        // session key, which lives only for the duration of this poll.
+        // GET has no body so the HMAC covers the empty byte slice ; we
+        // recompute the header on every poll because the timestamp must
+        // be fresh (server rejects anything outside its 30 s window).
+        let poll_auth = auth_header(auth, "GET", &get_path, b"")?;
         let r = match ureq::get(&url_get)
-            .set("X-PartaGPU-TOTP", totp)
+            .set("X-PartaGPU-AUTH", &poll_auth)
             .timeout(Duration::from_secs(10))
             .call()
         {

@@ -9,8 +9,8 @@ Chaque poste peut choisir de mettre à disposition tout ou partie de ses ressour
 Côté code, un package Python (`partagpu`) permet d'exécuter une commande sur un pair (`partagpu.run_remote`) ou de **lancer un entraînement PyTorch DDP en parallèle sur tous les GPU de la salle** (`partagpu.distribute`).
 
 **Documentation complémentaire** :
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — comment ça fonctionne en interne (les deux serveurs HTTP, l'auth TOTP, le sandbox, l'orchestration DDP)
-- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — diagnostic des erreurs courantes (TOTP mismatch, NCCL hang, sandbox plante, etc.)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — comment ça fonctionne en interne (les deux serveurs HTTP, l'auth HMAC, le sandbox, l'orchestration DDP)
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — diagnostic des erreurs courantes (auth HMAC mismatch, NCCL hang, sandbox plante, etc.)
 - [SECURITY.md](SECURITY.md) — modèle de sécurité détaillé
 
 ---
@@ -40,7 +40,7 @@ Côté code, un package Python (`partagpu`) permet d'exécuter une commande sur 
 - Chaque utilisateur choisit **ce qu'il partage** et **combien** via des curseurs rouges directement sur les jauges de ressources
 - Les tâches de calcul reçues tournent sous un compte système isolé (`partagpu`) dans un sandbox **bubblewrap** (FS read-only, /workspace tmpfs, network opt-in)
 - Un camarade absent ? On allume son PC, on se connecte en `partagpu`, et ses ressources sont disponibles
-- Une **salle virtuelle** protégée par un code d'accès garantit que seuls les postes autorisés peuvent communiquer (auth TOTP partagée)
+- Une **salle virtuelle** protégée par un code d'accès garantit que seuls les postes autorisés peuvent communiquer (auth HMAC sur secret partagé)
 - Côté code, un package Python (`partagpu`) permet d'entraîner avec PyTorch DDP sur **tous les GPU de la salle** via un simple `partagpu.distribute("train.py")`
 
 ---
@@ -87,7 +87,7 @@ npm run tauri:build    # build de production (génère un .deb)
 
 Quand PartaGPU est lancé, chaque poste s'annonce sur le réseau local via mDNS. **Sans protection, n'importe qui connecté au même réseau pourrait se faire passer pour un pair et soumettre des tâches malveillantes.**
 
-Le système de salle résout ce problème : il génère un **secret partagé** qui sert à produire un code TOTP (code temporaire à 6 chiffres, comme les apps d'authentification). Chaque poste prouve son appartenance à la salle en présentant le bon code. Les postes dont le code ne correspond pas sont marqués comme **non vérifiés** dans l'interface.
+Le système de salle résout ce problème : il génère un **secret partagé** qui sert à produire une preuve d'authentification (HMAC-SHA256 tronqué sur la fenêtre de 30 s courante). Chaque poste prouve son appartenance à la salle en présentant la bonne preuve, recalculée puis comparée en temps constant. Les postes dont la preuve ne correspond pas sont marqués comme **non vérifiés** dans l'interface.
 
 ### Créer une salle (un seul élève le fait)
 
@@ -111,8 +111,8 @@ pomme-tigre-bleu-ocean
 ### Comment ça marche en arrière-plan
 
 - Le code de 4 mots encode un secret cryptographique (chaque mot = 1 octet parmi 256 possibilités, soit 4 milliards de combinaisons)
-- Ce secret génère un **code TOTP à 6 chiffres** qui change toutes les 30 secondes
-- Chaque poste annonce son code TOTP courant via mDNS
+- Ce secret est dérivé via HKDF-SHA256 en une `auth_key` de 32 octets
+- Chaque poste annonce une **preuve HMAC à 8 caractères hex** dans son TXT record mDNS, valide pour la fenêtre de 30 s courante
 - Les autres postes vérifient ce code — s'il correspond, le pair est marqué **OK** (vérifié)
 - Un poste qui ne connaît pas le secret ne peut pas produire le bon code et apparaît comme **non vérifié**
 
@@ -122,16 +122,16 @@ PartaGPU distingue trois catégories de machines :
 
 #### Pair vérifié
 
-Machine visible sur le réseau via mDNS **et** dont le code TOTP correspond au vôtre (même salle, même code d'accès).
+Machine visible sur le réseau via mDNS **et** dont la preuve d'auth HMAC correspond à la vôtre (même salle, même code d'accès).
 
 - Chaque poste dans la salle possède le même secret (dérivé du code de 4 mots)
-- À partir de ce secret, chaque poste génère un **code temporaire à 6 chiffres** qui change toutes les 30 secondes (protocole TOTP, le même que Google Authenticator)
-- Ce code est annoncé automatiquement aux autres postes via le réseau local
-- Les autres postes vérifient ce code : s'il correspond à ce qu'ils calculent eux-mêmes avec le même secret, le pair est **vérifié**
+- À partir de ce secret, chaque poste calcule un **HMAC-SHA256 tronqué** sur la fenêtre de 30 s courante (8 caractères hex). Même principe qu'un code temporaire mais sans la machinerie TOTP / RFC 6238.
+- Cette preuve est annoncée automatiquement aux autres postes via le réseau local
+- Les autres postes vérifient : s'ils recalculent la même preuve avec leur propre secret, le pair est **vérifié**
 
 #### Pair non vérifié
 
-Machine visible sur le réseau via mDNS (elle fait tourner PartaGPU) **mais** dont le code TOTP ne correspond pas. Causes possibles :
+Machine visible sur le réseau via mDNS (elle fait tourner PartaGPU) **mais** dont la preuve HMAC ne correspond pas. Causes possibles :
 - Elle n'a rejoint aucune salle
 - Elle est dans une salle différente
 - Elle a entré un mauvais code d'accès
@@ -312,15 +312,15 @@ partagpu/
 │   ├── src/
 │   │   ├── main.rs              # Point d'entrée binaire
 │   │   ├── lib.rs               # Initialisation Tauri, démarrage des serveurs HTTP
-│   │   ├── auth.rs              # Salles : TOTP, passphrase 4 mots, vérification
-│   │   ├── discovery.rs         # Découverte mDNS + annonce gpu_count + vérif TOTP
+│   │   ├── auth.rs              # Salles : auth_key HMAC, passphrase 4 mots, vérification
+│   │   ├── discovery.rs         # Découverte mDNS + annonce gpu_count + vérif preuve HMAC
 │   │   ├── user_manager.rs      # Création utilisateur, pkexec, cgroups
 │   │   ├── resource.rs          # CPU/RAM (sysinfo) + GPU (nvidia-smi multi-device)
 │   │   ├── sharing.rs           # État du partage (Active/Paused/Disabled) + limites
 │   │   ├── sandbox.rs           # bubblewrap : passthrough GPU, network opt-in, workspace
 │   │   ├── task_runner.rs       # Files de tâches entrantes/sortantes + create_and_run
 │   │   ├── http_api.rs          # API HTTP locale 127.0.0.1:7654 + POST /api/dispatch
-│   │   ├── peer_api.rs          # API HTTP pair-à-pair 0.0.0.0:7655 (auth TOTP header)
+│   │   ├── peer_api.rs          # API HTTP pair-à-pair 0.0.0.0:7655 (auth HMAC header)
 │   │   ├── api.rs               # Commandes Tauri exposées au frontend
 │   │   └── security_log.rs      # Journal d'événements de sécurité (ring buffer)
 │   ├── helper/                  # Crate séparée : binaire Rust exécuté via pkexec
@@ -390,7 +390,7 @@ Les ajustements de sliders, la consultation du statut, et le monitoring **n'appe
 
 ## Sécurité
 
-- **Authentification par salle** : un code d'accès de 4 mots génère un secret TOTP partagé. Chaque poste prouve son appartenance en présentant un code temporaire à 6 chiffres qui change toutes les 30 secondes. Les postes non vérifiés sont clairement identifiés.
+- **Authentification par salle** : un code d'accès de 4 mots génère un secret partagé d'où sont dérivées une `room_key` AES et une `auth_key` HMAC. Chaque requête entre pairs porte un header `X-PartaGPU-AUTH: <ts>:<HMAC>` qui lie l'auth au corps de la requête + un timestamp dans une fenêtre de 30 s (anti-replay). Les postes non vérifiés sont clairement identifiés.
 - **Chiffrement pair-à-pair** (depuis 1.6.0) : les bodies HTTP entre pairs (port 7655) sont chiffrés en AES-256-GCM avec une clé HKDF dérivée du secret de salle. Confidentialité + intégrité contre l'écoute LAN passive. Tous les pairs doivent être en `>= 1.6.0`.
 - **Forward secrecy** (depuis 1.7.0) : la clé AES est désormais dérivée d'un échange Diffie-Hellman X25519 éphémère par requête. La clé éphémère du serveur reste **uniquement en RAM**, est regénérée à chaque démarrage et tournée toutes les 10 minutes. Un attaquant qui capture le trafic puis obtient la passphrase plus tard ne peut plus déchiffrer les sessions de plus de 10 minutes.
 - **Isolation** : le compte `partagpu` est dédié au partage, il n'a pas accès aux fichiers personnels des autres utilisateurs
@@ -432,7 +432,7 @@ La CI exécute `cargo test` avant de bundle ; un test cassé bloque la release.
 
 ## Package Python — Entraînement distribué
 
-PartaGPU fournit un package Python (`partagpu`) qui transforme l'application en une plateforme de calcul distribuée. Tout passe par l'app locale (`localhost:7654`) : c'est elle qui authentifie les requêtes via TOTP et les transmet aux pairs. Vous n'avez **rien à configurer côté réseau** — pas de SSH, pas de keys.
+PartaGPU fournit un package Python (`partagpu`) qui transforme l'application en une plateforme de calcul distribuée. Tout passe par l'app locale (`localhost:7654`) : c'est elle qui calcule le header HMAC d'authentification et le transmet aux pairs avec la requête chiffrée. Vous n'avez **rien à configurer côté réseau** — pas de SSH, pas de keys.
 
 ### Installation
 
@@ -561,7 +561,7 @@ L'application expose deux serveurs HTTP :
 | `/api/dispatch` | POST | Soumet une tâche à un pair, **bloque** jusqu'à completion. Body : `{"peer_ip", "args", "timeout_secs", "network", "workspace", "user", "local_id"}` (le `local_id` est optionnel — sert à pré-allouer un id côté client pour pouvoir annuler mid-flight) |
 | `/api/cancel` | POST | Annule une tâche sortante par son `local_id`. Propage en `DELETE` au pair. Body : `{"local_id"}` |
 
-**API pair-à-pair** sur `0.0.0.0:7655` (utilisée par les autres pairs PartaGPU, auth via header `X-PartaGPU-TOTP`) :
+**API pair-à-pair** sur `0.0.0.0:7655` (utilisée par les autres pairs PartaGPU, auth via header `X-PartaGPU-AUTH`) :
 
 | Route | Méthode | Description |
 |---|---|---|

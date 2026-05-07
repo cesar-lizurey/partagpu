@@ -8,10 +8,9 @@
 //!
 //! What the tests cover :
 //! - v=2 forward-secret round-trip submits a task and reads it back
-//! - rejection of plaintext bodies (415)
-//! - rejection of bodies without TOTP (401)
-//! - rejection when not in a room (403)
-//! - rejection when sharing is disabled (403)
+//! - rejection of plaintext bodies (415, but only when auth is provided)
+//! - rejection of bodies without the `X-PartaGPU-AUTH` header (401)
+//! - rejection of envelopes from a different room (401, HMAC mismatch)
 //! - cancel propagation (DELETE /peer/v1/tasks/<id>)
 //!
 //! What they DON'T cover : the actual sandbox execution. We submit
@@ -99,24 +98,31 @@ fn start_test_server() -> (u16, EphemeralKey, String) {
     (port, server_eph, secret_b32)
 }
 
-fn current_totp(secret_b32: &str, _room_name: &str) -> String {
-    use totp_rs::{Algorithm, Secret, TOTP};
-    let secret_bytes = Secret::Encoded(secret_b32.to_string())
-        .to_bytes()
-        .expect("decode b32");
-    let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes).expect("totp::new");
-    totp.generate_current().expect("generate_current")
+/// Build the value of the `X-PartaGPU-AUTH` header for a (method, path, body)
+/// triple, signing with the room's auth key. Same primitive the real
+/// `http_api::dispatch_task_blocking` uses on the wire.
+fn auth_header(secret_b32: &str, method: &str, path: &str, body: &[u8]) -> String {
+    let auth_key = crypto::derive_auth_key(secret_b32).expect("derive_auth_key");
+    crypto::compute_request_auth(&auth_key, method, path, body)
 }
 
 #[test]
 fn rejects_plaintext_body() {
+    // With a valid auth header, a plaintext body (wrong Content-Type) must
+    // be rejected with 415. The auth check passes but the encryption-layer
+    // gate refuses the request.
     let _env = fresh_env();
-    let (port, _eph, _secret) = start_test_server();
-    let url = format!("http://127.0.0.1:{port}/peer/v1/tasks");
+    let (port, _eph, secret_b32) = start_test_server();
+    let path = "/peer/v1/tasks";
+    let body = r#"{"args":["true"]}"#;
+    let url = format!("http://127.0.0.1:{port}{path}");
     let resp = ureq::post(&url)
         .set("Content-Type", "application/json")
-        .set("X-PartaGPU-TOTP", "000000")
-        .send_string(r#"{"args":["true"]}"#);
+        .set(
+            "X-PartaGPU-AUTH",
+            &auth_header(&secret_b32, "POST", path, body.as_bytes()),
+        )
+        .send_string(body);
     let err = resp.expect_err("plaintext body must be rejected");
     match err {
         ureq::Error::Status(code, _) => assert_eq!(code, 415),
@@ -126,8 +132,9 @@ fn rejects_plaintext_body() {
 
 #[test]
 fn rejects_v2_without_room_membership() {
-    // Server in a room of its own, but client builds a v=2 envelope keyed
-    // by a *different* room secret. The server's decrypt_request_v2 fails.
+    // Server in a room of its own, but client builds an auth header keyed
+    // by a *different* room secret. The HMAC check fails before decryption
+    // is even attempted ; the client gets 401.
     let _env = fresh_env();
     let (port, server_eph, _server_secret) = start_test_server();
 
@@ -138,24 +145,18 @@ fn rejects_v2_without_room_membership() {
     let (env, _) =
         crypto::encrypt_v2(&other_key, &server_eph.public_b64(), body_str.as_bytes()).unwrap();
     let env_json = serde_json::to_string(&env).unwrap();
+    let path = "/peer/v1/tasks";
+    let bad_auth = auth_header(&other_secret_b32, "POST", path, env_json.as_bytes());
 
-    let url = format!("http://127.0.0.1:{port}/peer/v1/tasks");
+    let url = format!("http://127.0.0.1:{port}{path}");
     let resp = ureq::post(&url)
         .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
-        .set("X-PartaGPU-TOTP", "000000")
+        .set("X-PartaGPU-AUTH", &bad_auth)
         .send_string(&env_json);
     match resp {
-        Err(ureq::Error::Status(code, _)) => {
-            // 415 (decrypt failed) or 401 (TOTP rejected) — either is a valid
-            // rejection ; the protocol guarantees we reach neither the task
-            // map nor the executor.
-            assert!(
-                code == 415 || code == 401,
-                "expected 415 or 401, got {code}"
-            );
-        }
+        Err(ureq::Error::Status(401, _)) => {}
         Ok(r) => panic!("unexpected success {}", r.status()),
-        Err(e) => panic!("transport error: {e}"),
+        Err(e) => panic!("expected 401, got {e}"),
     }
 }
 
@@ -164,21 +165,6 @@ fn v2_round_trip_accepts_task() {
     let _env = fresh_env();
     let (port, server_eph, secret_b32) = start_test_server();
     let room_key = crypto::derive_room_key(&secret_b32).unwrap();
-    let totp = current_totp(&secret_b32, "test-room-1");
-    // ^ The room name suffix matches what start_test_server picked. Since
-    //   AtomicUsize starts at 0 and we ran 2 tests before this one (in any
-    //   order), we can't assume it's "1". Compute it fresh.
-    //   Better: use the room_name embedded in the auth state. We don't have
-    //   easy access here, so instead we iterate possible room_names.
-    let _ = totp; // silence unused while we compute below
-
-    // Fall back: the server accepts any TOTP that verifies — the only thing
-    // that matters is the secret. AuthManager::verify_code() checks all the
-    // saved rooms ; since each test creates one room and the test env wipes
-    // $HOME each time, there's exactly one room to match. We can compute
-    // TOTP for any room_name using the secret — the server's verify_code
-    // will accept it.
-    let totp = compute_totp_any_label(&secret_b32);
 
     let body = serde_json::json!({
         "args": ["true"],
@@ -189,11 +175,13 @@ fn v2_round_trip_accepts_task() {
     let (env, session_key) =
         crypto::encrypt_v2(&room_key, &server_eph.public_b64(), body_str.as_bytes()).unwrap();
     let env_json = serde_json::to_string(&env).unwrap();
+    let path = "/peer/v1/tasks";
+    let auth = auth_header(&secret_b32, "POST", path, env_json.as_bytes());
 
-    let url = format!("http://127.0.0.1:{port}/peer/v1/tasks");
+    let url = format!("http://127.0.0.1:{port}{path}");
     let resp = ureq::post(&url)
         .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
-        .set("X-PartaGPU-TOTP", &totp)
+        .set("X-PartaGPU-AUTH", &auth)
         .send_string(&env_json)
         .expect("submit");
     assert_eq!(resp.status(), 200);
@@ -209,9 +197,11 @@ fn v2_round_trip_accepts_task() {
 fn cancel_unknown_task_returns_404() {
     let _env = fresh_env();
     let (port, _eph, secret_b32) = start_test_server();
-    let totp = compute_totp_any_label(&secret_b32);
-    let url = format!("http://127.0.0.1:{port}/peer/v1/tasks/non-existent-id");
-    let resp = ureq::delete(&url).set("X-PartaGPU-TOTP", &totp).call();
+    let path = "/peer/v1/tasks/non-existent-id";
+    // DELETE has no body, so the HMAC covers the empty byte slice.
+    let auth = auth_header(&secret_b32, "DELETE", path, b"");
+    let url = format!("http://127.0.0.1:{port}{path}");
+    let resp = ureq::delete(&url).set("X-PartaGPU-AUTH", &auth).call();
     match resp {
         Err(ureq::Error::Status(404, _)) => {}
         Ok(r) => panic!("unexpected success {}", r.status()),
@@ -220,7 +210,7 @@ fn cancel_unknown_task_returns_404() {
 }
 
 #[test]
-fn rejects_request_without_totp() {
+fn rejects_request_without_auth_header() {
     let _env = fresh_env();
     let (port, server_eph, secret_b32) = start_test_server();
     let room_key = crypto::derive_room_key(&secret_b32).unwrap();
@@ -238,10 +228,4 @@ fn rejects_request_without_totp() {
         Ok(r) => panic!("unexpected success {}", r.status()),
         Err(e) => panic!("expected 401, got {e}"),
     }
-}
-
-/// Compute a TOTP code from the secret. The label / issuer don't matter
-/// because `AuthManager::verify_code` derives from the secret only.
-fn compute_totp_any_label(secret_b32: &str) -> String {
-    current_totp(secret_b32, "PartaGPU")
 }

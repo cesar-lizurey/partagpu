@@ -30,9 +30,12 @@ pub struct Peer {
     /// 0 if no GPU or no driver.
     #[serde(default)]
     pub gpu_count: u32,
-    /// TOTP code announced by this peer (for verification).
-    pub totp_code: String,
-    /// Whether this peer's TOTP code has been verified.
+    /// HMAC auth proof announced by this peer over mDNS, used by
+    /// `AuthManager::verify_auth_proof` to flip `verified`. Replaces the
+    /// `totp_code` field of older versions ; same purpose, different
+    /// primitive (truncated HMAC over the current 30-s window).
+    pub auth_proof: String,
+    /// Whether this peer's auth proof has been verified.
     pub verified: bool,
     /// True if another peer already claimed this hostname (possible spoof).
     #[serde(default)]
@@ -177,7 +180,7 @@ impl Discovery {
 
     /// Force an immediate mDNS re-announcement (unregister + register).
     /// Used after the auth state changes (join/create/leave room) so peers
-    /// pick up the new TOTP without waiting for the periodic refresh.
+    /// pick up the new auth proof without waiting for the periodic refresh.
     pub fn force_refresh_announcement(&self) {
         let fullname = format!("{}.{}", self.instance_name, SERVICE_TYPE);
         let _ = self.daemon.unregister(&fullname);
@@ -191,10 +194,10 @@ impl Discovery {
             local_ip_address::local_ip().map_err(|e| format!("Failed to get local IP: {e}"))?;
 
         let display_name = self.display_name.lock().unwrap().clone();
-        let totp_code = self
+        let auth_proof = self
             .auth
             .as_ref()
-            .and_then(|a| a.current_code())
+            .and_then(|a| a.current_auth_proof())
             .unwrap_or_default();
         let (sharing, cpu_limit, ram_limit, gpu_limit) = self.sharing_properties();
         let gpu_count = self.local_gpu_count().to_string();
@@ -208,7 +211,7 @@ impl Discovery {
             ("ram_limit", &ram_limit),
             ("gpu_limit", &gpu_limit),
             ("gpu_count", &gpu_count),
-            ("totp", &totp_code),
+            ("auth_proof", &auth_proof),
             ("eph_pk", &eph_pk),
         ];
 
@@ -230,7 +233,9 @@ impl Discovery {
         Ok(())
     }
 
-    /// Periodically re-register the mDNS service to refresh TOTP and sharing state.
+    /// Periodically re-register the mDNS service to refresh the auth proof
+    /// and sharing state. The auth proof rotates every 30 s by definition,
+    /// so we have to re-announce at least at that cadence.
     pub fn start_mdns_refresh(&self) {
         let daemon = self.daemon.clone();
         let auth = self.auth.clone();
@@ -245,9 +250,9 @@ impl Discovery {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(5));
 
-                let totp = auth
+                let auth_proof = auth
                     .as_ref()
-                    .and_then(|a| a.current_code())
+                    .and_then(|a| a.current_auth_proof())
                     .unwrap_or_default();
 
                 let (sharing_str, cpu, ram, gpu) = match &sharing {
@@ -269,7 +274,7 @@ impl Discovery {
 
                 // Only re-register if something changed.
                 let state_key =
-                    format!("{totp}|{sharing_str}|{cpu}|{ram}|{gpu}|{gpu_count}|{eph_pk}");
+                    format!("{auth_proof}|{sharing_str}|{cpu}|{ram}|{gpu}|{gpu_count}|{eph_pk}");
                 {
                     let mut last = last_announced.lock().unwrap();
                     if *last == state_key {
@@ -292,7 +297,7 @@ impl Discovery {
                     ("ram_limit", &ram),
                     ("gpu_limit", &gpu),
                     ("gpu_count", &gpu_count),
-                    ("totp", totp.as_str()),
+                    ("auth_proof", auth_proof.as_str()),
                     ("eph_pk", eph_pk.as_str()),
                 ];
 
@@ -396,15 +401,17 @@ impl Discovery {
                             .unwrap_or("0")
                             .parse()
                             .unwrap_or(0);
-                        let totp_code =
-                            props.get_property_val_str("totp").unwrap_or("").to_string();
+                        let auth_proof = props
+                            .get_property_val_str("auth_proof")
+                            .unwrap_or("")
+                            .to_string();
                         let eph_pk = props
                             .get_property_val_str("eph_pk")
                             .unwrap_or("")
                             .to_string();
 
                         let verified = match &auth {
-                            Some(a) if !totp_code.is_empty() => a.verify_code(&totp_code),
+                            Some(a) if !auth_proof.is_empty() => a.verify_auth_proof(&auth_proof),
                             Some(_) => false,
                             None => true,
                         };
@@ -437,7 +444,7 @@ impl Discovery {
                             ram_limit,
                             gpu_limit,
                             gpu_count,
-                            totp_code,
+                            auth_proof,
                             verified,
                             hostname_conflict,
                             eph_pk,

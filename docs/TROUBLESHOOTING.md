@@ -59,9 +59,9 @@ Vérifier dans l'ordre :
 
 ### Le pair apparaît mais marqué `non vérifié`
 
-Le code TOTP ne match pas. Causes :
+La preuve d'auth HMAC ne match pas. Causes :
 - **Pas dans la même salle** : différentes passphrases. *Quitter la salle* sur l'un, la rejoindre avec le bon code.
-- **Décalage d'horloge > 30 s entre les machines** : les codes TOTP sont valides ±30 s seulement. Activer NTP partout :
+- **Décalage d'horloge > 30 s entre les machines** : les preuves HMAC sont valides ±30 s seulement (fenêtre `AUTH_WINDOW_SECS`). Activer NTP partout :
   ```bash
   sudo timedatectl set-ntp true
   timedatectl status      # verifier System clock synchronized: yes
@@ -106,16 +106,16 @@ Selon ce qui manque :
 
 Vous n'êtes dans aucune salle. UI → onglet en haut → *Créer une salle* ou *Rejoindre une salle*.
 
-### `RemoteTaskError: Le pair ... a refusé la tâche (HTTP 401) : Code TOTP invalide`
+### `RemoteTaskError: Le pair ... a refusé la tâche (HTTP 401) : auth invalide`
 
-Décalage d'horloge entre les deux PC ou pas dans la même salle. Voir *Pairs et découverte*.
+Soit la salle ne correspond pas (mauvaise `auth_key`), soit décalage d'horloge entre les deux PC supérieur à 30 s, soit le header a été altéré en transit. Voir *Pairs et découverte* ; le journal de sécurité détaille la cause exacte.
 
 ### `HTTP 415 Unsupported Media Type` côté pair
 
 Depuis la 1.6.0, tous les bodies entre pairs sont chiffrés (AES-256-GCM). Le pair récepteur retourne 415 si :
 - Le client est en `< 1.6.0` (envoie en clair) → upgrade le client.
-- Le pair est dans une autre salle (clé AES différente) → `decrypt` échoue → 415. Vérifier que les deux PC ont rejoint la même salle.
-- Décalage d'horloge important entre les deux PC : le TOTP peut passer mais la clé AES est dérivée du secret persistant — celle-ci ne dépend pas de l'horloge. En général le 415 trahit un problème de salle, pas de TOTP.
+- Le Content-Type n'est pas `application/x-partagpu-encrypted-v1`.
+- Le pair est dans une autre salle (le HMAC du header passe par hasard avec la mauvaise clé : ~impossible ; mais l'`auth_key` étant dérivée du même secret que la `room_key`, en pratique un mismatch `auth_key` → 401 avant même d'arriver au 415).
 
 Pour vérifier que les deux pairs partagent bien le même secret : sur chaque machine, *Mon partage* → *Salle* doit afficher le même nom et la même passphrase.
 
@@ -284,11 +284,11 @@ Onglet *Mon partage* → *Journal de sécurité*. Garde les 500 derniers événe
 
 ```bash
 # Liste des taches entrantes (cote pair)
-curl -s -H "X-PartaGPU-TOTP: 123456" \
+curl -s -H "X-PartaGPU-AUTH: 123456" \
     http://127.0.0.1:7655/peer/v1/tasks/<task-id> | python3 -m json.tool
 ```
 
-(Code TOTP courant visible dans l'UI sous le nom de la salle.)
+(Le header doit être calculé avec `compute_request_auth(method, path, body)` ; depuis `curl` c'est inconfortable, préfère `cargo run --example sign-request` ou un petit script Python qui calcule le HMAC.)
 
 ---
 

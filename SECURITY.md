@@ -9,7 +9,7 @@ Ce document détaille les mesures de sécurité implémentées dans PartaGPU. L'
 ## Table des matières
 
 - [Vue d'ensemble](#vue-densemble)
-- [1. Authentification des pairs par TOTP](#1-authentification-des-pairs-par-totp)
+- [1. Authentification des pairs par HMAC + timestamp](#1-authentification-des-pairs-par-hmac--timestamp)
 - [2. Chiffrement des messages pair-à-pair](#2-chiffrement-des-messages-pair-à-pair)
 - [3. Sandbox d'exécution (bubblewrap)](#3-sandbox-dexécution-bubblewrap)
 - [4. Durcissement du compte partagpu](#4-durcissement-du-compte-partagpu)
@@ -28,7 +28,7 @@ PartaGPU repose sur plusieurs couches de sécurité complémentaires :
 
 | Couche | Protège contre | Implémentation |
 |--------|---------------|----------------|
-| **Authentification TOTP** | Pairs non autorisés, imposteurs | Code temporaire dérivé d'un secret partagé |
+| **Authentification HMAC** | Pairs non autorisés, imposteurs | Code temporaire dérivé d'un secret partagé |
 | **Chiffrement AES-256-GCM** | Écoute réseau passive | Clé HKDF du secret de salle, mandatory sur /peer/v1/tasks* |
 | **Sandbox bubblewrap** | Exécution de code malveillant | Filesystem read-only, pas de réseau, PID isolé |
 | **Compte durci** | Abus du compte partagpu | Shell restreint, SSH bloqué, sudo bloqué |
@@ -39,7 +39,7 @@ PartaGPU repose sur plusieurs couches de sécurité complémentaires :
 
 ---
 
-## 1. Authentification des pairs par TOTP
+## 1. Authentification des pairs par HMAC + timestamp
 
 ### Le problème
 
@@ -47,28 +47,42 @@ Sur un réseau local, n'importe qui peut annoncer un service mDNS et se faire pa
 
 ### La solution
 
-Chaque salle PartaGPU partage un **secret cryptographique** (encodé comme un code de 4 mots). Ce secret produit un **code TOTP à 6 chiffres** qui change toutes les 30 secondes. Chaque poste annonce son code courant via mDNS, et les autres vérifient qu'il correspond.
+Chaque salle PartaGPU partage un **secret cryptographique** (encodé comme un code de 4 mots). De ce secret on dérive deux clés via HKDF-SHA256 :
 
-![Vérification TOTP des pairs](docs/images/security-totp-flow.svg)
+- une **`room_key`** pour le chiffrement AES-256-GCM des bodies (cf. section 2)
+- une **`auth_key`** distincte pour les preuves d'authentification HMAC
+
+Pour la **vérification passive en mDNS**, chaque pair publie un `auth_proof` = `HMAC-SHA256(auth_key, current_30s_window)` tronqué à 8 caractères hex (32 bits) dans son TXT record. Les autres pairs recalculent et comparent en temps constant ; pas besoin d'aller-retour HTTP pour flipper le badge `verified`.
+
+Pour les **requêtes HTTP**, chaque appel pair-à-pair embarque un header :
+```
+X-PartaGPU-AUTH: <unix_ts>:<HMAC-SHA256(auth_key, "PartaGPU/auth-req/v1\n" || ts || "\n" || method || "\n" || path || "\n" || sha256(body)) hex>
+```
+
+Le serveur vérifie que `|now - ts| ≤ 30 s` puis recalcule le HMAC et compare en temps constant. Le HMAC **lie l'auth au corps de la requête**, donc un header capté ne peut pas être rejoué sur une requête différente même dans la fenêtre de 30 s. Un attaquant qui ne connaît pas la `auth_key` n'arrive jamais à la couche AES — l'auth gate est validée *avant* le déchiffrement.
+
+![Vérification d'auth des pairs](docs/images/security-totp-flow.svg)
 
 ### Détails techniques
 
-- **Algorithme** : TOTP (RFC 6238) avec SHA-1, fenêtre de 30 secondes
-- **Tolérance de clock skew** : +/- 1 fenêtre (le code précédent et suivant sont aussi acceptés)
-- **Code d'accès** : 4 mots parmi 256 = 256^4 = ~4,3 milliards de combinaisons
-- **Conversion** : le passphrase de 4 mots est converti en 4 octets, puis étendu à 20 octets via SHA-1 pour former le secret TOTP
-- **Persistance** : le secret est sauvegardé dans `~/.config/partagpu/room.json` et rechargé automatiquement au démarrage
+- **Primitive** : HMAC-SHA256 (RFC 2104). Plus simple, plus standard, et plus aligné avec le reste de la stack crypto que TOTP (RFC 6238) qui était utilisé jusqu'à 1.8.x.
+- **Tolérance de clock skew** : ±1 fenêtre (`AUTH_WINDOW_SECS = 30 s`).
+- **Code d'accès** : 4 mots parmi 256 = 256^4 ≈ 4,3 milliards de combinaisons.
+- **Conversion** : la passphrase est convertie en 4 octets, puis étendue à 20 octets via SHA-1 pour former un secret de longueur stable. Format identique aux versions 1.6.x–1.8.x donc le `room.json` reste lisible (rétro-compat des fichiers de config).
+- **Dérivation** : `auth_key = HKDF-SHA256(room_secret, info = "HMAC-SHA256 auth key v1")`. Distinct de la `room_key` AES via un `info` différent.
+- **Persistance** : seul le secret est sauvegardé dans `~/.config/partagpu/room.json` ; la `auth_key` est dérivée à chaque chargement.
 
 ### Ce qui est bloqué
 
-Quand une salle est active, l'API `submit_task` :
-- **Refuse** les tâches provenant de pairs non vérifiés (TOTP invalide)
-- **Refuse** les tâches provenant de pairs inconnus (absents de la liste mDNS)
-- **Logue** chaque tentative refusée sur stderr avec le préfixe `SECURITY:`
+Quand une salle est active, le serveur peer-API :
+- **Refuse** (HTTP 401) les requêtes sans header `X-PartaGPU-AUTH`
+- **Refuse** (401) les requêtes avec header HMAC invalide (mauvaise clé, body altéré, timestamp hors fenêtre)
+- **Refuse** (403) les requêtes quand le partage est désactivé localement
+- **Logue** chaque rejet via `SecurityLog::peer_event(EventCategory::TaskRejected, …)`
 
 ### Fichiers concernés
 
-- `src-tauri/src/auth.rs` — génération/vérification TOTP, passphrase, persistance
+- `src-tauri/src/auth.rs` — génération/vérification HMAC, passphrase, persistance
 - `src-tauri/src/discovery.rs` — annonce et vérification du code dans les properties mDNS
 - `src-tauri/src/api.rs` — vérification du pair dans `submit_task`
 
@@ -78,7 +92,7 @@ Quand une salle est active, l'API `submit_task` :
 
 ### Le problème
 
-Le TOTP authentifie le pair, mais ne chiffre rien. Sans chiffrement, un attaquant qui écoute le LAN (port mirror, ARP spoofing, ou simplement Wi-Fi partagé) verrait passer en clair :
+L'auth HMAC authentifie le pair, mais ne chiffre rien. Sans chiffrement, un attaquant qui écoute le LAN (port mirror, ARP spoofing, ou simplement Wi-Fi partagé) verrait passer en clair :
 
 - les arguments des commandes (`python3 -c "secret"` → secret visible)
 - les fichiers du workspace pushés vers le pair (code propriétaire, datasets)
@@ -99,7 +113,7 @@ key = HKDF-SHA256(
 )
 ```
 
-Le `room_secret` est le même que celui qui sert au TOTP — déjà partagé entre membres de la salle via la passphrase de 4 mots. Aucun nouveau matériel à distribuer.
+Le `room_secret` est le même que celui qui sert à l'auth HMAC — déjà partagé entre membres de la salle via la passphrase de 4 mots. Aucun nouveau matériel à distribuer.
 
 #### Dérivation de la clé (v=2, par défaut depuis 1.7.0)
 
@@ -137,14 +151,14 @@ Le serveur peer-API rejette en `415 Unsupported Media Type` toute requête avec 
 
 - **Confidentialité** : un attaquant qui écoute le trafic ne lit ni les commandes, ni les workspaces, ni les outputs.
 - **Intégrité** : tout flip de bit dans un ciphertext fait échouer le déchiffrement (tag GCM rejeté). Le serveur retourne 415, le client reçoit l'erreur sans avoir accepté le message altéré.
-- **Authenticité au niveau salle** : seuls les détenteurs du secret peuvent produire un body qui se déchiffre. TOTP ajoute l'anti-replay sur ~30 s.
+- **Authenticité au niveau salle** : seuls les détenteurs du secret peuvent produire un body qui se déchiffre. le header `X-PartaGPU-AUTH` ajoute l'anti-replay sur ~30 s.
 - **Forward secrecy (v=2)** : un attaquant qui capture du trafic chiffré et obtient le secret de salle plus tard ne peut pas déchiffrer ce qu'il a capturé, car la moitié privée de la clé éphémère n'a jamais quitté la RAM du serveur et a disparu au redémarrage de l'app.
 
 ### Limites connues
 
 - **Forward secrecy bornée à 10 min** : un attaquant qui accède à la RAM d'un poste **pendant qu'il tourne** peut déchiffrer les sessions des 10 dernières minutes. Au-delà, les anciennes clés ont été rotées et écrasées.
 - **Pas de protection contre un membre de la salle** : par construction, tout pair dans la salle a la clé. Le modèle de menace est "attaquant LAN qui n'est PAS dans la salle".
-- **Anti-DOS faible** : le body (jusqu'à 32 MB) est lu et tenté de déchiffrer AVANT le check du TOTP. Un attaquant LAN pourrait spammer des bodies invalides pour forcer des allocations mémoire. Mitigation actuelle : le port n'est ouvert que quand le partage est actif (firewall fermé sinon).
+- **Anti-DOS faible** : le body (jusqu'à 32 MB) est lu et tenté de déchiffrer AVANT le check du HMAC. Un attaquant LAN pourrait spammer des bodies invalides pour forcer des allocations mémoire. Mitigation actuelle : le port n'est ouvert que quand le partage est actif (firewall fermé sinon).
 
 ### Fichiers concernés
 
@@ -154,7 +168,7 @@ Le serveur peer-API rejette en `415 Unsupported Media Type` toute requête avec 
 
 Tests :
 - Unitaires (8 tests) : `cargo test --lib crypto::` — round-trip v=1 et v=2, mauvaise clé, tampering, JSON round-trip, mauvaise clé éphémère, rotation grace window, forward-secrecy après rotation.
-- Intégration (5 tests) : `cargo test --test peer_api_e2e` — refus du plaintext, refus sans TOTP, refus mauvais secret, round-trip v=2 complet sur un vrai serveur localhost, 404 sur cancel inconnu.
+- Intégration (5 tests) : `cargo test --test peer_api_e2e` — refus du plaintext, refus sans header X-PartaGPU-AUTH, refus mauvais secret, round-trip v=2 complet sur un vrai serveur localhost, 404 sur cancel inconnu.
 
 ---
 

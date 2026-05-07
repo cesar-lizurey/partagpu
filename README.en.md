@@ -9,8 +9,8 @@ Each station can choose to expose all or part of its resources. A dedicated `par
 On the code side, a Python package (`partagpu`) lets you run a command on a peer (`partagpu.run_remote`) or **launch a PyTorch DDP training in parallel across every GPU in the room** (`partagpu.distribute`).
 
 **Companion documentation**:
-- [docs/ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md) — how it works internally (the two HTTP servers, TOTP auth, sandbox, DDP orchestration)
-- [docs/TROUBLESHOOTING.en.md](docs/TROUBLESHOOTING.en.md) — diagnosis of common errors (TOTP mismatch, NCCL hang, sandbox crash, etc.)
+- [docs/ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md) — how it works internally (the two HTTP servers, HMAC auth, sandbox, DDP orchestration)
+- [docs/TROUBLESHOOTING.en.md](docs/TROUBLESHOOTING.en.md) — diagnosis of common errors (HMAC auth mismatch, NCCL hang, sandbox crash, etc.)
 - [SECURITY.en.md](SECURITY.en.md) — detailed security model
 
 ---
@@ -40,7 +40,7 @@ On the code side, a Python package (`partagpu`) lets you run a command on a peer
 - Every user picks **what to share** and **how much** through red sliders directly on the resource gauges
 - Incoming compute tasks run as a dedicated system account (`partagpu`) inside a **bubblewrap** sandbox (read-only FS, /workspace tmpfs, opt-in network)
 - A classmate is absent? Power on their PC, log in as `partagpu`, their resources become available
-- A **virtual room** protected by an access code guarantees that only authorized stations can communicate (shared TOTP auth)
+- A **virtual room** protected by an access code guarantees that only authorized stations can communicate (HMAC auth on a shared secret)
 - On the code side, a Python package (`partagpu`) lets you train with PyTorch DDP across **every GPU in the room** with a single `partagpu.distribute("train.py")`
 
 ---
@@ -87,7 +87,7 @@ npm run tauri:build    # production build (generates a .deb)
 
 When PartaGPU starts, every station announces itself on the LAN over mDNS. **Without protection, anyone connected to the same network could pose as a peer and submit malicious tasks.**
 
-The room system solves this: it generates a **shared secret** that produces a TOTP code (a 6-digit time-based code, like authenticator apps). Each station proves room membership by showing the right code. Stations whose code doesn't match are marked **unverified** in the UI.
+The room system solves this: it generates a **shared secret** that produces an authentication proof (a truncated HMAC-SHA256 over the current 30-s window). Each station proves room membership by showing the right proof, which is recomputed and constant-time compared. Stations whose proof doesn't match are marked **unverified** in the UI.
 
 ### Create a room (one student does it)
 
@@ -111,8 +111,8 @@ apple-tiger-blue-ocean
 ### How it works under the hood
 
 - The 4-word code encodes a cryptographic secret (each word = 1 byte from 256 options, so 4 billion combinations)
-- This secret produces a **6-digit TOTP** that rotates every 30 seconds
-- Each station broadcasts its current TOTP code via mDNS
+- This secret is HKDF-SHA256-expanded into a 32-byte `auth_key`
+- Each station broadcasts an **8-hex-char HMAC proof** in its mDNS TXT record, valid for the current 30-s window
 - Other stations check that code — if it matches, the peer is marked **OK** (verified)
 - A station that doesn't know the secret can't produce the right code and shows up as **unverified**
 
@@ -122,16 +122,16 @@ PartaGPU distinguishes three categories:
 
 #### Verified peer
 
-A machine visible on the network via mDNS **and** whose TOTP code matches yours (same room, same access code).
+A machine visible on the network via mDNS **and** whose HMAC auth proof matches yours (same room, same access code).
 
 - Each station in the room has the same secret (derived from the 4-word code)
-- From this secret, every station produces a **6-digit time-based code** that rotates every 30 seconds (TOTP, the same protocol as Google Authenticator)
-- The code is broadcast automatically to other stations over the LAN
-- Other stations verify that code: if it matches what they compute themselves with the same secret, the peer is **verified**
+- From this secret, every station computes a **truncated HMAC-SHA256** over the current 30-s window (8 hex chars). Same idea as a time-based code but without the TOTP / RFC 6238 machinery.
+- The proof is broadcast automatically to other stations over the LAN
+- Other stations verify: if they recompute the same proof with their own secret, the peer is **verified**
 
 #### Unverified peer
 
-A machine visible on the network via mDNS (running PartaGPU) **but** whose TOTP code doesn't match. Possible causes:
+A machine visible on the network via mDNS (running PartaGPU) **but** whose HMAC proof doesn't match. Possible causes:
 - Hasn't joined any room
 - Is in a different room
 - Entered a wrong access code
@@ -312,15 +312,15 @@ partagpu/
 │   ├── src/
 │   │   ├── main.rs              # Binary entry point
 │   │   ├── lib.rs               # Tauri init, HTTP server boot
-│   │   ├── auth.rs              # Rooms: TOTP, 4-word passphrase, verification
-│   │   ├── discovery.rs         # mDNS discovery + gpu_count + TOTP check
+│   │   ├── auth.rs              # Rooms: HMAC auth_key, 4-word passphrase, verification
+│   │   ├── discovery.rs         # mDNS discovery + gpu_count + HMAC proof check
 │   │   ├── user_manager.rs      # User creation, pkexec, cgroups
 │   │   ├── resource.rs          # CPU/RAM (sysinfo) + GPU (multi-device nvidia-smi)
 │   │   ├── sharing.rs           # Sharing state (Active/Paused/Disabled) + limits
 │   │   ├── sandbox.rs           # bubblewrap: GPU passthrough, opt-in network, workspace
 │   │   ├── task_runner.rs       # Incoming/outgoing task queues + create_and_run
 │   │   ├── http_api.rs          # Local HTTP API 127.0.0.1:7654 + POST /api/dispatch
-│   │   ├── peer_api.rs          # Peer-to-peer HTTP API 0.0.0.0:7655 (TOTP header auth)
+│   │   ├── peer_api.rs          # Peer-to-peer HTTP API 0.0.0.0:7655 (HMAC header auth)
 │   │   ├── api.rs               # Tauri commands exposed to the frontend
 │   │   └── security_log.rs      # Security event journal (ring buffer)
 │   ├── helper/                  # Separate crate: Rust binary executed via pkexec
@@ -390,7 +390,7 @@ Slider adjustments, status reads, and monitoring **never call pkexec** — every
 
 ## Security
 
-- **Room authentication**: a 4-word access code generates a shared TOTP secret. Each station proves room membership by presenting a 6-digit time-based code that rotates every 30 seconds. Unverified stations are clearly identified.
+- **Room authentication**: a 4-word access code generates a shared secret from which an AES `room_key` and an HMAC `auth_key` are derived. Every peer-to-peer request carries an `X-PartaGPU-AUTH: <ts>:<HMAC>` header that binds the auth to the request body + a timestamp inside a 30-s window (anti-replay). Unverified stations are clearly identified.
 - **Peer-to-peer encryption** (since 1.6.0): HTTP bodies between peers (port 7655) are encrypted with AES-256-GCM, key derived via HKDF from the room secret. Confidentiality + integrity against passive LAN sniffing. Every peer must be `>= 1.6.0`.
 - **Forward secrecy** (since 1.7.0): the AES key is now derived from a per-request ephemeral X25519 Diffie-Hellman exchange. The server's ephemeral key stays **in RAM only**, regenerated at every app start and rotated every 10 minutes. An attacker who captures traffic and steals the passphrase later can no longer decrypt sessions older than 10 minutes.
 - **Isolation**: the `partagpu` account is dedicated to sharing, with no access to other users' personal files
@@ -432,7 +432,7 @@ CI runs `cargo test` before bundling; a failing test blocks the release.
 
 ## Python package — distributed training
 
-PartaGPU ships a Python package (`partagpu`) that turns the application into a distributed compute platform. Everything goes through the local app (`localhost:7654`): it authenticates requests via TOTP and forwards them to peers. You have **nothing to set up on the network side** — no SSH, no keys.
+PartaGPU ships a Python package (`partagpu`) that turns the application into a distributed compute platform. Everything goes through the local app (`localhost:7654`): it computes the HMAC auth header and forwards each request, encrypted, to the peer. You have **nothing to set up on the network side** — no SSH, no keys.
 
 ### Installation
 
@@ -561,7 +561,7 @@ The application exposes two HTTP servers:
 | `/api/dispatch` | POST | Submits a task to a peer, **blocks** until completion. Body: `{"peer_ip", "args", "timeout_secs", "network", "workspace", "user", "local_id"}` (`local_id` is optional — used to pre-allocate an id client-side so you can cancel mid-flight) |
 | `/api/cancel` | POST | Cancels an outgoing task by its `local_id`. Forwards as `DELETE` to the peer. Body: `{"local_id"}` |
 
-**Peer-to-peer API** on `0.0.0.0:7655` (used by the other PartaGPU peers, auth via `X-PartaGPU-TOTP` header):
+**Peer-to-peer API** on `0.0.0.0:7655` (used by the other PartaGPU peers, auth via `X-PartaGPU-AUTH` header):
 
 | Route | Method | Description |
 |---|---|---|

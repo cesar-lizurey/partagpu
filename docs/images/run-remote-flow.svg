@@ -48,17 +48,17 @@
   <rect x="240" y="155" width="160" height="56" rx="6" fill="#1f232d" stroke="#6366f1" stroke-width="1"/>
   <text x="320" y="173" text-anchor="middle" fill="#e4e6eb" font-size="10" font-weight="600">prépare le dispatch</text>
   <text x="320" y="188" text-anchor="middle" fill="#8b8fa3" font-size="9">gzip workspace + ECDH X25519</text>
-  <text x="320" y="203" text-anchor="middle" fill="#8b8fa3" font-size="9">envelope v=2 + TOTP</text>
+  <text x="320" y="203" text-anchor="middle" fill="#8b8fa3" font-size="9">envelope v=2 + HMAC auth</text>
 
   <!-- Step 3 : App locale -> App distante -->
   <line x1="320" y1="235" x2="540" y2="235" stroke="#a78bfa" stroke-width="2" marker-end="url(#arr-rr)"/>
   <text x="430" y="228" text-anchor="middle" fill="#a78bfa" font-size="10">POST /peer/v1/tasks (chiffré v=2)</text>
-  <text x="430" y="250" text-anchor="middle" fill="#8b8fa3" font-size="9">X-PartaGPU-TOTP : 6 chiffres</text>
+  <text x="430" y="250" text-anchor="middle" fill="#8b8fa3" font-size="9">X-PartaGPU-AUTH : ts:hmac</text>
 
   <!-- Step 4 : App distante validates -->
   <rect x="460" y="265" width="160" height="56" rx="6" fill="#1f232d" stroke="#a78bfa" stroke-width="1"/>
   <text x="540" y="283" text-anchor="middle" fill="#e4e6eb" font-size="10" font-weight="600">vérifie + déchiffre</text>
-  <text x="540" y="298" text-anchor="middle" fill="#8b8fa3" font-size="9">TOTP, sharing actif, room-key</text>
+  <text x="540" y="298" text-anchor="middle" fill="#8b8fa3" font-size="9">HMAC, sharing actif, room-key</text>
   <text x="540" y="313" text-anchor="middle" fill="#8b8fa3" font-size="9">create_and_run → cgroup task</text>
 
   <!-- Step 5 : exec dans sandbox -->

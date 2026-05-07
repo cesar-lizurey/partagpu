@@ -1,14 +1,17 @@
 //! Peer-to-peer HTTP server on 0.0.0.0:7655.
 //!
 //! Accepts compute task submissions from other PartaGPU machines on the LAN.
-//! Authentication is shared-secret TOTP (same secret as the room) carried in
-//! the `X-PartaGPU-TOTP` header — every member of the room can compute the
-//! current code, no other machine on the network can.
+//! Authentication is **HMAC-SHA256(auth_key, ts || method || path || body_hash)**
+//! carried in the `X-PartaGPU-AUTH: <unix_ts>:<hex_hmac>` header — every
+//! member of the room can compute it, nobody else can. The HMAC is validated
+//! on the **wire bytes** (encrypted envelope) before the body is decrypted,
+//! so an attacker who can't compute the HMAC never reaches the AES layer.
 //!
 //! Routes:
-//!   GET  /peer/v1/health        → liveness + room state (no auth)
-//!   POST /peer/v1/tasks         → submit a task (TOTP required)
-//!   GET  /peer/v1/tasks/<id>    → fetch task status/output (TOTP required)
+//!   GET    /peer/v1/health        → liveness + room state (no auth)
+//!   POST   /peer/v1/tasks         → submit a task (auth required)
+//!   GET    /peer/v1/tasks/<id>    → fetch task status/output (auth required)
+//!   DELETE /peer/v1/tasks/<id>    → cancel task (auth required)
 
 use crate::auth::AuthManager;
 use crate::crypto::{self, EphemeralKey, ENCRYPTED_CONTENT_TYPE};
@@ -23,7 +26,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const LISTEN_ADDR: &str = "0.0.0.0:7655";
-const TOTP_HEADER: &str = "x-partagpu-totp";
+const AUTH_HEADER: &str = "x-partagpu-auth";
 /// Cap on raw request size (post-base64, post-encryption-envelope). Sized
 /// to comfortably hold a 16 MB sandbox workspace after JSON+base64+encrypt
 /// inflation (~28 MB worst case).
@@ -176,12 +179,73 @@ async fn handle_connection(
     // /health is the only unauthenticated, unencrypted endpoint (used as a
     // probe). Everything under /peer/v1/tasks must be encrypted.
     let route_needs_encryption = req.path.starts_with("/peer/v1/tasks");
+    let route_needs_auth = route_needs_encryption;
 
     // Try to derive the room key. Required for encrypted routes; absent if
     // we're not in a room (auth.get_secret() returns None).
     let room_key: Option<[u8; 32]> = auth
         .get_secret()
         .and_then(|s| crypto::derive_room_key(&s).ok());
+
+    // ── Auth check (run BEFORE decryption) ────────────────────────────────
+    // The HMAC is computed over the wire bytes (encrypted envelope JSON),
+    // so an attacker who can't sign requests never reaches the AES-GCM
+    // layer. Failures short-circuit with 401/403 without touching the
+    // crypto pipeline below.
+    let auth_failure: Option<(&'static str, String)> = if route_needs_auth {
+        if !auth.is_joined() {
+            Some((
+                "403 Forbidden",
+                "Cette machine n'est dans aucune salle PartaGPU.".into(),
+            ))
+        } else if sharing.get_config().status != SharingStatus::Active {
+            Some((
+                "403 Forbidden",
+                "Le partage de ressources n'est pas activé sur cette machine.".into(),
+            ))
+        } else {
+            let header_value = req
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(AUTH_HEADER))
+                .map(|(_, v)| v.trim().to_string())
+                .unwrap_or_default();
+            if header_value.is_empty() {
+                Some((
+                    "401 Unauthorized",
+                    format!("Header '{AUTH_HEADER}' manquant."),
+                ))
+            } else {
+                match auth.verify_request_auth(
+                    &header_value,
+                    &req.method,
+                    &req.path,
+                    req.body.as_bytes(),
+                ) {
+                    Ok(()) => None,
+                    Err(e) => Some(("401 Unauthorized", format!("auth invalide : {e}"))),
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some((status, msg)) = auth_failure {
+        sec_log.peer_event(
+            EventCategory::TaskRejected,
+            &format!("Requête refusée de {} : {msg}", addr.ip()),
+            &addr.ip().to_string(),
+            "",
+        );
+        return write_response(
+            &mut stream,
+            status,
+            &json_string(&ErrorResponse { error: msg }),
+            "application/json",
+        )
+        .await;
+    }
 
     // Decrypt request body if we're on an encrypted route and the body is
     // non-empty (POST). Replace req.body with the plaintext so handlers
@@ -248,16 +312,16 @@ async fn handle_connection(
     } else {
         match (req.method.as_str(), req.path.as_str()) {
             ("GET", "/peer/v1/health") => handle_health(&auth, &sharing),
-            ("POST", "/peer/v1/tasks") => handle_submit(
-                &req, &addr, &incoming, &auth, &discovery, &sharing, &sec_log,
-            ),
+            ("POST", "/peer/v1/tasks") => {
+                handle_submit(&req, &addr, &incoming, &discovery, &sec_log)
+            }
             ("GET", path) if path.starts_with("/peer/v1/tasks/") => {
                 let id = &path["/peer/v1/tasks/".len()..];
-                handle_get_task(id, &req, &incoming, &auth, &sharing)
+                handle_get_task(id, &incoming)
             }
             ("DELETE", path) if path.starts_with("/peer/v1/tasks/") => {
                 let id = &path["/peer/v1/tasks/".len()..];
-                handle_cancel_task(id, &req, &addr, &incoming, &auth, &sharing, &sec_log)
+                handle_cancel_task(id, &addr, &incoming, &sec_log)
             }
             _ => (
                 "404 Not Found",
@@ -308,20 +372,11 @@ fn handle_submit(
     req: &Request,
     addr: &SocketAddr,
     incoming: &IncomingTasks,
-    auth: &AuthManager,
     discovery: &Discovery,
-    sharing: &SharingController,
     sec_log: &SecurityLog,
 ) -> (&'static str, String) {
-    if let Err((code, msg)) = check_auth(req, auth, sharing) {
-        sec_log.peer_event(
-            EventCategory::TaskRejected,
-            &format!("Tâche refusée de {} : {msg}", addr.ip()),
-            &addr.ip().to_string(),
-            "",
-        );
-        return (code, json_string(&ErrorResponse { error: msg }));
-    }
+    // Auth is already validated by handle_connection upstream — handlers
+    // can assume the room/sharing/HMAC checks all passed.
 
     let body: SubmitBody = match serde_json::from_str(&req.body) {
         Ok(b) => b,
@@ -419,16 +474,8 @@ fn handle_submit(
     }
 }
 
-fn handle_get_task(
-    id: &str,
-    req: &Request,
-    incoming: &IncomingTasks,
-    auth: &AuthManager,
-    sharing: &SharingController,
-) -> (&'static str, String) {
-    if let Err((code, msg)) = check_auth(req, auth, sharing) {
-        return (code, json_string(&ErrorResponse { error: msg }));
-    }
+fn handle_get_task(id: &str, incoming: &IncomingTasks) -> (&'static str, String) {
+    // Auth already validated upstream by handle_connection.
     match incoming.get(id) {
         Some(task) => (
             "200 OK",
@@ -445,16 +492,11 @@ fn handle_get_task(
 
 fn handle_cancel_task(
     id: &str,
-    req: &Request,
     addr: &SocketAddr,
     incoming: &IncomingTasks,
-    auth: &AuthManager,
-    sharing: &SharingController,
     sec_log: &SecurityLog,
 ) -> (&'static str, String) {
-    if let Err((code, msg)) = check_auth(req, auth, sharing) {
-        return (code, json_string(&ErrorResponse { error: msg }));
-    }
+    // Auth already validated upstream by handle_connection.
     match incoming.cancel(id) {
         Ok(()) => {
             sec_log.peer_event(
@@ -467,43 +509,6 @@ fn handle_cancel_task(
         }
         Err(e) => ("404 Not Found", json_string(&ErrorResponse { error: e })),
     }
-}
-
-// ── Auth ───────────────────────────────────────────────────────────────────
-
-fn check_auth(
-    req: &Request,
-    auth: &AuthManager,
-    sharing: &SharingController,
-) -> Result<(), (&'static str, String)> {
-    if !auth.is_joined() {
-        return Err((
-            "403 Forbidden",
-            "Cette machine n'est dans aucune salle PartaGPU.".into(),
-        ));
-    }
-    if sharing.get_config().status != SharingStatus::Active {
-        return Err((
-            "403 Forbidden",
-            "Le partage de ressources n'est pas activé sur cette machine.".into(),
-        ));
-    }
-    let code = req
-        .headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(TOTP_HEADER))
-        .map(|(_, v)| v.trim().to_string())
-        .unwrap_or_default();
-    if code.is_empty() {
-        return Err((
-            "401 Unauthorized",
-            format!("Header '{TOTP_HEADER}' manquant."),
-        ));
-    }
-    if !auth.verify_code(&code) {
-        return Err(("401 Unauthorized", "Code TOTP invalide ou expiré.".into()));
-    }
-    Ok(())
 }
 
 // ── HTTP plumbing ──────────────────────────────────────────────────────────

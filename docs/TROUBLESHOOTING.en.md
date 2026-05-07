@@ -59,9 +59,9 @@ Check, in order:
 
 ### Peer shows up but marked "unverified"
 
-The TOTP code doesn't match. Causes:
+The HMAC auth proof doesn't match. Causes:
 - **Not in the same room**: different passphrases. *Leave the room* on one side and rejoin with the right code.
-- **Clock skew > 30 s between machines**: TOTP codes are valid within ±30 s only. Enable NTP everywhere:
+- **Clock skew > 30 s between machines**: HMAC proofs are valid within ±30 s only (`AUTH_WINDOW_SECS`). Enable NTP everywhere:
   ```bash
   sudo timedatectl set-ntp true
   timedatectl status      # check System clock synchronized: yes
@@ -106,16 +106,16 @@ Depending on what's missing:
 
 You're not in any room. UI → top tab → *Create a room* or *Join a room*.
 
-### `RemoteTaskError: Peer ... refused the task (HTTP 401): Invalid TOTP code`
+### `RemoteTaskError: Peer ... refused the task (HTTP 401): invalid auth`
 
-Clock skew between the two PCs, or not in the same room. See *Peers and discovery*.
+Either the room mismatches (wrong `auth_key`), or clock skew between the two PCs exceeds 30 s, or the header was tampered with in transit. See *Peers and discovery* ; the security log details the exact cause.
 
 ### `HTTP 415 Unsupported Media Type` from the peer
 
 Since 1.6.0 every peer-to-peer body is encrypted (AES-256-GCM). The receiving peer returns 415 when:
 - The client is on `< 1.6.0` (sends plaintext) → upgrade the client.
-- The peer is in a different room (different AES key) → `decrypt` fails → 415. Confirm both PCs joined the same room.
-- Significant clock skew between the two PCs: TOTP may pass but the AES key derives from the persistent secret — that key doesn't depend on the clock. A 415 typically points to a room mismatch, not a TOTP issue.
+- The Content-Type is not `application/x-partagpu-encrypted-v1`.
+- The peer is in a different room (the HMAC header would normally fail first with 401, since the `auth_key` is derived from the same secret as the `room_key`).
 
 To verify both peers share the same secret: on each machine, *My sharing* → *Room* should show the same name and passphrase.
 
@@ -284,11 +284,11 @@ Tab *My sharing* → *Security log*. Keeps the last 500 events (peer detected, t
 
 ```bash
 # List incoming tasks (peer side)
-curl -s -H "X-PartaGPU-TOTP: 123456" \
+curl -s -H "X-PartaGPU-AUTH: 123456" \
     http://127.0.0.1:7655/peer/v1/tasks/<task-id> | python3 -m json.tool
 ```
 
-(Current TOTP code visible in the UI under the room name.)
+(The header must be computed via `compute_request_auth(method, path, body)` ; calling this from `curl` is awkward — prefer a small Python helper that computes the HMAC.)
 
 ---
 

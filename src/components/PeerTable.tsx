@@ -34,7 +34,7 @@ function authBadge(peer: Peer) {
     );
   }
   return (
-    <span className="badge badge--completed" title="TOTP vérifié">
+    <span className="badge badge--completed" title="Auth vérifiée (HMAC OK)">
       OK
     </span>
   );

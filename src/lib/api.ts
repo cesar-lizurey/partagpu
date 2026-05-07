@@ -14,7 +14,9 @@ export interface Peer {
   gpu_limit: number;
   /** Number of CUDA devices visible on this peer (0 if no GPU). */
   gpu_count?: number;
-  totp_code: string;
+  /** HMAC auth proof broadcast over mDNS (truncated HMAC over the current
+   *  30-s window). Used by the verifier to flip the `verified` flag. */
+  auth_proof: string;
   verified: boolean;
   hostname_conflict: boolean;
   /** Peer's ephemeral X25519 public key (base64), regenerated on app restart.
@@ -248,7 +250,7 @@ export const getSecurityLog = (since?: number) =>
 
 export const clearSecurityLog = () => invoke<void>("clear_security_log");
 
-// ── Room / TOTP auth ──────────────────────────────────────
+// ── Room / HMAC auth ──────────────────────────────────────
 
 export const createRoom = (roomName: string) =>
   invoke<CreateRoomResult>("create_room", { roomName });

@@ -10,7 +10,7 @@ Ce document explique **comment PartaGPU fonctionne en interne** : les composants
 
 1. [Vue d'ensemble](#vue-densemble)
 2. [Les deux serveurs HTTP](#les-deux-serveurs-http)
-3. [Authentification TOTP entre pairs](#authentification-totp-entre-pairs)
+3. [Authentification HMAC entre pairs](#authentification-hmac-entre-pairs)
 4. [Chiffrement des messages pair-à-pair](#chiffrement-des-messages-pair-à-pair)
 5. [Le sandbox d'exécution](#le-sandbox-dexécution)
 6. [Flux d'une tâche `run_remote`](#flux-dune-tâche-run_remote)
@@ -34,7 +34,7 @@ Ce document explique **comment PartaGPU fonctionne en interne** : les composants
 
 ## Vue d'ensemble
 
-PartaGPU est une application Tauri (backend Rust + frontend React) qui transforme un PC en **nœud de calcul partageable** sur un LAN. Une fois plusieurs PC dans la même *salle* (même secret TOTP), ils forment un cluster ad-hoc capable d'exécuter du code arbitraire — typiquement du PyTorch DDP — réparti sur tous les GPU disponibles.
+PartaGPU est une application Tauri (backend Rust + frontend React) qui transforme un PC en **nœud de calcul partageable** sur un LAN. Une fois plusieurs PC dans la même *salle* (même secret partagé), ils forment un cluster ad-hoc capable d'exécuter du code arbitraire — typiquement du PyTorch DDP — réparti sur tous les GPU disponibles.
 
 ### Composants
 
@@ -73,9 +73,9 @@ L'app expose **deux** serveurs HTTP, écrits à la main en Rust avec `tokio` (pa
   }
   ```
   Le handler :
-  1. Récupère le code TOTP courant de l'AuthManager local
+  1. Vérifie qu'on est bien dans une salle (sinon 412)
   2. Crée une entrée `OutgoingTasks` avec status `Queued` (UI visible immédiatement). Si `local_id` est fourni, c'est lui qui est utilisé comme id ; sinon UUID généré.
-  3. Sur un thread `spawn_blocking` : POST vers `<peer_ip>:7655/peer/v1/tasks` avec header `X-PartaGPU-TOTP`
+  3. Sur un thread `spawn_blocking` : POST vers `<peer_ip>:7655/peer/v1/tasks` avec header `X-PartaGPU-AUTH` calculé sur (POST, /peer/v1/tasks, body chiffré)
   4. Récupère `task_id` (du pair), enregistre `(peer_ip, remote_task_id)` dans `OutgoingTasks::remote_refs[local_id]` pour permettre une annulation ultérieure, met l'OutgoingTask en `Running`
   5. Poll `<peer_ip>:7655/peer/v1/tasks/<task_id>` toutes les 500 ms
   6. Quand la tâche atteint un état terminal (`Completed`/`Failed`/`Cancelled`), met à jour OutgoingTasks et **retourne le `Task` complet** au client
@@ -85,16 +85,17 @@ L'app expose **deux** serveurs HTTP, écrits à la main en Rust avec `tokio` (pa
 
   La logique de dispatch est extraite en `pub fn dispatch_task_blocking()` réutilisable depuis n'importe quel contexte sync (HTTP handler via spawn_blocking, ou commande Tauri `dispatch_task` appelée par l'UI dispatcher).
 
-- `POST /api/cancel` — **annulation d'une tâche sortante**. Body : `{"local_id": "..."}`. Look up le `remote_ref` correspondant, récupère le code TOTP courant, fait `DELETE http://<peer_ip>:7655/peer/v1/tasks/<remote_id>` puis marque l'OutgoingTask `Cancelled`. Si le pair est injoignable, marque quand même Cancelled localement et retourne 502 avec `remote: false`.
+- `POST /api/cancel` — **annulation d'une tâche sortante**. Body : `{"local_id": "..."}`. Look up le `remote_ref` correspondant, calcule le header HMAC pour (DELETE, /peer/v1/tasks/<remote_id>, body vide), fait `DELETE http://<peer_ip>:7655/peer/v1/tasks/<remote_id>` puis marque l'OutgoingTask `Cancelled`. Si le pair est injoignable, marque quand même Cancelled localement et retourne 502 avec `remote: false`.
 
 ### `0.0.0.0:7655` — API pair-à-pair
 
 **Audience** : les autres machines PartaGPU sur le LAN.
 
-**Auth** : header `X-PartaGPU-TOTP` validé par `AuthManager::verify_code`. Le code est valide si :
+**Auth** : header `X-PartaGPU-AUTH: <ts>:<hmac_hex>` validé par `AuthManager::verify_request_auth`. La requête est acceptée si :
 - L'app locale est `is_joined()` (dans une salle)
 - Le partage est `Active`
-- Le code passé matche `current_code() ± 1 step` (TOTP, fenêtre ±30 s pour tolérer le clock skew)
+- Le timestamp est dans la fenêtre ±30 s (`AUTH_WINDOW_SECS`)
+- Le HMAC `HMAC-SHA256(auth_key, "PartaGPU/auth-req/v1\n" || ts || "\n" || method || "\n" || path || "\n" || sha256(body))` matche en temps constant
 
 **Routes** :
 - `GET /peer/v1/health` — pas d'auth, retourne `{hostname, version, in_room, sharing_active}`. Sert de probe.
@@ -112,13 +113,13 @@ L'app expose **deux** serveurs HTTP, écrits à la main en Rust avec `tokio` (pa
 - `GET /peer/v1/tasks/<id>` — auth idem, retourne la struct `Task` complète (status, output, error_output, exit_code).
 - `DELETE /peer/v1/tasks/<id>` — **annulation** d'une tâche en cours. Auth idem. Marque la tâche `Cancelled` côté `IncomingTasks`, envoie `SIGTERM` au PID du bwrap, puis `SIGKILL` après 2 s si toujours en vie. Logged dans le `SecurityLog` avec `EventCategory::TaskRejected`.
 
-Pourquoi un serveur séparé du 7654 ? Parce que 7654 est **loopback** (sécurité : pas exposé au réseau) tandis que 7655 doit être joignable depuis le LAN. Mélanger les deux dans un même serveur compliquerait l'auth (lecture seule sans auth d'un côté, écriture avec auth TOTP de l'autre).
+Pourquoi un serveur séparé du 7654 ? Parce que 7654 est **loopback** (sécurité : pas exposé au réseau) tandis que 7655 doit être joignable depuis le LAN. Mélanger les deux dans un même serveur compliquerait l'auth (lecture seule sans auth d'un côté, écriture avec auth HMAC de l'autre).
 
 ---
 
-## Authentification TOTP entre pairs
+## Authentification HMAC entre pairs
 
-Le système est **partagé-secret** : tous les membres d'une salle dérivent le même secret TOTP à partir de la passphrase de 4 mots.
+Le système est **partagé-secret** : tous les membres d'une salle dérivent les mêmes clés à partir de la passphrase de 4 mots. Depuis 1.9.0 l'auth s'appuie sur HMAC-SHA256 (avant : TOTP RFC 6238 — la migration retire les deps `totp-rs` / `base32` et lie l'auth HTTP au corps de la requête, pas seulement à un timestamp).
 
 ### Flux de création de salle
 
@@ -127,19 +128,31 @@ Le système est **partagé-secret** : tous les membres d'une salle dérivent le 
 3. La passphrase est dictée à l'oral aux camarades
 4. Au join, l'app reconvertit la passphrase en bytes, puis pad avec `SHA1(seed)[..16]` pour reconstruire les 20 bytes du secret canonique
 5. Le secret est sauvegardé en `~/.config/partagpu/room.json`
+6. À chaque chargement, l'`auth_key` (32 octets) est dérivée via `HKDF-SHA256(secret, info = "HMAC-SHA256 auth key v1")` — distincte de la `room_key` AES par l'`info` HKDF
 
-### Vérification mutuelle
+### Vérification mutuelle (mDNS)
 
-Chaque pair **annonce son code TOTP courant** dans son TXT record mDNS (champ `totp`). Les autres pairs comparent à leur propre `current_code()` :
+Chaque pair **publie un `auth_proof`** dans son TXT record mDNS (champ `auth_proof`). Le proof est `HMAC-SHA256(auth_key, current_30s_window)` tronqué à 8 caractères hex (32 bits, 1 chance sur 4 milliards de match aléatoire). Les autres pairs recalculent et comparent en temps constant :
 
-- Si match (à ±1 step près, soit ±30 s pour tolérer la dérive d'horloge) → `verified=true`
+- Si match (à ±1 fenêtre près, soit ±30 s pour tolérer la dérive d'horloge) → `verified=true`
 - Sinon → `verified=false`, peer affiché grisé dans l'UI
 
 ### Auth des requêtes HTTP entre pairs
 
-Pour `POST /peer/v1/tasks` et `GET /peer/v1/tasks/<id>`, le client envoie son code TOTP courant dans l'en-tête `X-PartaGPU-TOTP: 123456`. Le récepteur vérifie avec `AuthManager::verify_code` (même logique que mDNS, fenêtre ±1 step).
+Pour `POST /peer/v1/tasks`, `GET /peer/v1/tasks/<id>` et `DELETE /peer/v1/tasks/<id>`, le client envoie un header :
 
-**TOTP n'apporte que l'authenticité**, pas la confidentialité — un attaquant qui écoute le trafic en clair verrait le contenu des bodies HTTP. C'est pour ça qu'on layered un **chiffrement** par-dessus (section suivante).
+```
+X-PartaGPU-AUTH: <unix_ts>:<HMAC-SHA256(auth_key, "PartaGPU/auth-req/v1\n" || ts || "\n" || method || "\n" || path || "\n" || sha256(body)) hex>
+```
+
+Le serveur (`peer_api::handle_connection`) vérifie l'auth **avant** le déchiffrement, sur les bytes wire (l'envelope JSON chiffré pour POST, vide pour GET/DELETE) :
+1. Parse `<ts>:<hmac>` (sinon 401 Malformed)
+2. Vérifie `|now - ts| ≤ 30 s` (sinon 401 TimestampOutOfWindow)
+3. Recalcule le HMAC, compare en temps constant (sinon 401 Mismatch)
+
+Le HMAC **lie l'auth au corps** : un header capté ne peut pas être rejoué sur une requête différente même dans la fenêtre de 30 s. Et un attaquant qui ne connaît pas l'`auth_key` n'arrive jamais à la couche AES — l'auth gate est validée avant le déchiffrement.
+
+**L'auth HMAC n'apporte que l'authenticité + l'intégrité de l'enveloppe + l'anti-replay**, pas la confidentialité du body — un attaquant qui écoute en clair verrait le ciphertext mais pas le plaintext (cf. section suivante sur le chiffrement AES-256-GCM).
 
 ---
 
@@ -226,7 +239,7 @@ Les erreurs (4xx, 5xx) restent en clair parce que le client peut ne pas avoir la
 2. lookup peer.eph_pk via Discovery (vide → fallback v=1)
 3. si v=2 : (envelope, session_key) = encrypt_v2(room, peer_eph_pk, body)
    sinon  : envelope = encrypt(room_key, body) ; session_key = room_key
-4. ureq::post(url, Content-Type: ENCRYPTED..., X-PartaGPU-TOTP: code, body=envelope)
+4. ureq::post(url, Content-Type: ENCRYPTED..., X-PartaGPU-AUTH: <ts>:<hmac>, body=envelope)
 5. si 2xx : decrypt(response_body, session_key) -> Task JSON
    sinon : lire response.text() en clair
 ```
@@ -235,7 +248,7 @@ Les erreurs (4xx, 5xx) restent en clair parce que le client peut ne pas avoir la
 
 - **Confidentialité** : un attaquant qui écoute le trafic LAN ne peut rien lire (script Python, données workspace, stdout/stderr).
 - **Intégrité** : tout flip de bit dans le ciphertext fait échouer le déchiffrement (tag GCM rejeté). Le serveur retourne 415.
-- **Authenticité au niveau salle** : seul un détenteur du secret peut produire un envelope qui se déchiffre proprement. Combiné au TOTP, on a auth + intégrité + replay-protect (TOTP fenêtre 30 s).
+- **Authenticité au niveau salle** : seul un détenteur du secret peut produire un envelope qui se déchiffre proprement. Combiné au HMAC du header `X-PartaGPU-AUTH`, on a auth + intégrité + anti-replay sur la fenêtre 30 s.
 - **Forward secrecy (v=2)** : la moitié privée des keypairs éphémères ne quitte jamais la RAM et est rotée toutes les 10 min. Un attaquant qui capture du trafic et obtient la passphrase de salle plus tard **ne peut plus déchiffrer** les sessions de plus de 10 minutes.
 
 ### Hors scope
@@ -246,7 +259,7 @@ Les erreurs (4xx, 5xx) restent en clair parce que le client peut ne pas avoir la
 ### Tests
 
 - **Unitaires** (8 tests, `cargo test --lib crypto::`) : round-trip v=1 et v=2, mauvaise clé, ciphertext altéré, mauvaise clé éphémère serveur, rotation grace window, forward secrecy après rotation, JSON round-trip.
-- **Intégration** (5 tests, `cargo test --test peer_api_e2e`) : rejet du plaintext (415), rejet sans TOTP (401), rejet d'un envelope chiffré avec un mauvais secret (415/401), round-trip v=2 complet contre un vrai serveur localhost, 404 sur cancel inconnu.
+- **Intégration** (5 tests, `cargo test --test peer_api_e2e`) : rejet du plaintext (415), rejet sans header `X-PartaGPU-AUTH` (401), rejet d'un header HMAC signé avec un mauvais secret (401), round-trip v=2 complet contre un vrai serveur localhost, 404 sur cancel inconnu.
 
 ---
 
@@ -315,9 +328,9 @@ Seules les commandes dans `Sandbox::allowlist` peuvent être lancées. Defaults 
 Étapes détaillées :
 
 1. **Notebook → App locale** : `partagpu.run_remote(...)` envoie un POST sur `127.0.0.1:7654/api/dispatch` avec les args, le workspace et un `local_id` UUID préalloué (utilisé pour propager une éventuelle annulation).
-2. **App locale prépare** : compresse chaque fichier du workspace en gzip, dérive la clé de session via ECDH X25519 (envelope v=2) en utilisant la pubkey éphémère du pair lue dans `Discovery`, ajoute le code TOTP courant.
-3. **App locale → App distante** : POST chiffré sur `<peer_ip>:7655/peer/v1/tasks` avec `Content-Type: application/x-partagpu-encrypted-v1` et `X-PartaGPU-TOTP: <code>`.
-4. **App distante valide + déchiffre** : vérifie le TOTP, que la machine est dans la salle, que sharing est actif, que le room key + ECDH déverrouillent l'envelope. Crée la tâche dans `IncomingTasks::create_and_run` avec un sous-cgroup `/sys/fs/cgroup/partagpu/task-<uuid>` dédié.
+2. **App locale prépare** : compresse chaque fichier du workspace en gzip, dérive la clé de session via ECDH X25519 (envelope v=2) en utilisant la pubkey éphémère du pair lue dans `Discovery`, calcule le header `X-PartaGPU-AUTH` HMAC-SHA256(auth_key, ts || POST || /peer/v1/tasks || sha256(body chiffré)).
+3. **App locale → App distante** : POST chiffré sur `<peer_ip>:7655/peer/v1/tasks` avec `Content-Type: application/x-partagpu-encrypted-v1` et `X-PartaGPU-AUTH: <ts>:<hmac>`.
+4. **App distante valide + déchiffre** : vérifie l'auth HMAC sur les bytes wire (avant déchiffrement), que la machine est dans la salle, que sharing est actif, puis que le room key + ECDH déverrouillent l'envelope. Crée la tâche dans `IncomingTasks::create_and_run` avec un sous-cgroup `/sys/fs/cgroup/partagpu/task-<uuid>` dédié.
 5. **Sandbox spawn** : bwrap démarre comme UID `partagpu`, bind les `/dev/nvidia*`, monte un `/workspace` tmpfs avec les fichiers du POST, applique le cgroup. Si la file `IncomingTasks::pending` est pleine (cf. cap configurable), la tâche reste en `Queued` et démarre quand un slot se libère.
 6. **ACK 200 chiffré** : la réponse `{ task_id }` est chiffrée avec la même clé de session, le client la déchiffre et l'enregistre dans `OutgoingTasks::remote_refs`.
 7. **Poll loop** : l'App locale fait un `GET /peer/v1/tasks/<id>` toutes les 500 ms, reflète stdout/stderr partiels + progression CPU/RAM/GPU dans le miroir local. Cette boucle vit côté backend Rust ; **l'UI ne polle pas** — elle écoute les événements Tauri `outgoing-tasks-changed` poussés à chaque mutation.
@@ -416,8 +429,8 @@ L'ordre (1)→(2) est crucial : si on faisait SIGTERM avant de marquer Cancelled
 
 `http_api::cancel_outgoing_task(auth, outgoing, local_id)` (fonction sync, réutilisable) :
 1. Look up `remote_ref` ; si absent → la tâche n'a jamais atteint le pair (ou est déjà terminée), juste marquer `Cancelled` localement et retourner.
-2. Récupérer le code TOTP courant.
-3. `ureq::delete("http://<peer_ip>:7655/peer/v1/tasks/<remote_id>", X-PartaGPU-TOTP: code)`.
+2. Calculer le header `X-PartaGPU-AUTH` pour (DELETE, /peer/v1/tasks/<remote_id>, body vide).
+3. `ureq::delete("http://<peer_ip>:7655/peer/v1/tasks/<remote_id>", X-PartaGPU-AUTH: code)`.
 4. Si le pair répond 2xx → marquer `Cancelled` côté local, retourner `Ok(true)`.
 5. Si erreur réseau → marquer `Cancelled` localement quand même (le user a exprimé son intent), retourner `Err`.
 
@@ -757,16 +770,16 @@ Properties annoncées :
 - `sharing` (`true` si Active)
 - `cpu_limit`, `ram_limit`, `gpu_limit` (limites des sliders)
 - `gpu_count` (nombre de CUDA devices détectés)
-- `totp` (code à 6 chiffres courant, change toutes les 30 s)
+- `auth_proof` (HMAC-SHA256 tronqué à 8 hex sur la fenêtre 30 s courante)
 - `eph_pk` (pubkey X25519 éphémère pour le chiffrement v=2 forward-secret, regénérée à chaque démarrage et tournée toutes les 10 min)
 
 Le browser (`Discovery::start_browsing`) consomme les events `ServiceResolved` / `ServiceRemoved`, applique :
 - **Rate limiting** par pair : 1 update / 2 s (anti-flood)
 - **Max peers** : 50 (anti-DOS)
 - **Detection de hostname conflict** (deux IPs pour le même hostname → flag `hostname_conflict` + log alerte)
-- **Vérification TOTP** → `verified` boolean
+- **Vérification de la preuve HMAC** → `verified` boolean
 
-Re-announcement périodique (`start_mdns_refresh`) toutes les 5 s **si l'état a changé** (TOTP code, sharing status, limits, gpu_count) — évite le flood quand rien ne bouge.
+Re-announcement périodique (`start_mdns_refresh`) toutes les 5 s **si l'état a changé** (`auth_proof`, sharing status, limits, gpu_count) — évite le flood quand rien ne bouge.
 
 ---
 
@@ -816,8 +829,8 @@ Voir [SECURITY.md](../SECURITY.md) pour le détail. En résumé :
 | Couche | Mécanisme |
 |---|---|
 | Découverte | mDNS sur LAN. Rate-limit + max peers + détection conflict d'hostnames. |
-| Authentification | TOTP partagé (passphrase 4 mots → secret 20 bytes → code 6 chiffres). Vérifié par mDNS + header HTTP. |
-| Tâches entrantes | Refusées si pair non vérifié OU sharing pas Active OU TOTP invalide. Logged dans `SecurityLog`. |
+| Authentification | HMAC-SHA256 sur secret partagé (passphrase 4 mots → secret 20 bytes → `auth_key` 32 bytes via HKDF). Vérifié par mDNS (preuve tronquée) + header HTTP `X-PartaGPU-AUTH`. |
+| Tâches entrantes | Refusées si pair non vérifié OU sharing pas Active OU HMAC invalide / hors fenêtre 30 s. Logged dans `SecurityLog`. |
 | Exécution | bubblewrap : FS r/o, network unshare par défaut, PID unshare, `partagpu` UID, allowlist de commandes |
 | Limites | Cgroups v2 (CPU max, memory max). Outputs cappés à 1 Mo stdout / 256 Ko stderr. Workspace cappé à 16 Mo. Timeout configurable. |
 | Privilèges | Helper Rust séparé via pkexec, règle PolicyKit explicite. Inputs validés (entiers, longueur, NUL/newline interdits) avant d'atteindre la couche shell. |

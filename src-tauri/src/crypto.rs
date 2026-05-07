@@ -16,9 +16,10 @@
 //!   complete the DH. Both sides derive the same session key for that
 //!   single request, and the response uses the same session key.
 //!
-//! TOTP authentication (header `X-PartaGPU-TOTP`) stays as before and
-//! provides anti-replay; encryption layers confidentiality + integrity on
-//! top.
+//! HMAC-SHA256 authentication (header `X-PartaGPU-AUTH`, computed by
+//! [`compute_request_auth`]) provides anti-replay (30 s window) and binds
+//! the auth to the specific request via timestamp + method + path + body
+//! hash ; encryption layers confidentiality + integrity on top.
 //!
 //! Security properties (assuming AES-GCM and X25519 hold) :
 //! - Confidentiality of message bodies on the wire
@@ -36,15 +37,31 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use x25519_dalek::{PublicKey, StaticSecret};
+
+type HmacSha256 = Hmac<Sha256>;
 
 const HKDF_SALT: &[u8] = b"PartaGPU/peer-api/v1";
 const HKDF_INFO: &[u8] = b"AES-256-GCM message key";
 const HKDF_INFO_V2: &[u8] = b"AES-256-GCM session key v2 (room|ecdh)";
+const HKDF_INFO_AUTH: &[u8] = b"HMAC-SHA256 auth key v1";
+
+/// Anti-replay window for HMAC request auth and mDNS auth proofs (seconds).
+/// Same value as the previous TOTP step — keeps the same anti-replay
+/// guarantees while letting clocks drift up to ±AUTH_WINDOW.
+pub const AUTH_WINDOW_SECS: u64 = 30;
+
+/// Truncated length (hex chars) of the mDNS `auth_proof`. 8 hex = 32 bits =
+/// 1 chance in 4 billion of a random spoof match. Plenty for LAN passive
+/// verification ; full HMAC stays for HTTP request auth where we want full
+/// 256-bit strength.
+pub const AUTH_PROOF_HEX_LEN: usize = 8;
 
 /// Content-Type header used to signal an encrypted body. Receivers MUST
 /// reject bodies that don't carry this content-type — rejecting plaintext
@@ -320,6 +337,187 @@ pub fn derive_room_key(secret_base32: &str) -> Result<[u8; 32], CryptoError> {
     Ok(key)
 }
 
+/// Derive a 32-byte HMAC key from the same base32-encoded room secret.
+/// Distinct from the AES room key thanks to a different HKDF info string,
+/// so an attacker who somehow gained one half can't compute the other.
+pub fn derive_auth_key(secret_base32: &str) -> Result<[u8; 32], CryptoError> {
+    let secret_bytes = data_encoding::BASE32
+        .decode(secret_base32.as_bytes())
+        .map_err(|e| CryptoError::BadEncoding {
+            field: "room_secret",
+            source: e,
+        })?;
+    let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), &secret_bytes);
+    let mut key = [0u8; 32];
+    hk.expand(HKDF_INFO_AUTH, &mut key)
+        .map_err(|_| CryptoError::Hkdf("auth_key", 32))?;
+    Ok(key)
+}
+
+// ── HMAC auth helpers ──────────────────────────────────────────────────────
+//
+// Two related primitives, both keyed by `auth_key` :
+//
+//   1. `auth_proof_for_window` : truncated HMAC over a 30-s time window.
+//      Used in the mDNS TXT record so peers can verify each other passively
+//      without an HTTP round-trip. Functionally equivalent to a TOTP code
+//      but without the RFC 6238 / base32 / digit-formatting machinery.
+//
+//   2. `compute_request_auth` / `verify_request_auth` : full HMAC bound to
+//      a specific HTTP request (timestamp + method + path + body hash).
+//      Sent in the `X-PartaGPU-AUTH` header. Anti-replay window of
+//      ±AUTH_WINDOW_SECS, plus binding to the request body so a captured
+//      header can't be reused with a different body.
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn current_window() -> u64 {
+    now_secs() / AUTH_WINDOW_SECS
+}
+
+/// Compute the truncated HMAC proof for a given 30-s window. Used by both
+/// the announcer (publishes it on mDNS) and verifiers (recompute and
+/// constant-time compare).
+fn auth_proof_for_window(auth_key: &[u8; 32], window: u64) -> String {
+    let mut mac =
+        <HmacSha256 as Mac>::new_from_slice(auth_key).expect("HMAC accepts any key length");
+    mac.update(b"PartaGPU/auth-proof/v1\n");
+    mac.update(&window.to_be_bytes());
+    let bytes = mac.finalize().into_bytes();
+    // Hex-encode the first AUTH_PROOF_HEX_LEN/2 bytes ; one byte = 2 hex chars.
+    let prefix = &bytes[..AUTH_PROOF_HEX_LEN / 2];
+    let mut s = String::with_capacity(AUTH_PROOF_HEX_LEN);
+    for b in prefix {
+        use std::fmt::Write;
+        write!(&mut s, "{b:02x}").expect("hex write into String can't fail");
+    }
+    s
+}
+
+/// Current mDNS auth proof for the local app to broadcast.
+pub fn current_auth_proof(auth_key: &[u8; 32]) -> String {
+    auth_proof_for_window(auth_key, current_window())
+}
+
+/// Verify a peer-announced auth proof, allowing ±1 window of clock skew
+/// (same tolerance as the previous TOTP scheme).
+pub fn verify_auth_proof(auth_key: &[u8; 32], candidate: &str) -> bool {
+    let now_w = current_window();
+    for w in [now_w, now_w.wrapping_sub(1), now_w.wrapping_add(1)] {
+        let expected = auth_proof_for_window(auth_key, w);
+        // Constant-time-ish comparison : both strings have the same length
+        // and the loop visits every byte regardless of position. Good enough
+        // for a 32-bit integrity tag broadcast on a LAN.
+        if expected.len() == candidate.len()
+            && expected
+                .as_bytes()
+                .iter()
+                .zip(candidate.as_bytes())
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Build the HTTP request auth header value : `<unix_ts>:<hex hmac>`.
+///
+/// The HMAC binds the auth to the specific request via :
+///   `b"PartaGPU/auth-req/v1\n" || ts || "\n" || method || "\n" || path
+///    || "\n" || sha256(body)`
+///
+/// A captured header can therefore be replayed only on the same request
+/// payload and only within the AUTH_WINDOW_SECS window — same anti-replay
+/// guarantees as the previous TOTP scheme, plus body integrity.
+pub fn compute_request_auth(auth_key: &[u8; 32], method: &str, path: &str, body: &[u8]) -> String {
+    let ts = now_secs();
+    format!(
+        "{ts}:{}",
+        request_hmac_hex(auth_key, ts, method, path, body)
+    )
+}
+
+fn request_hmac_hex(auth_key: &[u8; 32], ts: u64, method: &str, path: &str, body: &[u8]) -> String {
+    let mut body_hasher = Sha256::new();
+    body_hasher.update(body);
+    let body_hash = body_hasher.finalize();
+
+    let mut mac =
+        <HmacSha256 as Mac>::new_from_slice(auth_key).expect("HMAC accepts any key length");
+    mac.update(b"PartaGPU/auth-req/v1\n");
+    mac.update(ts.to_string().as_bytes());
+    mac.update(b"\n");
+    mac.update(method.as_bytes());
+    mac.update(b"\n");
+    mac.update(path.as_bytes());
+    mac.update(b"\n");
+    mac.update(&body_hash);
+    let bytes = mac.finalize().into_bytes();
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes.iter() {
+        use std::fmt::Write;
+        write!(&mut s, "{b:02x}").expect("hex write into String can't fail");
+    }
+    s
+}
+
+/// Verify an HTTP request auth header. Returns `Ok(())` on success ; on
+/// failure the variant carries the reason (mostly for the security log,
+/// the HTTP layer collapses it to 401).
+pub fn verify_request_auth(
+    auth_key: &[u8; 32],
+    header_value: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Result<(), AuthVerifyError> {
+    let (ts_str, hmac_hex) = header_value
+        .split_once(':')
+        .ok_or(AuthVerifyError::Malformed)?;
+    if ts_str.is_empty() || hmac_hex.is_empty() {
+        return Err(AuthVerifyError::Malformed);
+    }
+    let ts: u64 = ts_str.parse().map_err(|_| AuthVerifyError::Malformed)?;
+    let now = now_secs();
+    let drift = now.abs_diff(ts);
+    if drift > AUTH_WINDOW_SECS {
+        return Err(AuthVerifyError::TimestampOutOfWindow { drift });
+    }
+    let expected = request_hmac_hex(auth_key, ts, method, path, body);
+    // Constant-time comparison.
+    if expected.len() != hmac_hex.len()
+        || expected
+            .as_bytes()
+            .iter()
+            .zip(hmac_hex.as_bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            != 0
+    {
+        return Err(AuthVerifyError::Mismatch);
+    }
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AuthVerifyError {
+    /// Header doesn't parse as `<unix_ts>:<hex>`.
+    #[error("header X-PartaGPU-AUTH mal formé")]
+    Malformed,
+    /// `|now - ts|` exceeded `AUTH_WINDOW_SECS`. Likely clock skew or replay.
+    #[error("timestamp hors fenêtre (dérive {drift} s, max {})", AUTH_WINDOW_SECS)]
+    TimestampOutOfWindow { drift: u64 },
+    /// HMAC did not verify. Wrong key, tampered request, or unknown peer.
+    #[error("HMAC invalide")]
+    Mismatch,
+}
+
 /// Encrypt `plaintext` with the v=1 room-key envelope (no forward secrecy).
 /// Kept for backward compat with older peers ; prefer `encrypt_v2`.
 pub fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Envelope, CryptoError> {
@@ -508,6 +706,79 @@ pub fn decrypt_json<T: for<'a> Deserialize<'a>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── HMAC auth tests ────────────────────────────────────────────────
+
+    #[test]
+    fn auth_proof_matches_for_same_key() {
+        let secret_b32 = data_encoding::BASE32.encode(b"shared-room!!!!!!!!!!!!!");
+        let k1 = derive_auth_key(&secret_b32).unwrap();
+        let k2 = derive_auth_key(&secret_b32).unwrap();
+        let proof = current_auth_proof(&k1);
+        assert_eq!(proof.len(), AUTH_PROOF_HEX_LEN);
+        assert!(verify_auth_proof(&k2, &proof));
+    }
+
+    #[test]
+    fn auth_proof_rejects_wrong_key() {
+        let s1 = data_encoding::BASE32.encode(b"room-1!!!!!!!!!!!!!!!!!!");
+        let s2 = data_encoding::BASE32.encode(b"room-2!!!!!!!!!!!!!!!!!!");
+        let k1 = derive_auth_key(&s1).unwrap();
+        let k2 = derive_auth_key(&s2).unwrap();
+        let proof = current_auth_proof(&k1);
+        assert!(!verify_auth_proof(&k2, &proof));
+    }
+
+    #[test]
+    fn request_auth_roundtrip() {
+        let secret_b32 = data_encoding::BASE32.encode(b"shared-room!!!!!!!!!!!!!");
+        let key = derive_auth_key(&secret_b32).unwrap();
+        let header = compute_request_auth(&key, "POST", "/peer/v1/tasks", b"some body");
+        verify_request_auth(&key, &header, "POST", "/peer/v1/tasks", b"some body").unwrap();
+    }
+
+    #[test]
+    fn request_auth_rejects_tampered_body() {
+        let secret_b32 = data_encoding::BASE32.encode(b"shared-room!!!!!!!!!!!!!");
+        let key = derive_auth_key(&secret_b32).unwrap();
+        let header = compute_request_auth(&key, "POST", "/peer/v1/tasks", b"original body");
+        let err = verify_request_auth(&key, &header, "POST", "/peer/v1/tasks", b"tampered body")
+            .unwrap_err();
+        assert!(matches!(err, AuthVerifyError::Mismatch));
+    }
+
+    #[test]
+    fn request_auth_rejects_wrong_method() {
+        let secret_b32 = data_encoding::BASE32.encode(b"shared-room!!!!!!!!!!!!!");
+        let key = derive_auth_key(&secret_b32).unwrap();
+        let header = compute_request_auth(&key, "POST", "/peer/v1/tasks", b"");
+        let err = verify_request_auth(&key, &header, "GET", "/peer/v1/tasks", b"").unwrap_err();
+        assert!(matches!(err, AuthVerifyError::Mismatch));
+    }
+
+    #[test]
+    fn request_auth_rejects_old_timestamp() {
+        let secret_b32 = data_encoding::BASE32.encode(b"shared-room!!!!!!!!!!!!!");
+        let key = derive_auth_key(&secret_b32).unwrap();
+        // Build a header by hand with a far-past timestamp.
+        let ancient_ts = now_secs() - (AUTH_WINDOW_SECS * 10);
+        let hmac = request_hmac_hex(&key, ancient_ts, "POST", "/peer/v1/tasks", b"");
+        let header = format!("{ancient_ts}:{hmac}");
+        let err = verify_request_auth(&key, &header, "POST", "/peer/v1/tasks", b"").unwrap_err();
+        assert!(matches!(err, AuthVerifyError::TimestampOutOfWindow { .. }));
+    }
+
+    #[test]
+    fn request_auth_rejects_malformed_header() {
+        let secret_b32 = data_encoding::BASE32.encode(b"shared-room!!!!!!!!!!!!!");
+        let key = derive_auth_key(&secret_b32).unwrap();
+        for bad in ["not-a-header", "1234:", ":deadbeef", ""] {
+            let err = verify_request_auth(&key, bad, "POST", "/peer/v1/tasks", b"").unwrap_err();
+            assert!(matches!(err, AuthVerifyError::Malformed));
+        }
+    }
+
+    // ── Existing AES-GCM / X25519 tests ────────────────────────────────
 
     #[test]
     fn roundtrip() {

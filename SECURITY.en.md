@@ -9,7 +9,7 @@ This document details the security measures implemented in PartaGPU. The applica
 ## Table of contents
 
 - [Overview](#overview)
-- [1. Peer authentication via TOTP](#1-peer-authentication-via-totp)
+- [1. Peer authentication via HMAC + timestamp](#1-peer-authentication-via-hmac--timestamp)
 - [2. Peer-to-peer message encryption](#2-peer-to-peer-message-encryption)
 - [3. Execution sandbox (bubblewrap)](#3-execution-sandbox-bubblewrap)
 - [4. Hardening of the partagpu account](#4-hardening-of-the-partagpu-account)
@@ -28,7 +28,7 @@ PartaGPU layers several complementary defenses:
 
 | Layer | Protects against | Implementation |
 |--------|---------------|----------------|
-| **TOTP authentication** | Unauthorized peers, impostors | Time-based code derived from a shared secret |
+| **HMAC authentication** | Unauthorized peers, impostors | Time-based code derived from a shared secret |
 | **AES-256-GCM encryption** | Passive network eavesdropping | HKDF-derived key from the room secret, mandatory on `/peer/v1/tasks*` |
 | **bubblewrap sandbox** | Malicious code execution | Read-only filesystem, no network, isolated PID namespace |
 | **Hardened account** | `partagpu` account abuse | Restricted shell, SSH blocked, sudo blocked |
@@ -39,7 +39,7 @@ PartaGPU layers several complementary defenses:
 
 ---
 
-## 1. Peer authentication via TOTP
+## 1. Peer authentication via HMAC + timestamp
 
 ### The problem
 
@@ -47,28 +47,42 @@ On a LAN, anyone can broadcast an mDNS service and pose as a legitimate PartaGPU
 
 ### The solution
 
-Each PartaGPU room shares a **cryptographic secret** (encoded as a 4-word code). This secret produces a **6-digit TOTP** that rotates every 30 seconds. Each station broadcasts its current code via mDNS, and others verify it matches.
+Each PartaGPU room shares a **cryptographic secret** (encoded as a 4-word code). From it, two keys are derived via HKDF-SHA256 :
 
-![Peer TOTP verification](images/security-totp-flow.svg)
+- a **`room_key`** for AES-256-GCM body encryption (cf. section 2)
+- a distinct **`auth_key`** for HMAC authentication proofs
+
+For **passive mDNS verification**, every peer publishes an `auth_proof` = `HMAC-SHA256(auth_key, current_30s_window)` truncated to 8 hex chars (32 bits) in its TXT record. Others recompute it and constant-time compare ; no HTTP round-trip needed to flip the `verified` badge.
+
+For **HTTP requests**, every peer-to-peer call carries a header :
+```
+X-PartaGPU-AUTH: <unix_ts>:<HMAC-SHA256(auth_key, "PartaGPU/auth-req/v1\n" || ts || "\n" || method || "\n" || path || "\n" || sha256(body)) hex>
+```
+
+The server checks `|now - ts| ≤ 30 s`, then recomputes the HMAC and constant-time compares. The HMAC **binds the auth to the request body**, so a captured header cannot be replayed on a different request even within the 30 s window. An attacker who doesn't know the `auth_key` never reaches the AES layer — auth is gated *before* decryption.
+
+![Peer auth verification](images/security-totp-flow.svg)
 
 ### Technical details
 
-- **Algorithm**: TOTP (RFC 6238) with SHA-1, 30-second window
-- **Clock-skew tolerance**: ±1 window (the previous and next codes are also accepted)
-- **Access code**: 4 words from a 256-word list = 256^4 ≈ 4.3 billion combinations
-- **Conversion**: the 4-word passphrase is converted to 4 bytes, then expanded to 20 bytes via SHA-1 to form the TOTP secret
-- **Persistence**: the secret is saved in `~/.config/partagpu/room.json` and reloaded automatically at startup
+- **Primitive**: HMAC-SHA256 (RFC 2104). Simpler, more standard, and better aligned with the rest of the crypto stack than TOTP (RFC 6238) which was used through 1.8.x.
+- **Clock-skew tolerance**: ±1 window (`AUTH_WINDOW_SECS = 30 s`).
+- **Access code**: 4 words from a 256-word list = 256^4 ≈ 4.3 billion combinations.
+- **Conversion**: the 4-word passphrase is converted to 4 bytes, then expanded to 20 bytes via SHA-1 to form a stable-length secret. Same shape as 1.6.x–1.8.x so existing `room.json` files keep working (config backward compat).
+- **Derivation**: `auth_key = HKDF-SHA256(room_secret, info = "HMAC-SHA256 auth key v1")`. Distinct from the AES `room_key` via a different `info`.
+- **Persistence**: only the secret is saved to `~/.config/partagpu/room.json` ; the `auth_key` is re-derived on every load.
 
 ### What's blocked
 
-When a room is active, the `submit_task` API:
-- **Refuses** tasks coming from unverified peers (invalid TOTP)
-- **Refuses** tasks from unknown peers (absent from the mDNS list)
-- **Logs** every refused attempt to stderr with the `SECURITY:` prefix
+When a room is active, the peer-API server :
+- **Refuses** (HTTP 401) requests without an `X-PartaGPU-AUTH` header
+- **Refuses** (401) requests with an invalid HMAC header (wrong key, tampered body, timestamp out of window)
+- **Refuses** (403) requests when sharing is disabled locally
+- **Logs** every rejection via `SecurityLog::peer_event(EventCategory::TaskRejected, …)`
 
 ### Files involved
 
-- `src-tauri/src/auth.rs` — TOTP generation/verification, passphrase, persistence
+- `src-tauri/src/auth.rs` — HMAC auth generation/verification, passphrase, persistence
 - `src-tauri/src/discovery.rs` — broadcast and verification of the code in mDNS properties
 - `src-tauri/src/api.rs` — peer verification in `submit_task`
 
@@ -78,7 +92,7 @@ When a room is active, the `submit_task` API:
 
 ### The problem
 
-TOTP authenticates the peer but encrypts nothing. Without encryption, an attacker eavesdropping on the LAN (port mirror, ARP spoofing, or shared Wi-Fi) would see in plain:
+HMAC auth authenticates the peer but encrypts nothing. Without encryption, an attacker eavesdropping on the LAN (port mirror, ARP spoofing, or shared Wi-Fi) would see in plain:
 
 - command arguments (`python3 -c "secret"` → secret visible)
 - workspace files pushed to the peer (proprietary code, datasets)
@@ -99,7 +113,7 @@ key = HKDF-SHA256(
 )
 ```
 
-The `room_secret` is the same one used for TOTP — already shared between room members through the 4-word passphrase. No new material to distribute.
+The `room_secret` is the same one used for HMAC auth — already shared between room members through the 4-word passphrase. No new material to distribute.
 
 #### Key derivation (v=2, default since 1.7.0)
 
@@ -137,14 +151,14 @@ The peer-API server rejects any request with a body but the wrong Content-Type (
 
 - **Confidentiality**: an eavesdropper sees nothing — no commands, no workspaces, no outputs.
 - **Integrity**: any flipped bit fails decryption (GCM tag rejected). The server returns 415, the client gets the error without having accepted the tampered message.
-- **Room-level authenticity**: only secret holders can produce a body that decrypts cleanly. TOTP adds anti-replay over ~30 s.
+- **Room-level authenticity**: only secret holders can produce a body that decrypts cleanly. the `X-PartaGPU-AUTH` header adds anti-replay over ~30 s.
 - **Forward secrecy (v=2)**: an attacker who captures encrypted traffic and obtains the room secret later still can't decrypt the capture, because the private half of the ephemeral key never left the server's RAM and is gone after the next app restart.
 
 ### Known limits
 
 - **Forward secrecy bounded to 10 min**: an attacker with RAM access **while a station is running** can decrypt the last 10 minutes of sessions. Beyond that, the old keys have been rotated and overwritten.
 - **No protection against an in-room attacker**: by construction, every peer in the room has the room key. The threat model is "LAN attacker who is NOT in the room".
-- **Weak anti-DoS**: the body (up to 32 MB) is read and we attempt to decrypt it BEFORE checking TOTP. A LAN attacker could spam invalid bodies to force memory allocations. Current mitigation: the port is only open when sharing is active (firewall closed otherwise).
+- **Weak anti-DoS**: the body (up to 32 MB) is read and we attempt to decrypt it BEFORE checking the HMAC header. A LAN attacker could spam invalid bodies to force memory allocations. Current mitigation: the port is only open when sharing is active (firewall closed otherwise).
 
 ### Files involved
 
@@ -154,7 +168,7 @@ The peer-API server rejects any request with a body but the wrong Content-Type (
 
 Tests:
 - Unit (8 tests): `cargo test --lib crypto::` — round-trip v=1 and v=2, wrong key, tampering, JSON round-trip, wrong server eph key, rotation grace window, forward secrecy after rotation.
-- Integration (5 tests): `cargo test --test peer_api_e2e` — plaintext refusal, refusal without TOTP, refusal with wrong room secret, full v=2 round-trip on a real localhost server, 404 on unknown cancel.
+- Integration (5 tests): `cargo test --test peer_api_e2e` — plaintext refusal, refusal without an X-PartaGPU-AUTH header, refusal with wrong room secret, full v=2 round-trip on a real localhost server, 404 on unknown cancel.
 
 ---
 
