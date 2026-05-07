@@ -1,23 +1,19 @@
 //! Room state + HMAC-based peer authentication.
 //!
 //! A "room" is a shared cryptographic secret materialised as a 4-word
-//! passphrase. Every peer in the room derives the same secret and uses it
-//! to compute :
+//! passphrase. Every peer in the room derives the same `auth_key` from
+//! it via PBKDF2-HMAC-SHA256 (600 000 iterations — slow KDF for
+//! offline-bruteforce resistance) and uses it to compute :
 //!
-//! - **active peer-verification challenges** ([`crypto::compute_verify_response`]) :
+//! - **peer-verification challenges** ([`crypto::compute_verify_response`]) :
 //!   the verifier sends a fresh nonce over HTTP, the prover responds with
-//!   `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce)`. Replaces
-//!   the previous static `auth_proof` mDNS broadcast (1.9.x) which leaked
-//!   one HMAC tag per 30-s window passively.
+//!   `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce)`. Nothing
+//!   is broadcast on the wire ; a passive LAN listener cannot collect HMAC
+//!   tags to brute-force the passphrase.
 //! - **HTTP request auth headers** ([`crypto::compute_request_auth`]) :
 //!   `X-PartaGPU-AUTH: <unix_ts>:<full HMAC>` where the HMAC binds the
 //!   timestamp + method + path + body hash. Anti-replay window of
 //!   `crypto::AUTH_WINDOW_SECS` (30 s by default).
-//!
-//! Since 1.9.0 the previous TOTP (RFC 6238) machinery is gone ; since
-//! 1.10.0 the mDNS static-proof leak is gone too (replaced by the active
-//! challenge above), and `auth_key` is derived via PBKDF2-HMAC-SHA256 with
-//! 600 000 iterations for offline-bruteforce resistance.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -163,8 +159,7 @@ impl AuthManager {
     /// Create a new room: generate a random 4-word passphrase, then derive
     /// the auth key from it (same path as join_room) so both sides match.
     pub fn create_room(&self, room_name: &str) -> Result<CreateRoomOutput, String> {
-        // Generate 4 random bytes → 4-word passphrase. We rely on the OS
-        // RNG via rand instead of pulling in totp-rs's `Secret::generate`.
+        // Generate 4 random bytes → 4-word passphrase via the OS RNG.
         use rand::RngCore;
         let mut seed = [0u8; 4];
         rand::thread_rng().fill_bytes(&mut seed);
@@ -358,9 +353,9 @@ fn passphrase_to_secret(passphrase: &str) -> Result<String, String> {
 
     // Build a 20-byte secret: the 4 seed bytes first (so secret_to_passphrase
     // can recover the words), then 16 bytes of SHA1(seed) as deterministic
-    // padding. The total length isn't load-bearing anymore (HMAC takes
-    // arbitrary key sizes), but we keep the same shape for backward compat
-    // with persisted room.json files from older versions.
+    // padding to a stable length. The total length isn't load-bearing
+    // (HMAC takes arbitrary key sizes) ; the format is what gets persisted
+    // to `room.json`.
     use sha1::Digest;
     let mut hasher = sha1::Sha1::new();
     hasher.update(seed);

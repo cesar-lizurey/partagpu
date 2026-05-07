@@ -8,13 +8,14 @@
 //! private key only existed in memory and is lost on app restart.
 //!
 //! Wire formats :
-//! - **v1 (legacy)** : key = HKDF(room_secret). No forward secrecy. Still
-//!   accepted by the server for backward compat with older clients.
-//! - **v2** : key = HKDF(room_secret || ECDH(client_eph, server_eph)). The
-//!   client embeds its ephemeral public key in the envelope ; the server
-//!   uses its own ephemeral private key (held only in `EphemeralKey`) to
-//!   complete the DH. Both sides derive the same session key for that
-//!   single request, and the response uses the same session key.
+//! - **v1** : key = HKDF(room_secret). No forward secrecy. Used as the
+//!   fallback path when the peer hasn't published an ephemeral pubkey yet.
+//! - **v2** (default) : key = HKDF(room_secret || ECDH(client_eph,
+//!   server_eph)). The client embeds its ephemeral public key in the
+//!   envelope ; the server uses its own ephemeral private key (held only
+//!   in `EphemeralKey`) to complete the DH. Both sides derive the same
+//!   session key for that single request, and the response uses the same
+//!   session key.
 //!
 //! HMAC-SHA256 authentication (header `X-PartaGPU-AUTH`, computed by
 //! [`compute_request_auth`]) provides anti-replay (30 s window) and binds
@@ -332,25 +333,20 @@ pub fn derive_room_key(secret_base32: &str) -> Result<[u8; 32], CryptoError> {
 /// Iteration count for the PBKDF2 derivation of `auth_key`. 600 000 is the
 /// OWASP 2023 recommendation for PBKDF2-HMAC-SHA256 used for password
 /// hardening. At this count the derivation takes ~100 ms on a modern CPU,
-/// which is invisible at room-join time but multiplies the cost of an
-/// offline brute-force of the 4-word passphrase by a factor of ~10^5
-/// versus the previous fast HKDF.
+/// which is invisible at room-join time but caps the per-candidate cost
+/// of an offline brute-force on the 4-word passphrase to the same ~100 ms.
 const PBKDF2_AUTH_ITERS: u32 = 600_000;
 const PBKDF2_AUTH_SALT: &[u8] = b"PartaGPU/auth-key-pbkdf2-v2";
 
 /// Derive a 32-byte HMAC key from the base32-encoded room secret.
 ///
-/// Uses PBKDF2-HMAC-SHA256 (slow on purpose) to harden against an offline
-/// brute-force attack on the 4-word passphrase via the leaked mDNS
-/// `auth_proof` tags : a passive listener can only check ~10 candidates
-/// per second per CPU core instead of ~1 000 000 with the old HKDF.
+/// Uses PBKDF2-HMAC-SHA256 (slow on purpose) so that an attacker who
+/// somehow observes one HMAC tag has to spend ~100 ms of PBKDF2 per
+/// candidate passphrase to brute-force — turning a 4.3 G search space
+/// into ~7 CPU-days instead of ~10 minutes.
 ///
 /// The cost is paid once at room join / load (~100 ms), then the key is
 /// cached in `RoomState`. HMAC computations using this key remain fast.
-///
-/// **Protocol break vs ≤ 1.10.0** : peers running an older version derive
-/// a different `auth_key` and will see each other as unverified / refuse
-/// HMAC headers. All peers in a room must run a matching version.
 pub fn derive_auth_key(secret_base32: &str) -> Result<[u8; 32], CryptoError> {
     let secret_bytes = data_encoding::BASE32
         .decode(secret_base32.as_bytes())
@@ -370,12 +366,11 @@ pub fn derive_auth_key(secret_base32: &str) -> Result<[u8; 32], CryptoError> {
 //   1. `compute_verify_response` / `verify_response` : challenge-response
 //      probe used by Discovery to verify that a peer holds the room secret.
 //      The verifier sends a fresh random nonce ; the prover responds with
-//      `HMAC(auth_key, "PartaGPU/verify-resp/v1\n" || nonce)`. Replaces the
-//      old static `auth_proof` broadcast in mDNS — that scheme leaked one
-//      HMAC tag per 30-s window passively, brute-forceable offline. The
-//      challenge-response variant requires an active TCP connection per
-//      tag and combines with PBKDF2-derived `auth_key` to make brute force
-//      cost prohibitive (~$1500 of cloud compute).
+//      `HMAC(auth_key, "PartaGPU/verify-resp/v1\n" || nonce)`. Nothing is
+//      broadcast statically — a passive LAN listener has no HMAC tag to
+//      brute-force against. Even an attacker who actively probes /verify
+//      has to pay ~100 ms of PBKDF2 per passphrase candidate (see
+//      `derive_auth_key`).
 //
 //   2. `compute_request_auth` / `verify_request_auth` : full HMAC bound to
 //      a specific HTTP request (timestamp + method + path + body hash).
@@ -438,8 +433,8 @@ pub fn verify_response(auth_key: &[u8; 32], nonce: &[u8], candidate_hex: &str) -
 ///    || "\n" || sha256(body)`
 ///
 /// A captured header can therefore be replayed only on the same request
-/// payload and only within the AUTH_WINDOW_SECS window — same anti-replay
-/// guarantees as the previous TOTP scheme, plus body integrity.
+/// payload and only within the AUTH_WINDOW_SECS window. Body integrity
+/// comes for free since the body hash is in the signed input.
 pub fn compute_request_auth(auth_key: &[u8; 32], method: &str, path: &str, body: &[u8]) -> String {
     let ts = now_secs();
     format!(
@@ -523,7 +518,8 @@ pub enum AuthVerifyError {
 }
 
 /// Encrypt `plaintext` with the v=1 room-key envelope (no forward secrecy).
-/// Kept for backward compat with older peers ; prefer `encrypt_v2`.
+/// Used as the fallback path when the peer hasn't published an ephemeral
+/// pubkey yet ; prefer `encrypt_v2`.
 pub fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Envelope, CryptoError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let mut nonce_bytes = [0u8; 12];

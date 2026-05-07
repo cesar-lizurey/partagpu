@@ -2,8 +2,9 @@
 
 This is the foundation for distributed compute over a PartaGPU room. The local
 PartaGPU app is the broker — your code talks to ``http://localhost:7654`` and
-the app forwards the task to the chosen peer (with the shared TOTP code as
-authentication), runs it inside the peer's sandbox, and streams the result back.
+the app forwards the task to the chosen peer (signed with an HMAC keyed by
+the shared room secret), runs it inside the peer's sandbox, and streams the
+result back.
 
 Typical use::
 

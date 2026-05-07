@@ -51,9 +51,8 @@ pub struct Peer {
     /// Whether this peer answered the active `/peer/v1/verify` HMAC
     /// challenge with a valid response. False until the first successful
     /// probe ; flips back to false if a re-verification fails (peer left
-    /// the room, etc.). Replaces the static mDNS `auth_proof` of 1.9.x —
-    /// the proof is no longer broadcast at all, so a passive listener on
-    /// the LAN cannot collect HMAC tags to brute-force the passphrase.
+    /// the room, etc.). No HMAC tag is broadcast statically — a passive
+    /// LAN listener cannot collect tags to brute-force the passphrase.
     pub verified: bool,
     /// True if another peer already claimed this hostname (possible spoof).
     #[serde(default)]
@@ -217,11 +216,9 @@ impl Discovery {
         let gpu_count = self.local_gpu_count().to_string();
         let eph_pk = self.eph_pk_b64.lock().unwrap().clone();
 
-        // Note : as of 1.10.0 there is no `auth_proof` TXT field. Peer
-        // verification happens via an active HTTP challenge against
-        // `/peer/v1/verify` so the HMAC tag is bound to a fresh nonce
-        // per probe and never broadcast statically (no offline brute-force
-        // from passive LAN listening).
+        // No auth tag in the TXT : peer verification happens via an active
+        // HTTP challenge on `/peer/v1/verify` (the HMAC is bound to a
+        // fresh nonce per probe, nothing is broadcast statically).
         let properties = [
             ("hostname", self.hostname.as_str()),
             ("display_name", &display_name),

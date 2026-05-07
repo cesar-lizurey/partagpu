@@ -118,7 +118,8 @@ pub fn run() {
     );
 
     // Peer-to-peer HTTP API on 0.0.0.0:7655 — receives task submissions from
-    // verified peers (auth via shared TOTP secret) and runs them in the sandbox.
+    // verified peers (HMAC auth keyed by the shared room secret) and runs
+    // them in the sandbox.
     peer_api::start(
         incoming.clone(),
         auth.clone(),

@@ -37,7 +37,7 @@ pub fn set_display_name(discovery: State<'_, Discovery>, name: String) -> String
     final_name
 }
 
-// ── Room / TOTP auth ──────────────────────────────────────
+// ── Room / HMAC auth ──────────────────────────────────────
 
 #[derive(serde::Serialize)]
 pub struct CreateRoomResult {
