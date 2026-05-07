@@ -98,10 +98,7 @@ impl ResourceMonitor {
 
                 let cpu_percent = sys.global_cpu_usage();
                 let ram_used_mb = sys.used_memory() / (1024 * 1024);
-                let gpu_percent = list_gpus()
-                    .first()
-                    .map(|g| g.utilization)
-                    .unwrap_or(0.0);
+                let gpu_percent = list_gpus().first().map(|g| g.utilization).unwrap_or(0.0);
                 let timestamp_secs = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_secs())

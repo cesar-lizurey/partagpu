@@ -15,8 +15,7 @@ use std::time::Instant;
 
 use super::monitor::{collect_descendants, sample_gpu_per_pid};
 use super::{
-    config_dir, new_task, save_atomic, task_for_persist, Task, TaskStatus,
-    PERSIST_FLUSH_INTERVAL,
+    config_dir, new_task, save_atomic, task_for_persist, Task, TaskStatus, PERSIST_FLUSH_INTERVAL,
 };
 use crate::sandbox::{OutputSink, Sandbox, SandboxOptions, SandboxResult};
 

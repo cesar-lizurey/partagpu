@@ -26,6 +26,14 @@ Aucun chantier critique restant. Tout ce qui suit est de l'amélioration optionn
 - **Amélioration possible** : tourner après N requêtes traitées (cap absolu sur la quantité de trafic chiffrée avec une même clé). Aucun bénéfice pratique au volume actuel.
 - **Priorité** : nulle pour le projet actuel.
 
+### Étendre la migration `thiserror` au reste du codebase
+- **État actuel** : depuis 1.7.x, `crypto.rs` utilise un enum typé `CryptoError` avec variantes (`BadEncoding`, `BadLength`, `AeadDecrypt`, `MissingEphPk`, `Json`, `NoMatchingKey`…). Les callers (peer_api, http_api) convertissent encore via `.map_err(|e| e.to_string())` à la frontière car le reste du codebase est toujours sur `Result<T, String>`.
+- **Pourquoi étendre** : permettrait aux handlers HTTP de pattern-matcher sur les variantes pour mapper vers des codes HTTP plus précis (415 vs 401 vs 500), au lieu d'un grep heuristique sur le message d'erreur. Permettrait aussi à terme de retirer les `format!()` qui inflate les erreurs en strings perdantes.
+- **Coût** : large. ~100 sites dans tous les fichiers Rust (sandbox, task_runner, discovery, auth, http_api, peer_api). Mécanique mais fastidieux. Risque modéré de régression subtile (les unit tests couvrent peu de chemins d'erreur).
+- **Bénéfice** : faible en pratique tant que personne ne pattern-match sur les erreurs côté UI. Surtout du nettoyage de design.
+- **Couche Tauri** : restera sur `Result<T, String>` (les commands sérialisent les erreurs vers le JS) — la migration interne ne touche que le code Rust pur.
+- **Priorité** : faible. À reprendre si on ajoute un consommateur d'erreurs typées (par ex. un endpoint `/peer/v1/error-summary` qui renvoie un code stable, ou des tests qui veulent assert sur une variante spécifique).
+
 ### Retirer TOTP au profit d'un HMAC + timestamp
 - **État actuel** : l'auth des requêtes pair-à-pair s'appuie sur un code TOTP à 6 chiffres dans le header `X-PartaGPU-TOTP`, plus l'annonce du même code dans les TXT records mDNS pour la vérification passive entre pairs.
 - **Pourquoi le remplacer** : depuis l'ajout d'AES-256-GCM (1.6.0) puis de la forward secrecy X25519 (1.7.0), TOTP ne fait plus que de l'anti-replay sur ~30 s. C'est exactement ce qu'un schéma plus standard apporterait :

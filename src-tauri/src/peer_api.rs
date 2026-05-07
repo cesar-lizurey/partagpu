@@ -207,9 +207,17 @@ async fn handle_connection(
                 None => Some("Cette machine n'est dans aucune salle PartaGPU.".to_string()),
                 Some(key) => match serde_json::from_str::<crypto::Envelope>(&req.body) {
                     Ok(env) => {
-                        let result = match env.v {
-                            1 => crypto::decrypt(key, &env).map(|plain| (plain, *key)),
-                            2 => crypto::decrypt_request_v2(key, &server_eph, &env),
+                        // Crypto layer is now typed (CryptoError) ; the
+                        // peer-API handler still propagates errors as String,
+                        // so we collapse via `.map_err(|e| e.to_string())`.
+                        // This will go away when the broader migration to
+                        // typed errors happens (see TODO.md).
+                        let result: Result<(Vec<u8>, [u8; 32]), String> = match env.v {
+                            1 => crypto::decrypt(key, &env)
+                                .map(|plain| (plain, *key))
+                                .map_err(|e| e.to_string()),
+                            2 => crypto::decrypt_request_v2(key, &server_eph, &env)
+                                .map_err(|e| e.to_string()),
                             v => Err(format!("version d'enveloppe non supportée : {v}")),
                         };
                         match result {

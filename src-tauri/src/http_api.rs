@@ -283,7 +283,7 @@ pub fn dispatch_task_blocking(
     let secret_b32 = auth.get_secret().ok_or_else(|| {
         "Impossible de dériver la clé de chiffrement (secret de salle indisponible).".to_string()
     })?;
-    let key = crypto::derive_room_key(&secret_b32)?;
+    let key = crypto::derive_room_key(&secret_b32).map_err(|e| e.to_string())?;
 
     let user = user.unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "local".into()));
     let local_hostname = hostname::get()
@@ -493,13 +493,15 @@ fn run_remote_blocking(
         plaintext_json: &str,
     ) -> Result<(String, [u8; 32]), String> {
         if peer_eph_pk.is_empty() {
-            let env = crypto::encrypt(room_key, plaintext_json.as_bytes())?;
+            let env =
+                crypto::encrypt(room_key, plaintext_json.as_bytes()).map_err(|e| e.to_string())?;
             let s =
                 serde_json::to_string(&env).map_err(|e| format!("envelope sérialisation : {e}"))?;
             Ok((s, *room_key))
         } else {
             let (env, session) =
-                crypto::encrypt_v2(room_key, peer_eph_pk, plaintext_json.as_bytes())?;
+                crypto::encrypt_v2(room_key, peer_eph_pk, plaintext_json.as_bytes())
+                    .map_err(|e| e.to_string())?;
             let s =
                 serde_json::to_string(&env).map_err(|e| format!("envelope sérialisation : {e}"))?;
             Ok((s, session))

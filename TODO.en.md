@@ -26,6 +26,14 @@ No critical work left. Anything below is optional polish.
 - **Possible improvement**: rotate after N processed requests (hard cap on the amount of traffic encrypted under any single key). No practical benefit at current traffic volumes.
 - **Priority**: zero for this project as it stands.
 
+### Extend the `thiserror` migration to the rest of the codebase
+- **Current state**: since 1.7.x, `crypto.rs` uses a typed `CryptoError` enum with variants (`BadEncoding`, `BadLength`, `AeadDecrypt`, `MissingEphPk`, `Json`, `NoMatchingKey`…). Callers (peer_api, http_api) still bridge via `.map_err(|e| e.to_string())` at the boundary because the rest of the codebase is on `Result<T, String>`.
+- **Why extend it**: would let HTTP handlers pattern-match on variants to map to more precise status codes (415 vs 401 vs 500), instead of grep-heuristic on the error message. Would also let us drop the `format!()` calls that inflate errors into lossy strings.
+- **Cost**: large. ~100 sites across every Rust file (sandbox, task_runner, discovery, auth, http_api, peer_api). Mechanical but tedious. Moderate risk of subtle regressions (unit tests cover few error paths).
+- **Benefit**: small in practice as long as no one pattern-matches on errors UI-side. Mostly design cleanup.
+- **Tauri layer**: will stay on `Result<T, String>` (commands serialise errors to JS) — internal migration only touches pure Rust code.
+- **Priority**: low. Worth picking up when a typed-error consumer arrives (e.g. a `/peer/v1/error-summary` endpoint with stable codes, or tests asserting on a specific variant).
+
 ### Drop TOTP in favor of an HMAC + timestamp scheme
 - **Current state**: peer-to-peer request auth relies on a 6-digit TOTP code in the `X-PartaGPU-TOTP` header, plus the same code broadcast in mDNS TXT records for passive peer verification.
 - **Why replace it**: since AES-256-GCM (1.6.0) and X25519 forward secrecy (1.7.0) shipped, TOTP only does anti-replay over a ~30 s window. A more standard scheme buys exactly the same:

@@ -16,9 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use super::{
-    config_dir, save_atomic, task_for_persist, Task, TaskStatus, PERSIST_FLUSH_INTERVAL,
-};
+use super::{config_dir, save_atomic, task_for_persist, Task, TaskStatus, PERSIST_FLUSH_INTERVAL};
 
 /// Tasks I submitted to other machines (outgoing).
 #[derive(Clone)]

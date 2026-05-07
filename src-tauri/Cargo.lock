@@ -2935,6 +2935,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-shell",
  "tempdir",
+ "thiserror 2.0.18",
  "tokio",
  "totp-rs",
  "ureq",

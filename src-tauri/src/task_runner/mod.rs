@@ -27,8 +27,7 @@ use std::time::SystemTime;
 /// Per-task output cap when persisting to disk. Avoids saving 1 MB stdout
 /// for every task across restarts (x100 tasks would be 100 MB on disk).
 pub(crate) const PERSIST_OUTPUT_CAP: usize = 50 * 1024;
-pub(crate) const PERSIST_FLUSH_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(5);
+pub(crate) const PERSIST_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(crate) fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
@@ -38,10 +37,7 @@ pub(crate) fn config_dir() -> PathBuf {
         .join("partagpu")
 }
 
-pub(crate) fn save_atomic<T: Serialize>(
-    path: &std::path::Path,
-    value: &T,
-) -> std::io::Result<()> {
+pub(crate) fn save_atomic<T: Serialize>(path: &std::path::Path, value: &T) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

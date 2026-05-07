@@ -51,6 +51,54 @@ const HKDF_INFO_V2: &[u8] = b"AES-256-GCM session key v2 (room|ecdh)";
 /// is the whole point of mandatory encryption.
 pub const ENCRYPTED_CONTENT_TYPE: &str = "application/x-partagpu-encrypted-v1";
 
+/// Typed errors for the crypto module. Migrated from `Result<T, String>` so
+/// callers can pattern-match on specific failure modes (e.g. distinguish a
+/// malformed envelope from a key mismatch). The rest of the codebase still
+/// uses `String` errors — callers convert with `.map_err(|e| e.to_string())`
+/// at the boundary. See TODO.md for the broader migration.
+#[derive(Debug, thiserror::Error)]
+pub enum CryptoError {
+    /// Base32 / base64 decode failed (room secret, nonce, ciphertext, eph_pk).
+    #[error("encodage invalide ({field}) : {source}")]
+    BadEncoding {
+        field: &'static str,
+        #[source]
+        source: data_encoding::DecodeError,
+    },
+    /// HKDF expand failed (essentially impossible at our 32-byte output size).
+    #[error("HKDF expand ({0}) : sortie {1} octets")]
+    Hkdf(&'static str, usize),
+    /// Wrong-length input (e.g. nonce ≠ 12 B, eph_pk ≠ 32 B).
+    #[error("longueur invalide ({field}) : {got} octets, attendu {expected}")]
+    BadLength {
+        field: &'static str,
+        got: usize,
+        expected: usize,
+    },
+    /// AES-GCM operation failed (tag mismatch, wrong key, tampered ct, …).
+    /// Intentionally opaque so we don't leak which of those it actually was.
+    #[error("déchiffrement AES-GCM échoué (clé invalide ou message altéré)")]
+    AeadDecrypt,
+    /// AES-GCM encrypt failed (shouldn't happen with a valid key + nonce).
+    #[error("chiffrement AES-GCM : {0}")]
+    AeadEncrypt(aes_gcm::Error),
+    /// Envelope v2 is missing the `eph_pk` field the server needs.
+    #[error("envelope v2 sans eph_pk")]
+    MissingEphPk,
+    /// JSON serialisation/parsing failed (envelope wrap/unwrap).
+    #[error("JSON {context} : {source}")]
+    Json {
+        context: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// Every candidate ephemeral key (current + previous) failed to decrypt.
+    /// Distinct from `AeadDecrypt` because the caller may want to log it
+    /// separately ("client used an unknown pubkey" vs. "tampered message").
+    #[error("aucune clé éphémère ne déverrouille le message")]
+    NoMatchingKey,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Envelope {
     /// Format version : 1 (room-key only) or 2 (room-key + per-request ECDH).
@@ -130,12 +178,19 @@ impl EphemeralKey {
     /// Tries the current key first, then the previous key (if still inside
     /// its grace window) so a peer that fetched the old pubkey just before
     /// rotation can still complete its request.
-    pub fn dh(&self, peer_pub_b64: &str) -> Result<[u8; 32], String> {
+    pub fn dh(&self, peer_pub_b64: &str) -> Result<[u8; 32], CryptoError> {
         let raw = data_encoding::BASE64
             .decode(peer_pub_b64.as_bytes())
-            .map_err(|e| format!("eph_pk base64 invalide : {e}"))?;
+            .map_err(|e| CryptoError::BadEncoding {
+                field: "eph_pk",
+                source: e,
+            })?;
         if raw.len() != 32 {
-            return Err(format!("eph_pk doit faire 32 octets, recu {}", raw.len()));
+            return Err(CryptoError::BadLength {
+                field: "eph_pk",
+                got: raw.len(),
+                expected: 32,
+            });
         }
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&raw);
@@ -171,12 +226,22 @@ impl EphemeralKey {
     /// key is still in the grace window. The first element is always the
     /// current-key shared secret. Used by `decrypt_request_v2` to try the
     /// AES-GCM tag against both keys.
-    pub(crate) fn dh_candidates(&self, peer_pub_b64: &str) -> Result<(Vec<[u8; 32]>, ()), String> {
+    pub(crate) fn dh_candidates(
+        &self,
+        peer_pub_b64: &str,
+    ) -> Result<(Vec<[u8; 32]>, ()), CryptoError> {
         let raw = data_encoding::BASE64
             .decode(peer_pub_b64.as_bytes())
-            .map_err(|e| format!("eph_pk base64 invalide : {e}"))?;
+            .map_err(|e| CryptoError::BadEncoding {
+                field: "eph_pk",
+                source: e,
+            })?;
         if raw.len() != 32 {
-            return Err(format!("eph_pk doit faire 32 octets, recu {}", raw.len()));
+            return Err(CryptoError::BadLength {
+                field: "eph_pk",
+                got: raw.len(),
+                expected: 32,
+            });
         }
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&raw);
@@ -241,27 +306,30 @@ pub fn derive_session_key(room_key: &[u8; 32], shared: &[u8; 32]) -> [u8; 32] {
 }
 
 /// Derive a 32-byte AES-256 key from a base32-encoded room secret.
-pub fn derive_room_key(secret_base32: &str) -> Result<[u8; 32], String> {
+pub fn derive_room_key(secret_base32: &str) -> Result<[u8; 32], CryptoError> {
     let secret_bytes = data_encoding::BASE32
         .decode(secret_base32.as_bytes())
-        .map_err(|e| format!("secret salle invalide (base32) : {e}"))?;
+        .map_err(|e| CryptoError::BadEncoding {
+            field: "room_secret",
+            source: e,
+        })?;
     let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), &secret_bytes);
     let mut key = [0u8; 32];
     hk.expand(HKDF_INFO, &mut key)
-        .map_err(|e| format!("HKDF expand : {e}"))?;
+        .map_err(|_| CryptoError::Hkdf("room_key", 32))?;
     Ok(key)
 }
 
 /// Encrypt `plaintext` with the v=1 room-key envelope (no forward secrecy).
 /// Kept for backward compat with older peers ; prefer `encrypt_v2`.
-pub fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Envelope, String> {
+pub fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Envelope, CryptoError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ct = cipher
         .encrypt(nonce, plaintext)
-        .map_err(|e| format!("chiffrement AES-GCM : {e}"))?;
+        .map_err(CryptoError::AeadEncrypt)?;
     Ok(Envelope {
         v: 1,
         nonce: data_encoding::BASE64.encode(&nonce_bytes),
@@ -280,16 +348,20 @@ pub fn encrypt_v2(
     room_key: &[u8; 32],
     peer_eph_b64: &str,
     plaintext: &[u8],
-) -> Result<(Envelope, [u8; 32]), String> {
+) -> Result<(Envelope, [u8; 32]), CryptoError> {
     let (client_secret, client_pk_b64) = fresh_client_eph();
     let raw = data_encoding::BASE64
         .decode(peer_eph_b64.as_bytes())
-        .map_err(|e| format!("peer_eph_pk base64 invalide : {e}"))?;
+        .map_err(|e| CryptoError::BadEncoding {
+            field: "peer_eph_pk",
+            source: e,
+        })?;
     if raw.len() != 32 {
-        return Err(format!(
-            "peer_eph_pk doit faire 32 octets, recu {}",
-            raw.len()
-        ));
+        return Err(CryptoError::BadLength {
+            field: "peer_eph_pk",
+            got: raw.len(),
+            expected: 32,
+        });
     }
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&raw);
@@ -303,7 +375,7 @@ pub fn encrypt_v2(
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ct = cipher
         .encrypt(nonce, plaintext)
-        .map_err(|e| format!("chiffrement AES-GCM : {e}"))?;
+        .map_err(CryptoError::AeadEncrypt)?;
 
     Ok((
         Envelope {
@@ -319,14 +391,17 @@ pub fn encrypt_v2(
 /// Encrypt `plaintext` with a known session key (no fresh DH). Used by the
 /// server to send back a response after it has derived the shared key from
 /// an incoming v=2 request, and by the client to decrypt that response.
-pub fn encrypt_with_session(session_key: &[u8; 32], plaintext: &[u8]) -> Result<Envelope, String> {
+pub fn encrypt_with_session(
+    session_key: &[u8; 32],
+    plaintext: &[u8],
+) -> Result<Envelope, CryptoError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(session_key));
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ct = cipher
         .encrypt(nonce, plaintext)
-        .map_err(|e| format!("chiffrement AES-GCM : {e}"))?;
+        .map_err(CryptoError::AeadEncrypt)?;
     Ok(Envelope {
         v: 2,
         nonce: data_encoding::BASE64.encode(&nonce_bytes),
@@ -339,31 +414,38 @@ pub fn encrypt_with_session(session_key: &[u8; 32], plaintext: &[u8]) -> Result<
 /// caller has already derived the session key (e.g. response from a peer).
 /// For v=2 *requests* on the server side, use `decrypt_request_v2` which
 /// also returns the session key for encrypting the response.
-pub fn decrypt(key: &[u8; 32], env: &Envelope) -> Result<Vec<u8>, String> {
+pub fn decrypt(key: &[u8; 32], env: &Envelope) -> Result<Vec<u8>, CryptoError> {
     decrypt_inner(key, env)
 }
 
-fn decrypt_inner(key: &[u8; 32], env: &Envelope) -> Result<Vec<u8>, String> {
+fn decrypt_inner(key: &[u8; 32], env: &Envelope) -> Result<Vec<u8>, CryptoError> {
     let nonce_bytes = data_encoding::BASE64
         .decode(env.nonce.as_bytes())
-        .map_err(|e| format!("nonce base64 : {e}"))?;
+        .map_err(|e| CryptoError::BadEncoding {
+            field: "nonce",
+            source: e,
+        })?;
     if nonce_bytes.len() != 12 {
-        return Err(format!(
-            "nonce doit faire 12 octets, reçu {}",
-            nonce_bytes.len()
-        ));
+        return Err(CryptoError::BadLength {
+            field: "nonce",
+            got: nonce_bytes.len(),
+            expected: 12,
+        });
     }
     let ct_bytes = data_encoding::BASE64
         .decode(env.ct.as_bytes())
-        .map_err(|e| format!("ciphertext base64 : {e}"))?;
+        .map_err(|e| CryptoError::BadEncoding {
+            field: "ciphertext",
+            source: e,
+        })?;
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce = Nonce::from_slice(&nonce_bytes);
-    cipher.decrypt(nonce, ct_bytes.as_ref()).map_err(|_| {
+    cipher
+        .decrypt(nonce, ct_bytes.as_ref())
         // Don't leak details — could be tag mismatch, key mismatch, or
         // truncated ciphertext. All of them mean "this didn't come from
         // a peer in our room".
-        "déchiffrement AES-GCM échoué (clé invalide ou message altéré)".to_string()
-    })
+        .map_err(|_| CryptoError::AeadDecrypt)
 }
 
 /// Server-side decryption of a v=2 envelope : extracts the client's ephemeral
@@ -379,13 +461,10 @@ pub fn decrypt_request_v2(
     room_key: &[u8; 32],
     server_eph: &EphemeralKey,
     env: &Envelope,
-) -> Result<(Vec<u8>, [u8; 32]), String> {
-    let client_pk_b64 = env
-        .eph_pk
-        .as_deref()
-        .ok_or_else(|| "envelope v2 sans eph_pk".to_string())?;
+) -> Result<(Vec<u8>, [u8; 32]), CryptoError> {
+    let client_pk_b64 = env.eph_pk.as_deref().ok_or(CryptoError::MissingEphPk)?;
     let (shareds, _) = server_eph.dh_candidates(client_pk_b64)?;
-    let mut last_err = String::from("aucune cle ephemere ne deverrouille le message");
+    let mut last_err = CryptoError::NoMatchingKey;
     for shared in shareds {
         let session_key = derive_session_key(room_key, &shared);
         match decrypt_inner(&session_key, env) {
@@ -398,18 +477,32 @@ pub fn decrypt_request_v2(
 
 /// Convenience: encrypt a JSON-serializable value and return the
 /// JSON-string envelope ready to be put in an HTTP body.
-pub fn encrypt_json<T: Serialize>(key: &[u8; 32], value: &T) -> Result<String, String> {
-    let plain = serde_json::to_vec(value).map_err(|e| format!("JSON sérialisation : {e}"))?;
+pub fn encrypt_json<T: Serialize>(key: &[u8; 32], value: &T) -> Result<String, CryptoError> {
+    let plain = serde_json::to_vec(value).map_err(|e| CryptoError::Json {
+        context: "sérialisation plaintext",
+        source: e,
+    })?;
     let env = encrypt(key, &plain)?;
-    serde_json::to_string(&env).map_err(|e| format!("envelope sérialisation : {e}"))
+    serde_json::to_string(&env).map_err(|e| CryptoError::Json {
+        context: "sérialisation enveloppe",
+        source: e,
+    })
 }
 
 /// Convenience: decrypt a JSON-string envelope and parse the plaintext as JSON.
-pub fn decrypt_json<T: for<'a> Deserialize<'a>>(key: &[u8; 32], body: &str) -> Result<T, String> {
-    let env: Envelope = serde_json::from_str(body)
-        .map_err(|e| format!("body n'est pas une enveloppe JSON : {e}"))?;
+pub fn decrypt_json<T: for<'a> Deserialize<'a>>(
+    key: &[u8; 32],
+    body: &str,
+) -> Result<T, CryptoError> {
+    let env: Envelope = serde_json::from_str(body).map_err(|e| CryptoError::Json {
+        context: "désérialisation enveloppe",
+        source: e,
+    })?;
     let plain = decrypt(key, &env)?;
-    serde_json::from_slice(&plain).map_err(|e| format!("JSON intérieur : {e}"))
+    serde_json::from_slice(&plain).map_err(|e| CryptoError::Json {
+        context: "désérialisation plaintext",
+        source: e,
+    })
 }
 
 #[cfg(test)]
