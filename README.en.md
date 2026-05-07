@@ -408,8 +408,8 @@ Slider adjustments, status reads, and monitoring **never call pkexec** — every
 ## Security
 
 - **Room authentication**: a 4-word access code generates a shared secret from which an AES `room_key` and an HMAC `auth_key` are derived. Every peer-to-peer request carries an `X-PartaGPU-AUTH: <ts>:<HMAC>` header that binds the auth to the request body + a timestamp inside a 30-s window (anti-replay). Unverified stations are clearly identified.
-- **Peer-to-peer encryption** (since 1.6.0): HTTP bodies between peers (port 7655) are encrypted with AES-256-GCM, key derived via HKDF from the room secret. Confidentiality + integrity against passive LAN sniffing. Every peer must be `>= 1.6.0`.
-- **Forward secrecy** (since 1.7.0): the AES key is now derived from a per-request ephemeral X25519 Diffie-Hellman exchange. The server's ephemeral key stays **in RAM only**, regenerated at every app start and rotated every 10 minutes. An attacker who captures traffic and steals the passphrase later can no longer decrypt sessions older than 10 minutes.
+- **Peer-to-peer encryption**: HTTP bodies between peers (port 7655) are encrypted with AES-256-GCM. Confidentiality + integrity against passive LAN sniffing.
+- **Forward secrecy**: the AES key is derived from a per-request ephemeral X25519 Diffie-Hellman exchange. The server's ephemeral key stays **in RAM only**, regenerated at every app start and rotated every 10 minutes. An attacker who captures traffic and steals the passphrase later cannot decrypt sessions older than 10 minutes.
 - **Isolation**: the `partagpu` account is dedicated to sharing, with no access to other users' personal files
 - **Cgroups v2**: tasks cannot exceed the CPU/RAM limits set with the sliders
 - **PolicyKit**: root operations go through `pkexec` with an explicit policy, no hardcoded sudo. The password transits via stdin, never as a CLI argument.

@@ -61,7 +61,7 @@ Check, in order:
 
 The active HMAC challenge on `/peer/v1/verify` didn't return a matching response. Causes:
 - **Not in the same room**: different passphrases → different `auth_key` → verify HMAC mismatch. *Leave the room* on one side and rejoin with the right code.
-- **Peer on too old a version**: `< 1.10.0` doesn't expose `/peer/v1/verify` (auth was via mDNS `auth_proof` through 1.9.x) — every peer must run 1.10.0+.
+- **Inconsistent PartaGPU versions**: every peer in a room must run the same major version of PartaGPU. Check the version badge in the app header on each machine.
 - **Probe timeout (3 s)**: firewall blocking port 7655, peer far on the LAN, or the peer's app is still starting up. Re-verification runs every 60 s, wait a minute.
 
 Clock skew doesn't affect `/verify` (nonce-based, not time-windowed), but it does block dispatches (HTTP `X-PartaGPU-AUTH` is ±30 s anti-replay). Enabling NTP everywhere is still recommended:
@@ -115,8 +115,8 @@ Either the room mismatches (wrong `auth_key`), or clock skew between the two PCs
 
 ### `HTTP 415 Unsupported Media Type` from the peer
 
-Since 1.6.0 every peer-to-peer body is encrypted (AES-256-GCM). The receiving peer returns 415 when:
-- The client is on `< 1.6.0` (sends plaintext) → upgrade the client.
+Every peer-to-peer body is encrypted (AES-256-GCM). The receiving peer returns 415 when:
+- The client sends a plaintext body → check PartaGPU versions on both machines.
 - The Content-Type is not `application/x-partagpu-encrypted-v1`.
 - The peer is in a different room (the HMAC header would normally fail first with 401, since the `auth_key` is derived from the same secret as the `room_key`).
 
@@ -128,7 +128,7 @@ The peer's allowlist doesn't contain that command. On the peer's machine: UI →
 
 ### Sandbox crashes with `Permission denied (os error 13)`
 
-Fixed in `1.1.0+`. `git pull && npm run tauri:dev` on the peer to update. The old version created the workspace under `/var/lib/partagpu` (mode 700, owned by partagpu) instead of `/tmp` (writable by the app).
+The peer's PartaGPU is out of date — `git pull && npm run tauri:dev` on the peer to update. The workspace must live under `/tmp` (writable by the app), not under `/var/lib/partagpu` (mode 700, owned by `partagpu`).
 
 ### A task is stuck in `Queued` indefinitely
 
@@ -257,7 +257,7 @@ partagpu.cancel("my-test-task")
 
 ### `distribute()`: why do my ranks linger when one crashes?
 
-Fixed in `1.4.0+`. Before: if rank 0 died, the others stayed blocked on `init_process_group` or an `all-reduce` until the NCCL timeout (~30 min). Now: `distribute()` automatically cancels the still-running ranks as soon as one fails. `git pull` on the launching machine to get the fix.
+If a rank dies mid-DDP, the others would in theory stay blocked on `init_process_group` or an `all-reduce` until the NCCL timeout (~30 min). `distribute()` detects the first rank that fails and **automatically cancels** all the others, so no machine is left waiting in the void.
 
 ### A task is marked `Cancelled` in the UI but seems to keep running
 

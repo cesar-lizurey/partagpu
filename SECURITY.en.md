@@ -57,7 +57,7 @@ Each PartaGPU room shares a **cryptographic secret** (encoded as a 4-word code).
 - a **`room_key`** for AES-256-GCM body encryption, derived via HKDF-SHA256 (cf. section 2)
 - a distinct **`auth_key`** for HMAC authentication proofs, derived via **PBKDF2-HMAC-SHA256** with 600 000 iterations (slow KDF)
 
-For **active peer verification** (since 1.10.0), each app probes `/peer/v1/verify?nonce=<hex>` on every peer it sees over mDNS. The peer responds with `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes)` ; the prober recomputes and constant-time compares to flip the `verified` badge. **No static proof is ever broadcast** : a passive LAN listener no longer captures periodic HMAC tags. Before 1.10.0 the tag (`auth_proof`) was in the mDNS TXT and offline-brute-forceable ; moving to an active challenge eliminates that vector.
+For **peer verification**, each app probes `/peer/v1/verify?nonce=<hex>` on every peer it sees over mDNS. The peer responds with `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes)` ; the prober recomputes and constant-time compares to flip the `verified` badge. **No static proof is broadcast** on the network — a passive LAN listener cannot collect periodic HMAC tags to offline-bruteforce the passphrase.
 
 For **HTTP requests**, every peer-to-peer call carries a header :
 ```
@@ -70,11 +70,11 @@ The server checks `|now - ts| ≤ 30 s`, then recomputes the HMAC and constant-t
 
 ### Technical details
 
-- **Primitive**: HMAC-SHA256 (RFC 2104). Simpler, more standard, and better aligned with the rest of the crypto stack than TOTP (RFC 6238) which was used through 1.8.x.
+- **Primitive**: HMAC-SHA256 (RFC 2104).
 - **Clock-skew tolerance**: ±1 window (`AUTH_WINDOW_SECS = 30 s`).
 - **Access code**: 4 words from a 256-word list = 256^4 ≈ 4.3 billion combinations.
-- **Conversion**: the 4-word passphrase is converted to 4 bytes, then expanded to 20 bytes via SHA-1 to form a stable-length secret. Same shape as 1.6.x–1.8.x so existing `room.json` files keep working (config backward compat).
-- **Derivation**: `auth_key = PBKDF2-HMAC-SHA256(room_secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000, len = 32 bytes)`. Intentionally slow KDF: the derivation takes ~100 ms on a modern CPU, invisible at room-join time, but multiplies by ~10⁵ the cost of an offline brute-force of the passphrase from any observed HMAC tag. Distinct from the AES `room_key`, which stays on HKDF-SHA256 (the `room_key` is never broadcast — different threat profile). **Protocol break vs ≤ 1.9.x**: every peer in a room must run 1.10.0+.
+- **Conversion**: the 4-word passphrase is converted to 4 bytes, then expanded to 20 bytes via SHA-1 to form a stable-length secret.
+- **Derivation**: `auth_key = PBKDF2-HMAC-SHA256(room_secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000, len = 32 bytes)`. Intentionally slow KDF: the derivation takes ~100 ms on a modern CPU, invisible at room-join time, but multiplies by ~10⁵ the cost of an offline brute-force of the passphrase from any observed HMAC tag. Distinct from the AES `room_key`, which is HKDF-SHA256-derived (the `room_key` is never broadcast — different threat profile).
 - **Verify endpoint**: `GET /peer/v1/verify?nonce=<hex>` is unauthenticated by design (it IS the auth bootstrap). It accepts a 16–32-byte hex nonce and returns `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes)` in full (256 bits, not truncated). Combined with the slow KDF, collecting tags via repeated probes does not shorten the brute-force.
 - **Persistence**: only the secret is saved to `~/.config/partagpu/room.json` ; the `auth_key` is re-derived on every load.
 
@@ -121,7 +121,7 @@ key = HKDF-SHA256(
 
 The `room_secret` is the same one used for HMAC auth — already shared between room members through the 4-word passphrase. No new material to distribute.
 
-#### Key derivation (v=2, default since 1.7.0)
+#### Key derivation (v=2, default)
 
 At startup, every peer generates an ephemeral X25519 keypair (kept **in RAM only**) and publishes its public key via mDNS (TXT field `eph_pk`). Every 10 minutes, a background thread rotates this keypair; the previous one stays valid for ~60 s to absorb in-flight requests.
 
@@ -151,7 +151,7 @@ Content-Type in both cases: `application/x-partagpu-encrypted-v1`. Random 12-byt
 
 #### Mandatory
 
-The peer-API server rejects any request with a body but the wrong Content-Type (HTTP `415 Unsupported Media Type`). No plaintext fallback. Consequence: every peer must be `>= 1.6.0` to talk to the others.
+The peer-API server rejects any request whose body has the wrong Content-Type with HTTP `415 Unsupported Media Type`. No plaintext fallback — an attacker who tries to bypass the encryption layer is stopped here.
 
 ### Properties
 

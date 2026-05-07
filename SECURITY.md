@@ -57,7 +57,7 @@ Chaque salle PartaGPU partage un **secret cryptographique** (encodé comme un co
 - une **`room_key`** pour le chiffrement AES-256-GCM des bodies, dérivée via HKDF-SHA256 (cf. section 2)
 - une **`auth_key`** distincte pour les preuves d'authentification HMAC, dérivée via **PBKDF2-HMAC-SHA256** avec 600 000 itérations (slow KDF)
 
-Pour la **vérification active des pairs** (depuis 1.10.0), chaque appli sonde `/peer/v1/verify?nonce=<hex>` sur les pairs découverts en mDNS. Le pair répond avec `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes)` ; le sondeur recompute et compare en temps constant pour flipper le badge `verified`. **Aucune preuve statique n'est broadcastée** : un attaquant passif sur le LAN ne capte plus de tags HMAC périodiques. Avant 1.10.0 le tag (`auth_proof`) était dans le TXT mDNS, brute-forceable offline ; le passage à un challenge actif élimine ce vecteur.
+Pour la **vérification des pairs**, chaque appli sonde `/peer/v1/verify?nonce=<hex>` sur les pairs découverts en mDNS. Le pair répond avec `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes)` ; le sondeur recompute et compare en temps constant pour flipper le badge `verified`. **Aucune preuve statique n'est broadcastée** sur le réseau — un attaquant passif sur le LAN ne peut pas collecter de tags HMAC périodiques pour brute-forcer la passphrase offline.
 
 Pour les **requêtes HTTP**, chaque appel pair-à-pair embarque un header :
 ```
@@ -70,11 +70,11 @@ Le serveur vérifie que `|now - ts| ≤ 30 s` puis recalcule le HMAC et compare 
 
 ### Détails techniques
 
-- **Primitive** : HMAC-SHA256 (RFC 2104). Plus simple, plus standard, et plus aligné avec le reste de la stack crypto que TOTP (RFC 6238) qui était utilisé jusqu'à 1.8.x.
+- **Primitive** : HMAC-SHA256 (RFC 2104).
 - **Tolérance de clock skew** : ±1 fenêtre (`AUTH_WINDOW_SECS = 30 s`).
 - **Code d'accès** : 4 mots parmi 256 = 256^4 ≈ 4,3 milliards de combinaisons.
-- **Conversion** : la passphrase est convertie en 4 octets, puis étendue à 20 octets via SHA-1 pour former un secret de longueur stable. Format identique aux versions 1.6.x–1.8.x donc le `room.json` reste lisible (rétro-compat des fichiers de config).
-- **Dérivation** : `auth_key = PBKDF2-HMAC-SHA256(room_secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000, len = 32 octets)`. Slow KDF intentionnel : la dérivation prend ~100 ms sur un CPU moderne, invisible au join de salle, mais multiplie d'un facteur ~10⁵ le coût d'un brute-force offline du passphrase à partir d'un tag HMAC observé. Distincte de la `room_key` AES qui reste sur HKDF-SHA256 (la `room_key` n'est jamais broadcastée — pas le même profil de menace). **Rupture de protocole vs ≤ 1.9.x** : tous les pairs d'une salle doivent tourner 1.10.0 ou plus.
+- **Conversion** : la passphrase est convertie en 4 octets, puis étendue à 20 octets via SHA-1 pour former un secret de longueur stable.
+- **Dérivation** : `auth_key = PBKDF2-HMAC-SHA256(room_secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000, len = 32 octets)`. Slow KDF intentionnel : la dérivation prend ~100 ms sur un CPU moderne, invisible au join de salle, mais multiplie d'un facteur ~10⁵ le coût d'un brute-force offline du passphrase à partir d'un tag HMAC observé. Distincte de la `room_key` AES dérivée par HKDF-SHA256 (la `room_key` n'est jamais broadcastée — pas le même profil de menace).
 - **Verify endpoint** : `GET /peer/v1/verify?nonce=<hex>` est unauthenticated par design (c'est le bootstrap d'auth). Il accepte un nonce 16-32 octets en hex et renvoie `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes)` complet (256 bits, pas tronqué). Combiné avec le slow KDF, collecter des tags via probes répétés ne raccourcit pas le brute-force.
 - **Persistance** : seul le secret est sauvegardé dans `~/.config/partagpu/room.json` ; la `auth_key` est dérivée à chaque chargement.
 
@@ -121,7 +121,7 @@ key = HKDF-SHA256(
 
 Le `room_secret` est le même que celui qui sert à l'auth HMAC — déjà partagé entre membres de la salle via la passphrase de 4 mots. Aucun nouveau matériel à distribuer.
 
-#### Dérivation de la clé (v=2, par défaut depuis 1.7.0)
+#### Dérivation de la clé (v=2, par défaut)
 
 À chaque démarrage, chaque pair génère un keypair X25519 éphémère (gardé **uniquement en RAM**) et publie sa pubkey via mDNS (champ TXT `eph_pk`). Toutes les 10 minutes, un thread de fond fait tourner ce keypair et l'ancien reste valide ~60 s pour absorber les requêtes en vol.
 
@@ -151,7 +151,7 @@ Content-Type dans les deux cas : `application/x-partagpu-encrypted-v1`. Nonce de
 
 #### Mandatory
 
-Le serveur peer-API rejette en `415 Unsupported Media Type` toute requête avec un body sans le bon Content-Type. Pas de fallback en clair. Conséquence : tous les pairs doivent être en `>= 1.6.0` pour pouvoir communiquer entre eux.
+Le serveur peer-API rejette en `415 Unsupported Media Type` toute requête avec un body sans le bon Content-Type. Pas de fallback en clair — un attaquant qui essaie d'éviter la couche de chiffrement échoue ici.
 
 ### Propriétés
 

@@ -119,7 +119,7 @@ Why a separate server from 7654? Because 7654 is **loopback** (security: not net
 
 ## Peer authentication via HMAC
 
-The system is **shared-secret**: every member of a room derives the same keys from the 4-word passphrase. Since 1.9.0 auth relies on HMAC-SHA256 (previously TOTP / RFC 6238 — the migration drops the `totp-rs` / `base32` deps and binds the HTTP header to the request body, not just to a timestamp).
+The system is **shared-secret**: every member of a room derives the same keys from the 4-word passphrase. Auth relies on HMAC-SHA256 bound to the request body (method + path + sha256(body) + timestamp), not just to a timestamp — a captured header cannot be replayed against a different request.
 
 ### Room creation flow
 
@@ -130,11 +130,9 @@ The system is **shared-secret**: every member of a room derives the same keys fr
 5. The secret is saved to `~/.config/partagpu/room.json` (mode 0600)
 6. On every load, the `auth_key` (32 bytes) is derived via `PBKDF2-HMAC-SHA256(secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000)` — slow KDF for brute-force resistance (~100 ms in release), distinct from the AES `room_key` which stays on HKDF-SHA256
 
-### Active peer verification (since 1.10.0)
+### Peer verification
 
-Rather than broadcasting a periodic HMAC tag in the mDNS TXT (the previous `auth_proof` field, which leaked 32 bits per 30-s window — offline-bruteforceable), each peer is verified actively when discovered.
-
-`Discovery` spawns a thread per newly-seen peer that:
+No HMAC tag is broadcast in the mDNS TXT — verification is an active challenge-response over HTTP. `Discovery` spawns a thread per newly-seen peer that:
 1. Generates a 16-byte random nonce
 2. `GET http://<peer_ip>:7655/peer/v1/verify?nonce=<hex>`
 3. The peer (if in a room) responds `{"hmac": "<HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes) hex>"}`
@@ -173,8 +171,8 @@ The wire format evolves by version. The server accepts both; the client prefers 
 
 | Version | AES key derived from | Forward secrecy | When |
 |---|---|---|---|
-| **v=1** | HKDF(room_secret) only | no | backward compat with a peer that hasn't published an ephemeral pubkey yet |
-| **v=2** | HKDF(room_secret \|\| ECDH(client_eph, server_eph)) | **yes** (10 min, see rotation) | default since 1.7.0 |
+| **v=1** | HKDF(room_secret) only | no | fallback when the peer hasn't published an ephemeral pubkey yet |
+| **v=2** | HKDF(room_secret \|\| ECDH(client_eph, server_eph)) | **yes** (10 min, see rotation) | default |
 
 ### v=1 key derivation (fallback)
 
@@ -261,12 +259,11 @@ Errors (4xx, 5xx) stay plaintext because the client may not have the key (which 
 ### Out of scope
 
 - **Protection against an in-room attacker**: by construction, every room peer holds the room key. The threat model is "LAN attacker NOT in the room".
-- **Backward compat**: before `1.6.0`, bodies were plaintext. Peers `< 1.6.0` can't talk to peers `>= 1.6.0` (simultaneous upgrade required). Between `1.6.0` and `1.7.0`, v=1 envelopes are still accepted by the server.
 
 ### Tests
 
-- **Unit** (8 tests, `cargo test --lib crypto::`): v=1 and v=2 round-trip, wrong key, tampered ciphertext, wrong server eph key, rotation grace window, forward secrecy after rotation, JSON round-trip.
-- **Integration** (5 tests, `cargo test --test peer_api_e2e`): plaintext refusal (415), refusal without an X-PartaGPU-AUTH header (401), refusal of an envelope encrypted with a wrong secret (415/401), full v=2 round-trip against a real localhost server, 404 on unknown cancel.
+- **Unit** (`cargo test --lib crypto::`): v=1 and v=2 round-trip, wrong key, tampered ciphertext, wrong server eph key, rotation grace window, forward secrecy after rotation, JSON round-trip.
+- **Integration** (`cargo test --test peer_api_e2e`): plaintext refusal (415), refusal without an X-PartaGPU-AUTH header (401), refusal of an envelope encrypted with a wrong secret (415/401), full v=2 round-trip against a real localhost server, 404 on unknown cancel, two distinct instances mutually verifying and dispatching to each other.
 
 ---
 
@@ -495,7 +492,7 @@ The form includes a **Workspace files** section: a multi-file picker, plus a lis
 
 The user references a file in the command by basename: e.g. after uploading `train.py`, typing the command `python3 train.py` runs the pushed script.
 
-### DDP Dispatcher (F4, since 1.7.0)
+### DDP Dispatcher (F4)
 
 A second section on the same page, the [`DDPDispatcher`](../src/components/DDPDispatcher.tsx) component, lets you launch a **multi-machine** DDP training without Python. The user:
 1. Ticks the target peers (a numeric field picks how many GPUs to use on each peer, max = `gpu_count` announced via mDNS).
@@ -602,7 +599,7 @@ loop forever:
 
 - **Progress = elapsed/timeout**: no intrinsic "30% of the job" measure is possible for an arbitrary command, so we use the elapsed/timeout ratio, capped at 99% until the task actually reaches a terminal state. Imperfect but visible and useful.
 
-- **GPU per-task** (since 1.7.0): on every monitor tick, `nvidia-smi pmon -c 1 -s u` is run to get per-PID SM utilization. For each task, utilizations are summed over the process tree (bwrap + python + descendants) and fed into `task.gpu_usage`. Falls gracefully to 0 if nvidia-smi is missing or fails, without affecting CPU/RAM tracking.
+- **GPU per-task**: on every monitor tick, `nvidia-smi pmon -c 1 -s u` is run to get per-PID SM utilization. For each task, utilizations are summed over the process tree (bwrap + python + descendants) and fed into `task.gpu_usage`. Falls gracefully to 0 if nvidia-smi is missing or fails, without affecting CPU/RAM tracking.
 
 - **`task_starts` + `task_timeouts`**: two `HashMap<task_id, _>` in `IncomingTasks`, populated in `spawn_execution` when the task transitions to Running, and cleared at the end of the execution thread.
 
@@ -655,7 +652,7 @@ A `setInterval(3000ms)` remains for data that isn't pushed (mDNS peers, global r
 
 ## Task persistence
 
-If the app crashes / is killed / the machine reboots, the `IncomingTasks` / `OutgoingTasks` lists used to be lost. Since 1.6.0, a background thread persists their state every 5 s into `~/.config/partagpu/{incoming,outgoing}-tasks.json` via an atomic write (`.tmp` file + `rename`).
+To survive an app crash / kill / machine reboot, a background thread persists the `IncomingTasks` / `OutgoingTasks` state every 5 s into `~/.config/partagpu/{incoming,outgoing}-tasks.json` via an atomic write (`.tmp` file + `rename`).
 
 On restart, `IncomingTasks::new`:
 1. Loads the JSON if it exists.
@@ -686,10 +683,10 @@ Typical gain on text datasets: 60–90% on JSON/CSV/source code. Useless on alre
 
 ## Per-task cgroup isolation
 
-Before 1.6.0, every received task shared `/sys/fs/cgroup/partagpu/`, which meant one task could OOM its neighbors by consuming the whole RAM quota. Since then, every task gets its own sub-cgroup `/sys/fs/cgroup/partagpu/task-<uuid>/`:
+Every received task runs in its own sub-cgroup `/sys/fs/cgroup/partagpu/task-<uuid>/` so one task that saturates RAM cannot OOM its neighbors:
 
-1. At boot, the privileged helper (`partagpu-helper setup-cgroup`) initializes `/sys/fs/cgroup/partagpu/` with `subtree_control = "+cpu +memory"` and chowns the dir to `partagpu:partagpu` so the user can create sub-cgroups without pkexec.
-2. On every `Sandbox::execute`, we create the `task-<uuid>` sub-dir, duplicate the parent limits (`cpu.max`, `memory.max`), launch `bwrap` with `--cgroup-bind`, wait for the end, then remove the sub-dir.
+1. At boot, the privileged helper (`partagpu-helper setup-cgroup`) initializes `/sys/fs/cgroup/partagpu/` with `subtree_control = "+cpu +memory +pids"` and chowns the dir to `partagpu:partagpu` so the user can create sub-cgroups without pkexec.
+2. On every `Sandbox::execute`, we create the `task-<uuid>` sub-dir, duplicate the parent limits (`cpu.max`, `memory.max`, `pids.max`), launch `bwrap` with `--cgroup-bind`, wait for the end, then remove the sub-dir.
 3. If sub-cgroup creation fails (kernel without cgroup v2, missing rights), we fall back to the parent cgroup — degraded but functional.
 
 Current limit: no **sub-allocation** of limits (each sub-cgroup inherits 100% of the parent). As long as `max_concurrent` stays small (4 by default), it's not an issue in practice.
@@ -778,7 +775,7 @@ Announced properties:
 - `gpu_count` (number of detected CUDA devices)
 - `eph_pk` (ephemeral X25519 pubkey for v=2 forward-secret encryption, regenerated at every app start and rotated every 10 minutes)
 
-No `auth_proof` since 1.10.0 — verification moved to an active challenge-response on `/peer/v1/verify` so no HMAC tag is broadcast in clear over the LAN.
+No auth proof is broadcast in mDNS — verification is the active challenge-response on `/peer/v1/verify` (see *Peer verification*).
 
 The browser (`Discovery::start_browsing`) consumes `ServiceResolved` / `ServiceRemoved` events and applies:
 - **Per-peer rate limiting**: 1 update / 2 s (anti-flood)

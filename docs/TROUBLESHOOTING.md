@@ -61,7 +61,7 @@ Vérifier dans l'ordre :
 
 Le challenge HMAC actif sur `/peer/v1/verify` n'a pas répondu correctement. Causes :
 - **Pas dans la même salle** : différentes passphrases → `auth_key` différentes → HMAC du verify ne match pas. *Quitter la salle* sur l'un, la rejoindre avec le bon code.
-- **Pair sur une version trop ancienne** : `< 1.10.0` n'expose pas `/peer/v1/verify` (auth via mDNS `auth_proof` jusqu'à 1.9.x) — tous les pairs doivent tourner 1.10.0+.
+- **Versions de PartaGPU incohérentes** : tous les pairs d'une salle doivent tourner la même version majeure de PartaGPU. Vérifier le badge de version dans le header de l'app sur chaque machine.
 - **Probe timeout (3 s)** : pare-feu qui bloque le port 7655, peer trop loin sur le LAN, ou app du peer en train de démarrer. La re-vérification automatique a lieu toutes les 60 s, attendre une minute.
 
 Pour le décalage d'horloge : il n'affecte pas la vérification `/verify` (qui se base sur un nonce, pas une fenêtre de temps), mais il bloque les dispatchs (HTTP `X-PartaGPU-AUTH` = ±30 s anti-replay). Activer NTP partout reste recommandé :
@@ -115,8 +115,8 @@ Soit la salle ne correspond pas (mauvaise `auth_key`), soit décalage d'horloge 
 
 ### `HTTP 415 Unsupported Media Type` côté pair
 
-Depuis la 1.6.0, tous les bodies entre pairs sont chiffrés (AES-256-GCM). Le pair récepteur retourne 415 si :
-- Le client est en `< 1.6.0` (envoie en clair) → upgrade le client.
+Tous les bodies entre pairs sont chiffrés (AES-256-GCM). Le pair récepteur retourne 415 si :
+- Le client envoie le body en clair → vérifier les versions de PartaGPU sur les deux machines.
 - Le Content-Type n'est pas `application/x-partagpu-encrypted-v1`.
 - Le pair est dans une autre salle (le HMAC du header passe par hasard avec la mauvaise clé : ~impossible ; mais l'`auth_key` étant dérivée du même secret que la `room_key`, en pratique un mismatch `auth_key` → 401 avant même d'arriver au 415).
 
@@ -128,7 +128,7 @@ L'allowlist du pair ne contient pas la commande. Sur la machine du pair : UI →
 
 ### Le sandbox plante avec `Permission non accordée (os error 13)`
 
-Bug fixé en `1.1.0+`. `git pull && npm run tauri:dev` côté pair pour mettre à jour. Cause : ancienne version créait le workspace dans `/var/lib/partagpu` (mode 700, owned par partagpu) au lieu de `/tmp` writable par l'app.
+PartaGPU côté pair est désuet — `git pull && npm run tauri:dev` sur le pair pour mettre à jour. Le workspace doit être créé sous `/tmp` (writable par l'app), pas sous `/var/lib/partagpu` (mode 700, owned par `partagpu`).
 
 ### Une tâche reste en `Queued` indéfiniment
 
@@ -255,9 +255,9 @@ t.start()
 partagpu.cancel("ma-tache-de-test")
 ```
 
-### `distribute()` : pourquoi mes rangs traînent quand un plante ?
+### `distribute()` : annulation automatique en cascade quand un rang plante
 
-Bug fixé en `1.4.0+`. Avant : si rang 0 mourait, les autres restaient bloqués sur `init_process_group` ou un `all-reduce` jusqu'au timeout NCCL (~30 min). Maintenant : `distribute()` cancel automatiquement les rangs encore en cours dès qu'un échoue. `git pull` côté machine de lancement pour récupérer le fix.
+Si un rang meurt en cours d'entraînement DDP, les autres restent en théorie bloqués sur `init_process_group` ou un `all-reduce` jusqu'au timeout NCCL (~30 min). `distribute()` détecte le premier rang qui échoue et **annule automatiquement** tous les autres dans la foulée, pour qu'aucune machine ne reste à attendre dans le vide.
 
 ### Une tâche est marquée `Cancelled` côté UI mais semble continuer
 

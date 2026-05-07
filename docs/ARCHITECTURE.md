@@ -119,7 +119,7 @@ Pourquoi un serveur séparé du 7654 ? Parce que 7654 est **loopback** (sécurit
 
 ## Authentification HMAC entre pairs
 
-Le système est **partagé-secret** : tous les membres d'une salle dérivent les mêmes clés à partir de la passphrase de 4 mots. Depuis 1.9.0 l'auth s'appuie sur HMAC-SHA256 (avant : TOTP RFC 6238 — la migration retire les deps `totp-rs` / `base32` et lie l'auth HTTP au corps de la requête, pas seulement à un timestamp).
+Le système est **partagé-secret** : tous les membres d'une salle dérivent les mêmes clés à partir de la passphrase de 4 mots. L'auth s'appuie sur HMAC-SHA256 lié au corps de la requête (méthode + chemin + sha256(body) + timestamp), pas seulement à un timestamp — un header capté ne peut pas être rejoué sur une requête différente.
 
 ### Flux de création de salle
 
@@ -130,11 +130,9 @@ Le système est **partagé-secret** : tous les membres d'une salle dérivent les
 5. Le secret est sauvegardé en `~/.config/partagpu/room.json` (mode 0600)
 6. À chaque chargement, l'`auth_key` (32 octets) est dérivée via `PBKDF2-HMAC-SHA256(secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000)` — slow KDF anti-bruteforce (~100 ms en release), distincte de la `room_key` AES qui reste sur HKDF-SHA256
 
-### Vérification active des pairs (depuis 1.10.0)
+### Vérification des pairs
 
-Plutôt que de broadcaster un tag HMAC périodique en TXT mDNS (l'ancien `auth_proof` jusqu'à 1.9.x, qui leakait 32 bits par fenêtre de 30 s — brute-forceable offline), chaque pair vérifié activement quand on le découvre.
-
-`Discovery` lance un thread par nouveau pair vu sur mDNS qui :
+Aucun tag HMAC n'est broadcasté en mDNS — la vérification se fait par challenge-response actif sur HTTP. `Discovery` lance un thread par nouveau pair vu sur mDNS qui :
 1. Génère un nonce aléatoire de 16 octets
 2. `GET http://<peer_ip>:7655/peer/v1/verify?nonce=<hex>`
 3. Le pair (s'il est dans une salle) répond `{"hmac": "<HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes) hex>"}`
@@ -173,8 +171,8 @@ Le format wire évolue par version. Le serveur accepte les deux ; le client pré
 
 | Version | Clé AES dérivée de | Forward secrecy | Quand |
 |---|---|---|---|
-| **v=1** | HKDF(room_secret) seul | non | rétro-compat avec un pair qui n'a pas encore publié sa pubkey éphémère |
-| **v=2** | HKDF(room_secret \|\| ECDH(client_eph, server_eph)) | **oui** (10 min, cf. rotation) | par défaut depuis 1.7.0 |
+| **v=1** | HKDF(room_secret) seul | non | fallback quand le pair n'a pas encore publié sa pubkey éphémère |
+| **v=2** | HKDF(room_secret \|\| ECDH(client_eph, server_eph)) | **oui** (10 min, cf. rotation) | par défaut |
 
 ### Dérivation de la clé v=1 (fallback)
 
@@ -261,12 +259,11 @@ Les erreurs (4xx, 5xx) restent en clair parce que le client peut ne pas avoir la
 ### Hors scope
 
 - **Protection contre un membre de la salle** : par construction, tout pair dans la salle a la clé de salle. Le modèle de menace est "attaquant LAN qui n'est PAS dans la salle".
-- **Compatibilité ascendante** : avant `1.6.0`, les bodies passaient en clair. Les pairs en `< 1.6.0` ne peuvent plus parler à des pairs en `>= 1.6.0` (upgrade simultané requis). Entre `1.6.0` et `1.7.0`, les enveloppes v=1 restent acceptées par le serveur.
 
 ### Tests
 
-- **Unitaires** (8 tests, `cargo test --lib crypto::`) : round-trip v=1 et v=2, mauvaise clé, ciphertext altéré, mauvaise clé éphémère serveur, rotation grace window, forward secrecy après rotation, JSON round-trip.
-- **Intégration** (5 tests, `cargo test --test peer_api_e2e`) : rejet du plaintext (415), rejet sans header `X-PartaGPU-AUTH` (401), rejet d'un header HMAC signé avec un mauvais secret (401), round-trip v=2 complet contre un vrai serveur localhost, 404 sur cancel inconnu.
+- **Unitaires** (`cargo test --lib crypto::`) : round-trip v=1 et v=2, mauvaise clé, ciphertext altéré, mauvaise clé éphémère serveur, rotation grace window, forward secrecy après rotation, JSON round-trip.
+- **Intégration** (`cargo test --test peer_api_e2e`) : rejet du plaintext (415), rejet sans header `X-PartaGPU-AUTH` (401), rejet d'un header HMAC signé avec un mauvais secret (401), round-trip v=2 complet contre un vrai serveur localhost, 404 sur cancel inconnu, deux instances distinctes qui se vérifient mutuellement et dispatchent l'une vers l'autre.
 
 ---
 
@@ -496,7 +493,7 @@ Le formulaire inclut une section **Fichiers du workspace** : un file picker mult
 
 Le user référence un fichier dans la commande par son nom de base : par ex. après upload de `train.py`, taper la commande `python3 train.py` lance le script poussé.
 
-### DDP Dispatcher (F4, depuis 1.7.0)
+### DDP Dispatcher (F4)
 
 Une seconde section sur la même page, le composant [`DDPDispatcher`](../src/components/DDPDispatcher.tsx), permet de lancer un entraînement DDP **multi-machines** sans passer par Python. L'utilisateur :
 1. Coche les pairs cibles (un champ numérique permet de choisir combien de GPU utiliser sur chaque pair, max = `gpu_count` annoncé en mDNS).
@@ -603,7 +600,7 @@ loop forever:
 
 - **Progression = elapsed/timeout** : pas de mesure intrinsèque "30% du job" possible pour une commande arbitraire ; on utilise donc le ratio temps écoulé / timeout, capé à 99 % jusqu'à ce que la tâche atteigne réellement un état terminal. Approximation imparfaite mais visible et utile.
 
-- **GPU per-task** (depuis 1.7.0) : à chaque tick de monitor, on lance `nvidia-smi pmon -c 1 -s u` pour obtenir la SM-utilization par PID. Pour chaque tâche, on somme les utilisations sur l'arbre de processus (bwrap + python + descendants) et on alimente `task.gpu_usage`. Tombe gracieusement à 0 si nvidia-smi est absent ou échoue, sans affecter le suivi CPU/RAM.
+- **GPU per-task** : à chaque tick de monitor, on lance `nvidia-smi pmon -c 1 -s u` pour obtenir la SM-utilization par PID. Pour chaque tâche, on somme les utilisations sur l'arbre de processus (bwrap + python + descendants) et on alimente `task.gpu_usage`. Tombe gracieusement à 0 si nvidia-smi est absent ou échoue, sans affecter le suivi CPU/RAM.
 
 - **`task_starts` + `task_timeouts`** : deux maps `HashMap<task_id, _>` dans `IncomingTasks`, peuplées dans `spawn_execution` quand la tâche transitionne en Running, et nettoyées à la fin du thread d'exécution.
 
@@ -687,10 +684,10 @@ Gain typique sur des datasets texte : 60–90 % sur du JSON / CSV / code source.
 
 ## Per-task cgroup isolation
 
-Avant 1.6.0, toutes les tâches reçues partageaient `/sys/fs/cgroup/partagpu/`, ce qui voulait dire qu'une tâche pouvait OOM les voisines en consommant tout le quota RAM. Depuis, chaque tâche reçoit son propre sous-cgroup `/sys/fs/cgroup/partagpu/task-<uuid>/` :
+Chaque tâche reçue tourne dans son propre sous-cgroup `/sys/fs/cgroup/partagpu/task-<uuid>/` pour qu'une tâche qui sature la RAM ne fasse pas OOM ses voisines.
 
-1. Au boot, le helper privilégié (`partagpu-helper setup-cgroup`) initialise `/sys/fs/cgroup/partagpu/` avec `subtree_control = "+cpu +memory"` et chowne le dossier en `partagpu:partagpu` pour permettre la création de sous-cgroups par l'utilisateur sans pkexec.
-2. À chaque `Sandbox::execute`, on crée le sous-dir `task-<uuid>`, on duplique les limites parentes (`cpu.max`, `memory.max`), on lance `bwrap` avec `--cgroup-bind`, on attend la fin, on supprime le sous-dir.
+1. Au boot, le helper privilégié (`partagpu-helper setup-cgroup`) initialise `/sys/fs/cgroup/partagpu/` avec `subtree_control = "+cpu +memory +pids"` et chowne le dossier en `partagpu:partagpu` pour permettre la création de sous-cgroups par l'utilisateur sans pkexec.
+2. À chaque `Sandbox::execute`, on crée le sous-dir `task-<uuid>`, on duplique les limites parentes (`cpu.max`, `memory.max`, `pids.max`), on lance `bwrap` avec `--cgroup-bind`, on attend la fin, on supprime le sous-dir.
 3. Si la création du sous-cgroup échoue (kernel sans cgroup v2, droits manquants), on fallback sur le cgroup parent — comportement dégradé mais fonctionnel.
 
 Limite actuelle : pas de **sub-allocation** des limites (chaque sous-cgroup hérite de 100 % du parent). Tant que `max_concurrent` reste petit (4 par défaut), ça ne pose pas de problème en pratique.
@@ -750,7 +747,7 @@ Quand `bwrap` lance une tâche, il :
 2. **Override `PATH`** : `/opt/partagpu-venv/bin:/usr/local/bin:/usr/bin:/bin`. Les arguments de la tâche qui invoquent `python3` (basename, pas chemin absolu) sont résolus via PATH → ils trouvent le binaire du venv en premier.
 3. **Force `PYTHONUNBUFFERED=1`** dans l'env (utile pour le streaming, cf. section précédente).
 
-Si le venv n'est pas installé, le sandbox tombe sur le `python3` système comme avant — comportement rétro-compatible. Les utilisateurs qui ont déjà installé torch en system Python continuent de l'utiliser.
+Si le venv n'est pas installé, le sandbox utilise le `python3` système. Les utilisateurs qui ont déjà installé torch en Python système continuent de l'utiliser.
 
 ### Pourquoi un venv plutôt que `pip install --break-system-packages` automatique
 
@@ -779,7 +776,7 @@ Properties annoncées :
 - `gpu_count` (nombre de CUDA devices détectés)
 - `eph_pk` (pubkey X25519 éphémère pour le chiffrement v=2 forward-secret, regénérée à chaque démarrage et tournée toutes les 10 min)
 
-Pas d'`auth_proof` depuis 1.10.0 — la vérification est passée en challenge-response actif sur `/peer/v1/verify` pour ne plus broadcaster de tag HMAC en clair sur le LAN.
+Aucune preuve d'auth n'est diffusée en mDNS — la vérification se fait via le challenge-response actif sur `/peer/v1/verify` (cf. *Vérification des pairs*).
 
 Le browser (`Discovery::start_browsing`) consomme les events `ServiceResolved` / `ServiceRemoved`, applique :
 - **Rate limiting** par pair : 1 update / 2 s (anti-flood)

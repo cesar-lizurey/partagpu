@@ -408,8 +408,8 @@ Les ajustements de sliders, la consultation du statut, et le monitoring **n'appe
 ## Sécurité
 
 - **Authentification par salle** : un code d'accès de 4 mots génère un secret partagé d'où sont dérivées une `room_key` AES et une `auth_key` HMAC. Chaque requête entre pairs porte un header `X-PartaGPU-AUTH: <ts>:<HMAC>` qui lie l'auth au corps de la requête + un timestamp dans une fenêtre de 30 s (anti-replay). Les postes non vérifiés sont clairement identifiés.
-- **Chiffrement pair-à-pair** (depuis 1.6.0) : les bodies HTTP entre pairs (port 7655) sont chiffrés en AES-256-GCM avec une clé HKDF dérivée du secret de salle. Confidentialité + intégrité contre l'écoute LAN passive. Tous les pairs doivent être en `>= 1.6.0`.
-- **Forward secrecy** (depuis 1.7.0) : la clé AES est désormais dérivée d'un échange Diffie-Hellman X25519 éphémère par requête. La clé éphémère du serveur reste **uniquement en RAM**, est regénérée à chaque démarrage et tournée toutes les 10 minutes. Un attaquant qui capture le trafic puis obtient la passphrase plus tard ne peut plus déchiffrer les sessions de plus de 10 minutes.
+- **Chiffrement pair-à-pair** : les bodies HTTP entre pairs (port 7655) sont chiffrés en AES-256-GCM. Confidentialité + intégrité contre l'écoute LAN passive.
+- **Forward secrecy** : la clé AES est dérivée d'un échange Diffie-Hellman X25519 éphémère par requête. La clé éphémère du serveur reste **uniquement en RAM**, est regénérée à chaque démarrage et tournée toutes les 10 minutes. Un attaquant qui capture le trafic puis obtient la passphrase plus tard ne peut plus déchiffrer les sessions de plus de 10 minutes.
 - **Isolation** : le compte `partagpu` est dédié au partage, il n'a pas accès aux fichiers personnels des autres utilisateurs
 - **Cgroups v2** : les tâches ne peuvent pas dépasser les limites CPU/RAM définies par les sliders
 - **PolicyKit** : les opérations root passent par `pkexec` avec une règle explicite, pas de sudo en dur. Le mot de passe transite par stdin, jamais en argument CLI.
