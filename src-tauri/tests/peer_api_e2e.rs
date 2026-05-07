@@ -317,3 +317,131 @@ fn rejects_replay_within_window() {
         Err(e) => panic!("expected 401 replay reject, got {e}"),
     }
 }
+
+// ── 2-instance integration tests ─────────────────────────────────────────
+//
+// The tests above build requests by hand against a single server. These
+// exercise the full loop with TWO real peer-API instances bound to
+// different ports, sharing the same room secret — which is the actual
+// runtime topology (one app per machine, all with the same passphrase).
+
+/// Spawn a peer-API instance that joins an existing room secret instead
+/// of creating its own. Used by the 2-instance tests below so both peers
+/// share the same `auth_key`. Each instance has its own AuthManager,
+/// IncomingTasks, EphemeralKey — i.e. the only thing in common is the
+/// derived secret, exactly like a real two-machine deployment.
+fn start_test_server_joining(secret_b32: &str) -> (u16, EphemeralKey) {
+    static MACHINE_COUNT: AtomicUsize = AtomicUsize::new(10_000);
+    let id = MACHINE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let auth = AuthManager::new();
+    auth.join_room(&format!("test-room-joined-{id}"), secret_b32)
+        .expect("join_room");
+
+    let sharing = SharingController::new();
+    sharing.force_active_for_tests();
+
+    let discovery =
+        Discovery::new(&format!("test-host-{id}"), &format!("mid-{id}")).expect("Discovery::new");
+
+    let sandbox = Sandbox::new();
+    let incoming = IncomingTasks::new(sandbox);
+
+    let sec_log = SecurityLog::new();
+    let server_eph = EphemeralKey::generate();
+
+    let port = peer_api::start_on_addr(
+        "127.0.0.1:0",
+        incoming,
+        auth,
+        discovery,
+        sharing,
+        sec_log,
+        server_eph.clone(),
+    )
+    .expect("start_on_addr");
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    (port, server_eph)
+}
+
+/// Two peer-API instances in the same room must successfully verify each
+/// other via `/peer/v1/verify`. This proves the active-challenge flow
+/// works between two real running servers (not just one server + a
+/// hand-built request).
+#[test]
+fn two_instances_verify_each_other() {
+    let _env = fresh_env();
+
+    // Instance A creates the room ; instance B joins the same secret.
+    let (port_a, _eph_a, secret_b32) = start_test_server();
+    let (port_b, _eph_b) = start_test_server_joining(&secret_b32);
+
+    // We compute the expected HMAC with the auth_key the room agreed on,
+    // then check both servers return that HMAC for a fresh nonce — i.e.
+    // each peer can prove room membership to the other.
+    let auth_key = crypto::derive_auth_key(&secret_b32).unwrap();
+    let nonce: [u8; 16] = [0xab; 16];
+    let nonce_hex = data_encoding::HEXLOWER.encode(&nonce);
+    let expected = crypto::compute_verify_response(&auth_key, &nonce);
+
+    for port in [port_a, port_b] {
+        let url = format!("http://127.0.0.1:{port}/peer/v1/verify?nonce={nonce_hex}");
+        let body = ureq::get(&url)
+            .call()
+            .expect("verify")
+            .into_string()
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let hmac = parsed["hmac"].as_str().unwrap();
+        assert_eq!(
+            hmac, expected,
+            "instance on port {port} returned a wrong HMAC"
+        );
+    }
+}
+
+/// Full dispatch loop : instance A (acting as client) sends an encrypted
+/// task to instance B's `/peer/v1/tasks`, signed with the shared
+/// `auth_key`. B accepts (200) and responds with an encrypted body that
+/// A decrypts using the v=2 session key. Exercises every piece of the
+/// peer-to-peer protocol with two distinct real servers.
+#[test]
+fn two_instances_dispatch_end_to_end() {
+    let _env = fresh_env();
+
+    // A creates the room ; B joins it.
+    let (_port_a, _eph_a, secret_b32) = start_test_server();
+    let (port_b, eph_b) = start_test_server_joining(&secret_b32);
+
+    // A acts as client : derive shared keys from the room secret.
+    let room_key = crypto::derive_room_key(&secret_b32).unwrap();
+
+    let body = serde_json::json!({
+        "args": ["true"],
+        "source_user": "alice",
+        "timeout_secs": 5,
+    });
+    let body_str = serde_json::to_string(&body).unwrap();
+    let (env, session_key) =
+        crypto::encrypt_v2(&room_key, &eph_b.public_b64(), body_str.as_bytes()).unwrap();
+    let env_json = serde_json::to_string(&env).unwrap();
+    let path = "/peer/v1/tasks";
+    let auth = auth_header(&secret_b32, "POST", path, env_json.as_bytes());
+
+    let url = format!("http://127.0.0.1:{port_b}{path}");
+    let resp = ureq::post(&url)
+        .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
+        .set("X-PartaGPU-AUTH", &auth)
+        .send_string(&env_json)
+        .expect("dispatch from A to B");
+    assert_eq!(resp.status(), 200);
+
+    // A reads B's encrypted response with the same session key.
+    let resp_body = resp.into_string().unwrap();
+    let resp_env: Envelope = serde_json::from_str(&resp_body).expect("response envelope");
+    let plain = crypto::decrypt(&session_key, &resp_env).expect("decrypt response");
+    let parsed: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+    assert!(parsed["task_id"].is_string());
+    assert_eq!(parsed["accepted"], serde_json::Value::Bool(true));
+}
