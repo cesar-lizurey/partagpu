@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { useT } from "../lib/i18n";
 
 interface RevealOnHoldProps {
   /** The sensitive value to reveal on hold (e.g. a passphrase). */
@@ -36,6 +37,7 @@ export function RevealOnHold({
   className = "",
   children,
 }: RevealOnHoldProps) {
+  const t = useT();
   const [revealed, setRevealed] = useState(false);
   const display = revealed ? value : mask(value);
 
@@ -52,8 +54,8 @@ export function RevealOnHold({
       <button
         type="button"
         className="reveal-on-hold__btn"
-        title="Maintenez pour afficher"
-        aria-label={revealed ? "Cacher la valeur" : "Maintenir pour afficher la valeur"}
+        title={t("reveal.hold_title")}
+        aria-label={revealed ? t("reveal.aria_hide") : t("reveal.aria_show")}
         aria-pressed={revealed}
         onMouseDown={start}
         onMouseUp={stop}

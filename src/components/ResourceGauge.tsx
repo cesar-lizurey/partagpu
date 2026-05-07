@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useT } from "../lib/i18n";
 
 interface ResourceGaugeProps {
   label: string;
@@ -31,6 +32,7 @@ export function ResourceGauge({
   onLimitChange,
   limitDisabled = false,
 }: ResourceGaugeProps) {
+  const t = useT();
   const clampedPercent = Math.min(100, Math.max(0, percent));
   const color =
     clampedPercent > 80
@@ -66,7 +68,7 @@ export function ResourceGauge({
       ? limitUnit === "Mo"
         ? localLimit > 0
           ? `${localLimit} Mo`
-          : "illimitée"
+          : t("common.unlimited")
         : `${localLimit}${limitUnit}`
       : null;
 
@@ -105,18 +107,19 @@ export function ResourceGauge({
             value={localLimit}
             onChange={(e) => handleChange(Number(e.target.value))}
             disabled={limitDisabled}
-            aria-label={`Limite de partage ${label}`}
+            aria-label={t("gauge.input_aria", { label })}
             title={
               limitDisabled
-                ? "Activez le partage pour ajuster la limite"
-                : "Faites glisser pour ajuster la limite de partage"
+                ? t("gauge.input_disabled_title")
+                : t("gauge.input_drag_title")
             }
           />
         )}
       </div>
       {formattedLimit && (
         <div className="resource-gauge__limit-label">
-          Limite de partage : <strong>{formattedLimit}</strong>
+          {t("gauge.share_limit")}
+          <strong>{formattedLimit}</strong>
         </div>
       )}
     </div>

@@ -4,6 +4,8 @@ import {
   cancelOutgoingTask,
   type Task,
 } from "../lib/api";
+import { useT } from "../lib/i18n";
+import type { MessageKey } from "../lib/messages";
 
 interface TaskListProps {
   tasks: Task[];
@@ -12,25 +14,26 @@ interface TaskListProps {
   onCancelled?: () => void;
 }
 
-const STATUS_LABELS: Record<string, { label: string; className: string }> = {
-  Queued: { label: "En attente", className: "badge--queued" },
-  Running: { label: "En cours", className: "badge--running" },
-  Completed: { label: "Terminée", className: "badge--completed" },
-  Failed: { label: "Échouée", className: "badge--failed" },
-  Cancelled: { label: "Annulée", className: "badge--disabled" },
+const STATUS_INFO: Record<string, { key: MessageKey; className: string }> = {
+  Queued: { key: "task.status_queued", className: "badge--queued" },
+  Running: { key: "task.status_running", className: "badge--running" },
+  Completed: { key: "task.status_completed", className: "badge--completed" },
+  Failed: { key: "task.status_failed", className: "badge--failed" },
+  Cancelled: { key: "task.status_cancelled", className: "badge--disabled" },
 };
 
 const CANCELLABLE = new Set(["Queued", "Running"]);
 
 export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
+  const t = useT();
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   if (tasks.length === 0) {
     return (
       <p className="empty-state">
         {direction === "incoming"
-          ? "Personne n'utilise vos ressources actuellement."
-          : "Vous n'utilisez aucune ressource distante."}
+          ? t("task.empty_incoming")
+          : t("task.empty_outgoing")}
       </p>
     );
   }
@@ -47,7 +50,7 @@ export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("Cancel failed:", err);
-      alert(`Annulation refusée : ${String(err)}`);
+      alert(t("task.cancel_failed", { error: String(err) }));
     } finally {
       setCancellingId(null);
     }
@@ -57,22 +60,21 @@ export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
     <table className="peer-table">
       <thead>
         <tr>
-          <th>Commande</th>
-          <th>{direction === "incoming" ? "Source" : "Cible"}</th>
-          <th>Statut</th>
-          <th>Progression</th>
-          <th>CPU</th>
-          <th>RAM</th>
-          <th>GPU</th>
-          <th>Action</th>
+          <th>{t("task.col_command")}</th>
+          <th>{direction === "incoming" ? t("task.col_source") : t("task.col_target")}</th>
+          <th>{t("task.col_status")}</th>
+          <th>{t("task.col_progress")}</th>
+          <th>{t("peers.col_cpu")}</th>
+          <th>{t("peers.col_ram")}</th>
+          <th>{t("peers.col_gpu")}</th>
+          <th>{t("task.col_action")}</th>
         </tr>
       </thead>
       <tbody>
         {tasks.map((task) => {
-          const statusInfo = STATUS_LABELS[task.status] ?? {
-            label: task.status,
-            className: "",
-          };
+          const info = STATUS_INFO[task.status];
+          const label = info ? t(info.key) : task.status;
+          const className = info?.className ?? "";
           const canCancel = CANCELLABLE.has(task.status);
           const isCancelling = cancellingId === task.id;
           return (
@@ -83,9 +85,9 @@ export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
                   <span
                     className="badge badge--running"
                     style={{ marginLeft: 8, fontSize: "0.75em" }}
-                    title="Sandbox avec accès réseau (DDP rendezvous)"
+                    title={t("task.network_badge_title")}
                   >
-                    réseau
+                    {t("task.network_badge")}
                   </span>
                 ) : null}
               </td>
@@ -95,9 +97,7 @@ export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
                   : task.target_machine}
               </td>
               <td>
-                <span className={`badge ${statusInfo.className}`}>
-                  {statusInfo.label}
-                </span>
+                <span className={`badge ${className}`}>{label}</span>
               </td>
               <td>
                 <div className="progress-bar">
@@ -119,9 +119,9 @@ export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
                     type="button"
                     onClick={() => handleCancel(task.id)}
                     disabled={isCancelling}
-                    title="Arrêter cette tâche"
+                    title={t("task.cancel_title")}
                   >
-                    {isCancelling ? "…" : "Stop"}
+                    {isCancelling ? "…" : t("task.cancel_btn")}
                   </button>
                 ) : (
                   <span style={{ opacity: 0.4 }}>—</span>

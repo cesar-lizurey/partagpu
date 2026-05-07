@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getPeers, getOutgoingTasks } from "../lib/api";
 import type { Peer, Task, TaskStatus } from "../lib/api";
+import { useT } from "../lib/i18n";
 
 const ACTIVE_STATUSES: ReadonlySet<TaskStatus> = new Set(["Queued", "Running"]);
 
@@ -14,6 +15,7 @@ const ACTIVE_STATUSES: ReadonlySet<TaskStatus> = new Set(["Queued", "Running"]);
  *  every classmate is running" view, a `/peer/v1/status` endpoint would
  *  be needed — see TODO.md. */
 export function Fleet() {
+  const t = useT();
   const [peers, setPeers] = useState<Peer[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -84,49 +86,43 @@ export function Fleet() {
 
   return (
     <div className="page">
-      <h2>Vue parc</h2>
-      <p className="page__subtitle">
-        État global de toutes les machines de la salle
-      </p>
+      <h2>{t("fleet.title")}</h2>
+      <p className="page__subtitle">{t("fleet.subtitle")}</p>
 
       {error && <div className="alert alert--error">{error}</div>}
 
       <section className="fleet__summary">
-        <SummaryStat label="Pairs visibles" value={peers.length} />
+        <SummaryStat label={t("fleet.stat_visible")} value={peers.length} />
         <SummaryStat
-          label="Pairs utilisables"
+          label={t("fleet.stat_usable")}
           value={usable.length}
-          hint="Auth OK + Partage Actif"
+          hint={t("fleet.stat_usable_hint")}
         />
         <SummaryStat
-          label="GPU dans la salle"
+          label={t("fleet.stat_gpus")}
           value={totalGpus}
-          hint="Somme sur les pairs utilisables"
+          hint={t("fleet.stat_gpus_hint")}
         />
         <SummaryStat
-          label="Mes tâches actives"
+          label={t("fleet.stat_my_tasks")}
           value={myActiveTasks.length}
         />
         <SummaryStat
-          label="CPU total (mes tâches)"
+          label={t("fleet.stat_cpu_total")}
           value={`${myCpuSum.toFixed(0)} %`}
         />
         <SummaryStat
-          label="RAM totale"
+          label={t("fleet.stat_ram_total")}
           value={`${myRamSum} Mo`}
         />
         <SummaryStat
-          label="GPU total"
+          label={t("fleet.stat_gpu_total")}
           value={`${myGpuSum.toFixed(0)} %`}
         />
       </section>
 
       {peers.length === 0 ? (
-        <p className="empty-state">
-          Aucun pair détecté pour l'instant. Vérifiez que d'autres machines
-          tournent PartaGPU sur le même sous-réseau et qu'elles ont rejoint
-          la même salle.
-        </p>
+        <p className="empty-state">{t("fleet.empty")}</p>
       ) : (
         <div className="fleet__grid">
           {sortedPeers.map((peer) => {
@@ -142,10 +138,11 @@ export function Fleet() {
       )}
 
       <p className="section__hint">
-        Cette vue montre ce que <strong>vous</strong> exécutez sur chaque
-        pair. Pour savoir ce que d'autres classmates dispatchent sur eux,
-        une route <code>/peer/v1/status</code> agrégée serait nécessaire —
-        cf. TODO.md.
+        {t("fleet.note_p1")}
+        <strong>{t("fleet.note_p2")}</strong>
+        {t("fleet.note_p3")}
+        <code>/peer/v1/status</code>
+        {t("fleet.note_p4")}
       </p>
     </div>
   );
@@ -170,11 +167,12 @@ function SummaryStat({
 }
 
 function PeerCard({ peer, myTasks }: { peer: Peer; myTasks: Task[] }) {
+  const t = useT();
   const usable = peer.verified && peer.sharing_enabled;
   const ramLimit =
     peer.ram_limit > 0
       ? `${Math.round(peer.ram_limit)} Mo`
-      : "illimitée";
+      : t("common.unlimited");
 
   return (
     <div className={`peer-card ${usable ? "" : "peer-card--unusable"}`}>
@@ -189,15 +187,19 @@ function PeerCard({ peer, myTasks }: { peer: Peer; myTasks: Task[] }) {
         <span
           className={`badge ${peer.verified ? "badge--ok" : "badge--warn"}`}
         >
-          Auth : {peer.verified ? "OK" : "?"}
+          {t("fleet.peer_auth_label")}
+          {peer.verified ? t("fleet.peer_auth_ok") : t("fleet.peer_auth_unknown")}
         </span>
         <span
           className={`badge ${peer.sharing_enabled ? "badge--ok" : "badge--off"}`}
         >
-          Partage : {peer.sharing_enabled ? "Actif" : "—"}
+          {t("fleet.peer_sharing_label")}
+          {peer.sharing_enabled
+            ? t("fleet.peer_sharing_active")
+            : t("fleet.peer_sharing_inactive")}
         </span>
         {peer.hostname_conflict && (
-          <span className="badge badge--alert">conflit hostname</span>
+          <span className="badge badge--alert">{t("fleet.peer_conflict")}</span>
         )}
       </div>
 
@@ -206,7 +208,7 @@ function PeerCard({ peer, myTasks }: { peer: Peer; myTasks: Task[] }) {
           <dt>GPU</dt>
           <dd>
             {peer.gpu_count ?? 0} ×<br />
-            <small>limite {Math.round(peer.gpu_limit)} %</small>
+            <small>{t("fleet.peer_gpu_limit", { n: Math.round(peer.gpu_limit) })}</small>
           </dd>
         </div>
         <div>
@@ -220,19 +222,19 @@ function PeerCard({ peer, myTasks }: { peer: Peer; myTasks: Task[] }) {
       </dl>
 
       <div className="peer-card__tasks">
-        <strong>Mes tâches ici : {myTasks.length}</strong>
+        <strong>{t("fleet.peer_my_tasks", { n: myTasks.length })}</strong>
         {myTasks.length === 0 ? (
           <span className="peer-card__idle">
-            {usable ? "Disponible" : "Indisponible"}
+            {usable ? t("fleet.peer_available") : t("fleet.peer_unavailable")}
           </span>
         ) : (
           <ul className="peer-card__task-list">
-            {myTasks.map((t) => (
-              <li key={t.id}>
-                <span className="peer-card__task-cmd">{truncate(t.command, 50)}</span>
+            {myTasks.map((task) => (
+              <li key={task.id}>
+                <span className="peer-card__task-cmd">{truncate(task.command, 50)}</span>
                 <span className="peer-card__task-metrics">
-                  {t.cpu_usage.toFixed(0)} % CPU · {t.ram_usage_mb} Mo ·{" "}
-                  {t.gpu_usage.toFixed(0)} % GPU
+                  {task.cpu_usage.toFixed(0)} % CPU · {task.ram_usage_mb} Mo ·{" "}
+                  {task.gpu_usage.toFixed(0)} % GPU
                 </span>
               </li>
             ))}

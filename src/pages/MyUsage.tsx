@@ -7,8 +7,10 @@ import { DDPDispatcher } from "../components/DDPDispatcher";
 import { getPeers, getOutgoingTasks } from "../lib/api";
 import { useTaskCompletionNotifications } from "../lib/notifications";
 import type { Peer, Task } from "../lib/api";
+import { useT } from "../lib/i18n";
 
 export function MyUsage() {
+  const t = useT();
   const [peers, setPeers] = useState<Peer[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -65,38 +67,37 @@ export function MyUsage() {
 
   return (
     <div className="page">
-      <h2>Mon utilisation</h2>
-      <p className="page__subtitle">
-        Ce que j'utilise sur les autres machines du réseau
-      </p>
+      <h2>{t("myusage.title")}</h2>
+      <p className="page__subtitle">{t("myusage.subtitle")}</p>
 
       {error && <div className="alert alert--error">{error}</div>}
 
       <section className="section">
-        <h3>Machines détectées</h3>
+        <h3>{t("myusage.peers_section")}</h3>
         <p className="section__hint">
-          Vous pouvez utiliser les machines à la fois{" "}
-          <strong>Auth : OK</strong> (dans votre salle) et{" "}
-          <strong>Partage : Actif</strong>. Les machines non vérifiées
-          (Auth : <strong>?</strong>) sont dans une autre salle ou aucune —
-          vous ne pourrez pas leur dispatcher de tâches même si elles
-          partagent. Triées : utilisables d'abord, puis le reste.
+          {t("myusage.peers_hint_p1")}
+          <strong>{t("myusage.peers_hint_authok")}</strong>
+          {t("myusage.peers_hint_p2")}
+          <strong>{t("myusage.peers_hint_active")}</strong>
+          {t("myusage.peers_hint_p3")}
+          <strong>{t("myusage.peers_hint_qmark")}</strong>
+          {t("myusage.peers_hint_p4")}
         </p>
         <PeerTable peers={sortedPeers} />
       </section>
 
       <section className="section">
-        <h3>Lancer une commande sur un pair</h3>
+        <h3>{t("myusage.command_section")}</h3>
         <TaskDispatcher peers={peers} onDispatched={refresh} />
       </section>
 
       <section className="section">
-        <h3>Entraînement DDP multi-machines</h3>
+        <h3>{t("myusage.ddp_section")}</h3>
         <DDPDispatcher peers={peers} />
       </section>
 
       <section className="section">
-        <h3>Mes tâches en cours</h3>
+        <h3>{t("myusage.tasks_section")}</h3>
         <TaskList tasks={tasks} direction="outgoing" onCancelled={refresh} />
       </section>
     </div>

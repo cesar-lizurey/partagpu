@@ -5,6 +5,7 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import type { Task, TaskStatus } from "./api";
+import { useT } from "./i18n";
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set([
   "Completed",
@@ -51,6 +52,7 @@ async function notify({ title, body }: NotifyParams): Promise<void> {
  *  a previous render, so the initial fetch (which may include historical
  *  Completed tasks) doesn't spam the user. */
 export function useTaskCompletionNotifications(tasks: Task[]): void {
+  const t = useT();
   // Map<task_id, last seen status>. Persists across renders.
   const prevStatuses = useRef<Map<string, TaskStatus>>(new Map());
 
@@ -69,7 +71,7 @@ export function useTaskCompletionNotifications(tasks: Task[]): void {
           ? task.command.slice(0, 60) + "…"
           : task.command;
         notify({
-          title: titleFor(task),
+          title: titleFor(task, t),
           body: `${task.target_machine} — ${cmd}`,
         });
       }
@@ -80,18 +82,20 @@ export function useTaskCompletionNotifications(tasks: Task[]): void {
     for (const id of [...prev.keys()]) {
       if (!live.has(id)) prev.delete(id);
     }
-  }, [tasks]);
+  }, [tasks, t]);
 }
 
-function titleFor(task: Task): string {
+function titleFor(task: Task, t: ReturnType<typeof useT>): string {
   switch (task.status) {
     case "Completed":
-      return "✅ Tâche terminée";
+      return t("notify.completed");
     case "Failed":
-      return `❌ Tâche échouée${task.exit_code != null ? ` (exit ${task.exit_code})` : ""}`;
+      return task.exit_code != null
+        ? t("notify.failed_with_exit", { code: task.exit_code })
+        : t("notify.failed");
     case "Cancelled":
-      return "⏹ Tâche annulée";
+      return t("notify.cancelled");
     default:
-      return "Tâche terminée";
+      return t("notify.completed");
   }
 }

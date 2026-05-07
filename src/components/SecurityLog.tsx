@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { getSecurityLog, clearSecurityLog } from "../lib/api";
 import type { SecurityEvent } from "../lib/api";
+import { useI18n } from "../lib/i18n";
+import type { MessageKey } from "../lib/messages";
 
 const LEVEL_CLASS: Record<string, string> = {
   Info: "seclog__level--info",
@@ -8,9 +10,15 @@ const LEVEL_CLASS: Record<string, string> = {
   Alert: "seclog__level--alert",
 };
 
-function formatTime(timestamp: number): string {
+const LEVEL_KEY: Record<string, MessageKey> = {
+  Info: "seclog.level_info",
+  Warning: "seclog.level_warning",
+  Alert: "seclog.level_alert",
+};
+
+function formatTime(timestamp: number, lang: "fr" | "en"): string {
   const d = new Date(timestamp * 1000);
-  return d.toLocaleTimeString("fr-FR", {
+  return d.toLocaleTimeString(lang === "fr" ? "fr-FR" : "en-GB", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -18,6 +26,7 @@ function formatTime(timestamp: number): string {
 }
 
 export function SecurityLogPanel() {
+  const { t, lang } = useI18n();
   const [events, setEvents] = useState<SecurityEvent[]>([]);
   const [expanded, setExpanded] = useState(false);
 
@@ -48,7 +57,7 @@ export function SecurityLogPanel() {
     <div className="seclog">
       <div className="seclog__header" onClick={() => setExpanded(!expanded)}>
         <span className="seclog__title">
-          Journal de sécurité
+          {t("seclog.title")}
           {alertCount > 0 && (
             <span className="seclog__badge seclog__badge--alert">
               {alertCount}
@@ -65,26 +74,26 @@ export function SecurityLogPanel() {
             </span>
           )}
         </span>
-        <span className="seclog__toggle">{expanded ? "Masquer" : "Afficher"}</span>
+        <span className="seclog__toggle">{expanded ? t("seclog.hide") : t("seclog.show")}</span>
       </div>
 
       {expanded && (
         <div className="seclog__body">
           {events.length === 0 ? (
-            <p className="empty-state">Aucun événement enregistré.</p>
+            <p className="empty-state">{t("seclog.empty")}</p>
           ) : (
             <>
               <div className="seclog__actions">
                 <button className="btn btn--secondary btn--small" onClick={handleClear}>
-                  Effacer le journal
+                  {t("seclog.clear")}
                 </button>
               </div>
               <div className="seclog__list">
                 {[...events].reverse().map((evt, i) => (
                   <div key={i} className="seclog__event">
-                    <span className="seclog__time">{formatTime(evt.timestamp)}</span>
+                    <span className="seclog__time">{formatTime(evt.timestamp, lang)}</span>
                     <span className={`seclog__level ${LEVEL_CLASS[evt.level] || ""}`}>
-                      {evt.level === "Info" ? "INFO" : evt.level === "Warning" ? "WARN" : "ALERTE"}
+                      {t(LEVEL_KEY[evt.level] ?? "seclog.level_info")}
                     </span>
                     <span className="seclog__message">{evt.message}</span>
                     {evt.source_ip && (

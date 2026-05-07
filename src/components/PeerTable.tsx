@@ -1,4 +1,5 @@
 import type { Peer } from "../lib/api";
+import { useT } from "../lib/i18n";
 
 interface PeerTableProps {
   peers: Peer[];
@@ -18,34 +19,33 @@ function rowClass(peer: Peer): string {
   return "";
 }
 
-function authBadge(peer: Peer) {
-  if (peer.hostname_conflict) {
-    return (
-      <span className="badge badge--failed" title="Conflit de hostname — possible usurpation">
-        !!
-      </span>
-    );
-  }
-  if (!peer.verified) {
-    return (
-      <span className="badge badge--failed" title="Non vérifié">
-        ?
-      </span>
-    );
-  }
-  return (
-    <span className="badge badge--completed" title="Auth vérifiée (HMAC OK)">
-      OK
-    </span>
-  );
-}
+export function PeerTable({ peers, emptyMessage }: PeerTableProps) {
+  const t = useT();
 
-export function PeerTable({
-  peers,
-  emptyMessage = "Aucune machine détectée sur le réseau.",
-}: PeerTableProps) {
+  const authBadge = (peer: Peer) => {
+    if (peer.hostname_conflict) {
+      return (
+        <span className="badge badge--failed" title={t("peers.badge_conflict_title")}>
+          !!
+        </span>
+      );
+    }
+    if (!peer.verified) {
+      return (
+        <span className="badge badge--failed" title={t("peers.badge_unverified_title")}>
+          ?
+        </span>
+      );
+    }
+    return (
+      <span className="badge badge--completed" title={t("peers.badge_verified_title")}>
+        OK
+      </span>
+    );
+  };
+
   if (peers.length === 0) {
-    return <p className="empty-state">{emptyMessage}</p>;
+    return <p className="empty-state">{emptyMessage ?? t("peers.empty_default")}</p>;
   }
 
   const unverifiedCount = peers.filter((p) => !p.verified).length;
@@ -55,29 +55,28 @@ export function PeerTable({
     <>
       {conflictCount > 0 && (
         <div className="alert alert--error">
-          Conflit de hostname détecté — {conflictCount} machine
-          {conflictCount > 1 ? "s" : ""} utilise
-          {conflictCount > 1 ? "nt" : ""} un nom déjà pris par une autre IP.
-          Cela peut indiquer une tentative d'usurpation d'identité.
+          {conflictCount === 1
+            ? t("peers.conflict_alert_one")
+            : t("peers.conflict_alert_many", { n: conflictCount })}
         </div>
       )}
       {unverifiedCount > 0 && conflictCount === 0 && (
         <div className="alert alert--warning">
-          {unverifiedCount} machine{unverifiedCount > 1 ? "s" : ""} non
-          vérifiée{unverifiedCount > 1 ? "s" : ""} — les tâches provenant de
-          ces postes seront refusées.
+          {unverifiedCount === 1
+            ? t("peers.unverified_alert_one")
+            : t("peers.unverified_alert_many", { n: unverifiedCount })}
         </div>
       )}
       <table className="peer-table">
         <thead>
           <tr>
-            <th>Machine</th>
-            <th>IP</th>
-            <th>Auth</th>
-            <th>Partage</th>
-            <th>CPU</th>
-            <th>RAM</th>
-            <th>GPU</th>
+            <th>{t("peers.col_machine")}</th>
+            <th>{t("peers.col_ip")}</th>
+            <th>{t("peers.col_auth")}</th>
+            <th>{t("peers.col_sharing")}</th>
+            <th>{t("peers.col_cpu")}</th>
+            <th>{t("peers.col_ram")}</th>
+            <th>{t("peers.col_gpu")}</th>
           </tr>
         </thead>
         <tbody>
@@ -86,7 +85,7 @@ export function PeerTable({
               <td className="peer-table__hostname">
                 {peerLabel(peer)}
                 {peer.hostname_conflict && (
-                  <span className="peer-table__conflict-icon" title="Conflit de hostname">
+                  <span className="peer-table__conflict-icon" title={t("peers.conflict_icon_title")}>
                     {" "}!!
                   </span>
                 )}
@@ -97,11 +96,13 @@ export function PeerTable({
                 <span
                   className={`badge ${peer.sharing_enabled ? "badge--active" : "badge--disabled"}`}
                 >
-                  {peer.sharing_enabled ? "Actif" : "Inactif"}
+                  {peer.sharing_enabled
+                    ? t("peers.sharing_active")
+                    : t("peers.sharing_inactive")}
                 </span>
               </td>
               <td>{peer.cpu_limit}%</td>
-              <td>{peer.ram_limit > 0 ? `${peer.ram_limit} Mo` : "—"}</td>
+              <td>{peer.ram_limit > 0 ? `${peer.ram_limit} Mo` : t("common.none_dash")}</td>
               <td>{peer.gpu_limit}%</td>
             </tr>
           ))}

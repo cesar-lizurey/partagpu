@@ -129,6 +129,47 @@ body {
   font-size: 0.85rem;
 }
 
+.app__header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Language toggle ───────────────────────────────────── */
+
+.lang-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.lang-toggle:hover {
+  border-color: var(--color-border);
+}
+
+.lang-toggle:active {
+  transform: scale(0.95);
+}
+
+.lang-toggle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.lang-toggle__flag {
+  display: block;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+
 /* ── Editable instance name ────────────────────────────── */
 
 .editable-name {

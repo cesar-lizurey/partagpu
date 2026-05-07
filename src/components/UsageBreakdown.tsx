@@ -1,4 +1,5 @@
 import type { Task } from "../lib/api";
+import { useT } from "../lib/i18n";
 
 interface UsageBreakdownProps {
   tasks: Task[];
@@ -28,12 +29,12 @@ const COLORS = [
   "#14b8a6", // teal
 ];
 
-function aggregateByUser(tasks: Task[]): UserUsage[] {
+function aggregateByUser(tasks: Task[], unknownLabel: string): UserUsage[] {
   const running = tasks.filter((t) => t.status === "Running");
   const map = new Map<string, UserUsage>();
 
   running.forEach((task) => {
-    const key = task.source_machine || task.source_user || "inconnu";
+    const key = task.source_machine || task.source_user || unknownLabel;
     const existing = map.get(key);
     if (existing) {
       existing.cpu += task.cpu_usage;
@@ -97,7 +98,8 @@ export function UsageBreakdown({
   totalGpuPercent,
   gpuAvailable,
 }: UsageBreakdownProps) {
-  const users = aggregateByUser(tasks);
+  const t = useT();
+  const users = aggregateByUser(tasks, t("common.unknown"));
 
   if (users.length === 0) {
     return null;
@@ -114,7 +116,7 @@ export function UsageBreakdown({
             />
             <span>{u.name}</span>
             <span className="usage-breakdown__task-count">
-              ({u.taskCount} tâche{u.taskCount > 1 ? "s" : ""})
+              {t(u.taskCount === 1 ? "breakdown.tasks_one" : "breakdown.tasks_many", { n: u.taskCount })}
             </span>
           </span>
         ))}

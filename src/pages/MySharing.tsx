@@ -29,6 +29,8 @@ import type {
   UserStatus,
 } from "../lib/api";
 import { Sparkline } from "../components/Sparkline";
+import { useT } from "../lib/i18n";
+import type { MessageKey } from "../lib/messages";
 
 function UserSetup({
   userStatus,
@@ -37,6 +39,7 @@ function UserSetup({
   userStatus: UserStatus;
   onDone: () => void;
 }) {
+  const t = useT();
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -47,11 +50,11 @@ function UserSetup({
     setError(null);
 
     if (password.length < 4) {
-      setError("Le mot de passe doit contenir au moins 4 caractères.");
+      setError(t("user.err_too_short"));
       return;
     }
     if (password !== confirm) {
-      setError("Les mots de passe ne correspondent pas.");
+      setError(t("user.err_mismatch"));
       return;
     }
 
@@ -68,13 +71,10 @@ function UserSetup({
     }
   };
 
-  const statusMessage: Record<string, string> = {
-    Missing:
-      "L'utilisateur partagpu n'existe pas encore. Il sera créé en activant le partage.",
-    NoLogin:
-      "L'utilisateur partagpu existe mais n'a pas de shell de connexion. Activez le partage pour le mettre à jour.",
-    NoPassword:
-      "L'utilisateur partagpu existe mais n'a pas de mot de passe. Définissez-en un pour permettre la connexion depuis l'écran de login.",
+  const statusKey: Record<string, MessageKey> = {
+    Missing: "user.status_missing",
+    NoLogin: "user.status_no_login",
+    NoPassword: "user.status_no_password",
   };
 
   return (
@@ -85,35 +85,35 @@ function UserSetup({
         />
         <span>
           {userStatus === "Ready"
-            ? "Utilisateur partagpu configuré et prêt à l'emploi."
-            : statusMessage[userStatus] || "Statut inconnu."}
+            ? t("user.status_ready")
+            : statusKey[userStatus]
+              ? t(statusKey[userStatus])
+              : t("user.status_unknown")}
         </span>
       </div>
 
       {(userStatus === "NoPassword" || userStatus === "Ready") && (
         <form className="user-setup__form" onSubmit={handleSubmit}>
           <p className="user-setup__hint">
-            {userStatus === "Ready"
-              ? "Modifier le mot de passe de l'utilisateur partagpu :"
-              : "Définir le mot de passe pour se connecter à cette machine :"}
+            {userStatus === "Ready" ? t("user.hint_modify") : t("user.hint_define")}
           </p>
           <div className="user-setup__fields">
             <input
               type="password"
-              placeholder="Mot de passe"
+              placeholder={t("user.password_placeholder")}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="new-password"
             />
             <input
               type="password"
-              placeholder="Confirmer"
+              placeholder={t("user.confirm_placeholder")}
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               autoComplete="new-password"
             />
             <button className="btn btn--primary" type="submit" disabled={loading}>
-              {loading ? "..." : userStatus === "Ready" ? "Modifier" : "Définir"}
+              {loading ? "..." : userStatus === "Ready" ? t("user.btn_modify") : t("user.btn_define")}
             </button>
           </div>
           {error && <p className="user-setup__error">{error}</p>}
@@ -140,6 +140,7 @@ function HistoryPanel({
   color: string;
   fill: string;
 }) {
+  const t = useT();
   const peak = values.length > 0 ? Math.max(...values) : 0;
   const avg =
     values.length > 0
@@ -159,17 +160,18 @@ function HistoryPanel({
         height={50}
         color={color}
         fillColor={fill}
-        ariaLabel={`Historique ${label}`}
+        ariaLabel={t("mysharing.history_aria", { label })}
       />
       <div className="history__panel-stats">
-        <span>moy. {Math.round(avg)} {unit}</span>
-        <span>pic {Math.round(peak)} {unit}</span>
+        <span>{t("mysharing.history_avg", { value: Math.round(avg), unit })}</span>
+        <span>{t("mysharing.history_peak", { value: Math.round(peak), unit })}</span>
       </div>
     </div>
   );
 }
 
 export function MySharing() {
+  const t = useT();
   const [resources, setResources] = useState<ResourceUsage | null>(null);
   const [history, setHistory] = useState<ResourceSample[]>([]);
   const [config, setConfig] = useState<SharingConfig | null>(null);
@@ -180,7 +182,7 @@ export function MySharing() {
 
   const refresh = useCallback(async () => {
     try {
-      const [res, hist, cfg, t, us, mc] = await Promise.all([
+      const [res, hist, cfg, ts, us, mc] = await Promise.all([
         getResources(),
         getResourceHistory(),
         getSharingConfig(),
@@ -191,7 +193,7 @@ export function MySharing() {
       setResources(res);
       setHistory(hist);
       setConfig(cfg);
-      setTasks(t);
+      setTasks(ts);
       setUserStatus(us);
       setMaxConcurrent(mc);
       setError(null);
@@ -262,10 +264,8 @@ export function MySharing() {
 
   return (
     <div className="page">
-      <h2>Mon partage</h2>
-      <p className="page__subtitle">
-        Ce que les autres utilisent sur cette machine
-      </p>
+      <h2>{t("mysharing.title")}</h2>
+      <p className="page__subtitle">{t("mysharing.subtitle")}</p>
 
       {error && <div className="alert alert--error">{error}</div>}
 
@@ -281,25 +281,22 @@ export function MySharing() {
 
       {config && config.status !== "Disabled" && (
         <section className="section">
-          <h3>Compte partagpu</h3>
+          <h3>{t("mysharing.account_section")}</h3>
           <UserSetup userStatus={userStatus} onDone={refresh} />
         </section>
       )}
 
       {resources && (
         <section className="section">
-          <h3>Ressources de cette machine</h3>
+          <h3>{t("mysharing.resources_section")}</h3>
           {config && config.status !== "Disabled" && (
-            <p className="section__hint">
-              Faites glisser le curseur rouge sur chaque jauge pour ajuster
-              la limite que vous partagez aux autres.
-            </p>
+            <p className="section__hint">{t("mysharing.resources_hint")}</p>
           )}
           <div className="gauges">
             <ResourceGauge
               label="CPU"
               percent={resources.cpu_percent}
-              detail={`${resources.cpu_cores} cœurs`}
+              detail={t("mysharing.cores_suffix", { n: resources.cpu_cores })}
               limit={
                 config && config.status !== "Disabled"
                   ? config.cpu_limit_percent
@@ -357,9 +354,9 @@ export function MySharing() {
           {history.length > 1 && (
             <div className="history">
               <h4 className="history__title">
-                Historique des 5 dernières minutes
+                {t("mysharing.history_title")}
                 <span className="history__sublabel">
-                  {" "}— échantillonné toutes les 5 s
+                  {t("mysharing.history_sublabel")}
                 </span>
               </h4>
               <div className="history__row">
@@ -400,7 +397,7 @@ export function MySharing() {
 
       {resources && tasks.length > 0 && (
         <section className="section">
-          <h3>Répartition par utilisateur</h3>
+          <h3>{t("mysharing.breakdown_section")}</h3>
           <UsageBreakdown
             tasks={tasks}
             totalCpuPercent={100}
@@ -412,15 +409,15 @@ export function MySharing() {
       )}
 
       <section className="section">
-        <h3>Environnement Python pour les tâches reçues</h3>
+        <h3>{t("mysharing.python_section")}</h3>
         <ManagedVenvPanel />
       </section>
 
       <section className="section">
-        <h3>Qui utilise mes ressources ?</h3>
+        <h3>{t("mysharing.who_section")}</h3>
         <div className="concurrency-cap">
           <label className="concurrency-cap__label">
-            Tâches simultanées maximum :
+            {t("mysharing.concurrency_label")}
             <input
               type="number"
               min={1}
@@ -433,9 +430,7 @@ export function MySharing() {
             />
           </label>
           <p className="concurrency-cap__hint">
-            Au-delà de cette limite, les tâches reçues attendent leur tour
-            (statut « En attente »). Évite qu'un pair sature votre machine en
-            envoyant 100 tâches d'un coup.
+            {t("mysharing.concurrency_hint")}
           </p>
         </div>
         <TaskList tasks={tasks} direction="incoming" onCancelled={refresh} />

@@ -6,6 +6,8 @@ import {
   type Task,
   type WorkspaceFile,
 } from "../lib/api";
+import { useT } from "../lib/i18n";
+import type { MessageKey } from "../lib/messages";
 
 /** Hard limit enforced by the peer-side sandbox. Sum of file sizes. */
 const WORKSPACE_MAX_BYTES = 16 * 1024 * 1024;
@@ -39,12 +41,12 @@ interface TaskDispatcherProps {
   onDispatched?: () => void;
 }
 
-const STATUS_LABELS: Record<string, { label: string; className: string }> = {
-  Queued: { label: "En attente", className: "badge--queued" },
-  Running: { label: "En cours", className: "badge--running" },
-  Completed: { label: "Terminée", className: "badge--completed" },
-  Failed: { label: "Échouée", className: "badge--failed" },
-  Cancelled: { label: "Annulée", className: "badge--disabled" },
+const STATUS_INFO: Record<string, { key: MessageKey; className: string }> = {
+  Queued: { key: "task.status_queued", className: "badge--queued" },
+  Running: { key: "task.status_running", className: "badge--running" },
+  Completed: { key: "task.status_completed", className: "badge--completed" },
+  Failed: { key: "task.status_failed", className: "badge--failed" },
+  Cancelled: { key: "task.status_cancelled", className: "badge--disabled" },
 };
 
 /** Parse a shell-like command line into argv. Supports single + double quotes
@@ -98,6 +100,7 @@ function parseCommand(input: string): string[] {
 }
 
 export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
+  const t = useT();
   const targets = useMemo(
     () => peers.filter((p) => p.verified && p.sharing_enabled),
     [peers],
@@ -197,17 +200,19 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
 
   const handleLaunch = async () => {
     if (!selectedIp) {
-      setError("Aucun pair sélectionné.");
+      setError(t("dispatcher.err_no_peer"));
       return;
     }
     if (parsedArgs.length === 0) {
-      setError("La commande est vide.");
+      setError(t("dispatcher.err_empty_cmd"));
       return;
     }
     if (workspaceTooBig) {
       setError(
-        `Le workspace dépasse la limite de ${formatBytes(WORKSPACE_MAX_BYTES)}. ` +
-          `Total actuel : ${formatBytes(workspaceBytes)}.`,
+        t("dispatcher.err_workspace_too_big", {
+          limit: formatBytes(WORKSPACE_MAX_BYTES),
+          total: formatBytes(workspaceBytes),
+        }),
       );
       return;
     }
@@ -235,7 +240,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
           })),
         );
       } catch (e) {
-        setError(`Échec de lecture des fichiers : ${String(e)}`);
+        setError(t("dispatcher.err_read_files", { error: String(e) }));
         setIsLaunching(false);
         return;
       }
@@ -280,11 +285,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
   if (targets.length === 0) {
     return (
       <div className="task-dispatcher">
-        <p className="empty-state">
-          Aucun pair vérifié ne partage de ressources actuellement. Activez
-          le partage côté camarade et vérifiez que vous êtes dans la même
-          salle.
-        </p>
+        <p className="empty-state">{t("dispatcher.no_targets")}</p>
       </div>
     );
   }
@@ -292,19 +293,20 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
   // Prefer the final result once available; otherwise show the live partial
   // task being polled while the dispatch is in flight.
   const displayedTask = result ?? livePartial;
-  const statusInfo = displayedTask
-    ? STATUS_LABELS[displayedTask.status] ?? {
-        label: displayedTask.status,
-        className: "",
-      }
-    : null;
+  const statusEntry = displayedTask ? STATUS_INFO[displayedTask.status] : undefined;
+  const statusLabel = displayedTask
+    ? statusEntry
+      ? t(statusEntry.key)
+      : displayedTask.status
+    : "";
+  const statusClassName = statusEntry?.className ?? "";
 
   return (
     <div className="task-dispatcher">
       <div className="task-dispatcher__form">
         <div className="task-dispatcher__row">
           <label className="task-dispatcher__field">
-            <span className="task-dispatcher__label">Pair cible</span>
+            <span className="task-dispatcher__label">{t("dispatcher.target_label")}</span>
             <select
               value={selectedIp}
               onChange={(e) => setSelectedIp(e.target.value)}
@@ -313,14 +315,18 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
             >
               {targets.map((p) => (
                 <option key={p.id} value={p.ip}>
-                  {p.display_name || p.hostname} ({p.ip}) — {p.gpu_count ?? 1} GPU
+                  {t("dispatcher.peer_option", {
+                    name: p.display_name || p.hostname,
+                    ip: p.ip,
+                    gpus: p.gpu_count ?? 1,
+                  })}
                 </option>
               ))}
             </select>
           </label>
 
           <label className="task-dispatcher__field task-dispatcher__field--narrow">
-            <span className="task-dispatcher__label">Timeout (s)</span>
+            <span className="task-dispatcher__label">{t("dispatcher.timeout_label")}</span>
             <input
               type="number"
               min={5}
@@ -334,7 +340,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
         </div>
 
         <div className="task-dispatcher__field">
-          <span className="task-dispatcher__label">Quoi exécuter</span>
+          <span className="task-dispatcher__label">{t("dispatcher.what_label")}</span>
           <div className="task-dispatcher__mode-tabs">
             <button
               type="button"
@@ -344,7 +350,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
               onClick={() => setMode("command")}
               disabled={isLaunching}
             >
-              Une commande
+              {t("dispatcher.mode_command")}
             </button>
             <button
               type="button"
@@ -354,7 +360,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
               onClick={() => setMode("file")}
               disabled={isLaunching}
             >
-              Un fichier uploadé
+              {t("dispatcher.mode_file")}
             </button>
           </div>
 
@@ -398,10 +404,10 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
                   style={{ flex: 1 }}
                 >
                   {workspaceFiles.length === 0 ? (
-                    <option value="">— uploadez un fichier d'abord —</option>
+                    <option value="">{t("dispatcher.mode_file_pick_first")}</option>
                   ) : (
                     <>
-                      {!fileName && <option value="">— choisir —</option>}
+                      {!fileName && <option value="">{t("dispatcher.mode_file_choose")}</option>}
                       {workspaceFiles.map((f) => (
                         <option key={f.name} value={f.name}>
                           {f.name}
@@ -416,7 +422,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
                 value={fileArgs}
                 onChange={(e) => setFileArgs(e.target.value)}
                 disabled={isLaunching}
-                placeholder="arguments optionnels (ex: --epochs 10)"
+                placeholder={t("dispatcher.file_args_placeholder")}
                 spellCheck={false}
                 autoComplete="off"
                 className="task-dispatcher__input task-dispatcher__input--mono"
@@ -427,7 +433,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
                 </small>
               ) : workspaceFiles.length === 0 ? (
                 <small className="task-dispatcher__parsed">
-                  Uploadez un fichier dans la section ci-dessous.
+                  {t("dispatcher.file_upload_hint")}
                 </small>
               ) : null}
             </div>
@@ -438,7 +444,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
         <div className="task-dispatcher__workspace">
           <div className="task-dispatcher__workspace-header">
             <span className="task-dispatcher__label">
-              Fichiers à uploader
+              {t("dispatcher.workspace_label")}
             </span>
             <button
               type="button"
@@ -446,7 +452,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
               onClick={() => fileInputRef.current?.click()}
               disabled={isLaunching}
             >
-              Ajouter…
+              {t("dispatcher.workspace_add")}
             </button>
             <input
               ref={fileInputRef}
@@ -457,11 +463,11 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
             />
           </div>
           <p className="task-dispatcher__help">
-            Ces fichiers seront copiés dans le répertoire de travail de la
-            commande sur le pair (par défaut <code>/workspace</code>).
-            Référez-y dans la commande par leur nom (ex.{" "}
-            <code>python3 train.py</code>). Limite totale :{" "}
-            {formatBytes(WORKSPACE_MAX_BYTES)}.
+            {t("dispatcher.workspace_help_p1")}
+            <code>/workspace</code>
+            {t("dispatcher.workspace_help_p2")}
+            <code>python3 train.py</code>
+            {t("dispatcher.workspace_help_p3", { limit: formatBytes(WORKSPACE_MAX_BYTES) })}
           </p>
           {workspaceFiles.length > 0 && (
             <ul className="task-dispatcher__files">
@@ -476,17 +482,17 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
                     className="task-dispatcher__file-remove"
                     onClick={() => handleRemoveFile(f.name)}
                     disabled={isLaunching}
-                    title="Retirer ce fichier"
+                    title={t("dispatcher.workspace_remove_title")}
                   >
                     ×
                   </button>
                 </li>
               ))}
               <li className="task-dispatcher__files-total">
-                Total : {formatBytes(workspaceBytes)}
+                {t("dispatcher.workspace_total", { size: formatBytes(workspaceBytes) })}
                 {workspaceTooBig && (
                   <span style={{ color: "var(--color-danger)", marginLeft: 8 }}>
-                    (dépasse la limite)
+                    {t("dispatcher.workspace_too_big")}
                   </span>
                 )}
               </li>
@@ -503,15 +509,14 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
               onChange={(e) => setNetworkEnabled(e.target.checked)}
               disabled={isLaunching}
             />
-            <span>Autoriser l'accès réseau dans le sandbox du pair</span>
+            <span>{t("dispatcher.network_label")}</span>
           </label>
           <p className="task-dispatcher__help">
-            Par défaut, la tâche tourne sans accès réseau (isolation maximale).
-            Cochez cette case si votre commande a besoin de :{" "}
-            <strong>télécharger des données</strong> (HTTP, HuggingFace…),
-            joindre un autre service du réseau local, ou faire un{" "}
-            <strong>entraînement DDP</strong> (les processus parallèles
-            doivent se synchroniser via le réseau).
+            {t("dispatcher.network_help_p1")}
+            <strong>{t("dispatcher.network_help_p2")}</strong>
+            {t("dispatcher.network_help_p3")}
+            <strong>{t("dispatcher.network_help_p4")}</strong>
+            {t("dispatcher.network_help_p5")}
           </p>
         </div>
 
@@ -527,7 +532,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
             }
             className="btn btn--primary"
           >
-            {isLaunching ? "Exécution..." : "Lancer"}
+            {isLaunching ? t("dispatcher.btn_launching") : t("dispatcher.btn_launch")}
           </button>
         </div>
       </div>
@@ -537,30 +542,32 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
       {displayedTask ? (
         <div className="task-dispatcher__result">
           <div className="task-dispatcher__result-header">
-            <span className={`badge ${statusInfo!.className}`}>
-              {statusInfo!.label}
+            <span className={`badge ${statusClassName}`}>
+              {statusLabel}
             </span>
             <span style={{ marginLeft: 12 }}>
-              cible : <strong>{displayedTask.target_machine}</strong>
+              {t("dispatcher.result_target")}
+              <strong>{displayedTask.target_machine}</strong>
               {result ? (
                 <>
-                  {" · "}exit code : <strong>{result.exit_code ?? "—"}</strong>
+                  {t("dispatcher.result_exit")}
+                  <strong>{result.exit_code ?? "—"}</strong>
                 </>
               ) : (
-                <> · sortie en direct…</>
+                <>{t("dispatcher.result_live")}</>
               )}
             </span>
           </div>
           {displayedTask.output ? (
             <details open>
-              <summary>stdout ({displayedTask.output.length} car.)</summary>
+              <summary>{t("dispatcher.stdout_summary", { n: displayedTask.output.length })}</summary>
               <pre className="task-dispatcher__pre">{displayedTask.output}</pre>
             </details>
           ) : null}
           {displayedTask.error_output ? (
             <details open={!displayedTask.output}>
               <summary>
-                stderr ({displayedTask.error_output.length} car.)
+                {t("dispatcher.stderr_summary", { n: displayedTask.error_output.length })}
               </summary>
               <pre className="task-dispatcher__pre task-dispatcher__pre--err">
                 {displayedTask.error_output}
@@ -569,7 +576,7 @@ export function TaskDispatcher({ peers, onDispatched }: TaskDispatcherProps) {
           ) : null}
           {!displayedTask.output && !displayedTask.error_output ? (
             <p style={{ opacity: 0.6, fontStyle: "italic" }}>
-              {result ? "(aucune sortie)" : "En attente de la première ligne de sortie…"}
+              {result ? t("dispatcher.result_no_output") : t("dispatcher.result_waiting")}
             </p>
           ) : null}
         </div>

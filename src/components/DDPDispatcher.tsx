@@ -9,6 +9,8 @@ import {
   type Task,
   type WorkspaceFile,
 } from "../lib/api";
+import { useT } from "../lib/i18n";
+import type { MessageKey } from "../lib/messages";
 
 const WORKSPACE_MAX_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MASTER_PORT = 29500;
@@ -104,15 +106,16 @@ interface RankAssignment {
   localId: string;
 }
 
-const STATUS_LABELS: Record<string, { label: string; className: string }> = {
-  Queued: { label: "En attente", className: "badge--queued" },
-  Running: { label: "En cours", className: "badge--running" },
-  Completed: { label: "Terminée", className: "badge--completed" },
-  Failed: { label: "Échouée", className: "badge--failed" },
-  Cancelled: { label: "Annulée", className: "badge--disabled" },
+const STATUS_INFO: Record<string, { key: MessageKey; className: string }> = {
+  Queued: { key: "task.status_queued", className: "badge--queued" },
+  Running: { key: "task.status_running", className: "badge--running" },
+  Completed: { key: "task.status_completed", className: "badge--completed" },
+  Failed: { key: "task.status_failed", className: "badge--failed" },
+  Cancelled: { key: "task.status_cancelled", className: "badge--disabled" },
 };
 
 export function DDPDispatcher({ peers }: DDPDispatcherProps) {
+  const t = useT();
   const targets = useMemo(
     () =>
       peers.filter(
@@ -200,16 +203,19 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
   const handleLaunch = async () => {
     setError(null);
     if (!scriptFile) {
-      setError("Sélectionnez un script Python à exécuter.");
+      setError(t("ddp.err_no_script"));
       return;
     }
     if (totalSelectedGpus < 1) {
-      setError("Sélectionnez au moins un GPU sur un pair.");
+      setError(t("ddp.err_no_gpu"));
       return;
     }
     if (workspaceTooBig) {
       setError(
-        `Workspace trop volumineux (${formatBytes(workspaceBytes)} / ${formatBytes(WORKSPACE_MAX_BYTES)}).`,
+        t("ddp.err_workspace_too_big", {
+          size: formatBytes(workspaceBytes),
+          limit: formatBytes(WORKSPACE_MAX_BYTES),
+        }),
       );
       return;
     }
@@ -260,7 +266,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
         })),
       );
     } catch (e) {
-      setError(`Échec de lecture des fichiers : ${String(e)}`);
+      setError(t("ddp.err_read_files", { error: String(e) }));
       return;
     }
 
@@ -304,8 +310,12 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
       const target = newAssignments.find((a) => a.rank === sourceRank);
       setError(
         target
-          ? `Rank ${sourceRank} (${target.peer.display_name || target.peer.hostname}) a échoué : ${reason}. Annulation des autres ranks…`
-          : `Rank ${sourceRank} a échoué : ${reason}. Annulation des autres ranks…`,
+          ? t("ddp.abort_with_target", {
+              rank: sourceRank,
+              peer: target.peer.display_name || target.peer.hostname,
+              reason,
+            })
+          : t("ddp.abort_no_target", { rank: sourceRank, reason }),
       );
       // Cancel every sibling that hasn't already settled.
       for (const a of newAssignments) {
@@ -359,7 +369,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
         .filter(Boolean);
       if (failures.length > 0 && !abortTriggered) {
         // Rare path: failures arrived after abort window. Surface them anyway.
-        setError(`Erreurs : ${failures.join(" ; ")}`);
+        setError(t("ddp.errors", { list: failures.join(" ; ") }));
       }
     } finally {
       unlistenRef.current?.();
@@ -379,10 +389,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
   if (targets.length === 0) {
     return (
       <div className="ddp-dispatcher">
-        <p className="empty-state">
-          Aucun pair vérifié n'expose de GPU pour le moment. Activez le partage
-          côté camarade et vérifiez que vous êtes dans la même salle.
-        </p>
+        <p className="empty-state">{t("ddp.no_targets")}</p>
       </div>
     );
   }
@@ -390,17 +397,24 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
   return (
     <div className="ddp-dispatcher">
       <p className="ddp-dispatcher__intro">
-        Lance un script Python en mode DDP (un processus par GPU sélectionné,
-        rendez-vous NCCL/Gloo sur le LAN). Le script et ses dépendances sont
-        envoyés à chaque pair ; les variables d'environnement{" "}
-        <code>MASTER_ADDR</code>, <code>MASTER_PORT</code>, <code>RANK</code>,{" "}
-        <code>WORLD_SIZE</code>, <code>CUDA_VISIBLE_DEVICES</code>,{" "}
-        <code>BACKEND</code> sont positionnées automatiquement.
+        {t("ddp.intro_p1")}
+        <code>MASTER_ADDR</code>
+        {t("ddp.intro_p2")}
+        <code>MASTER_PORT</code>
+        {t("ddp.intro_p2")}
+        <code>RANK</code>
+        {t("ddp.intro_p2")}
+        <code>WORLD_SIZE</code>
+        {t("ddp.intro_p2")}
+        <code>CUDA_VISIBLE_DEVICES</code>
+        {t("ddp.intro_p2")}
+        <code>BACKEND</code>
+        {t("ddp.intro_p3")}
       </p>
 
       <div className="ddp-dispatcher__form">
         <fieldset className="ddp-dispatcher__peers">
-          <legend>Cibles ({totalSelectedGpus} GPU sélectionnés)</legend>
+          <legend>{t("ddp.targets_legend", { n: totalSelectedGpus })}</legend>
           {targets.map((peer) => {
             const max = peer.gpu_count ?? 1;
             const selected = selectedGpus[peer.id] ?? 0;
@@ -428,7 +442,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
                   }
                   disabled={isLaunching || selected === 0}
                   className="ddp-dispatcher__peer-count"
-                  title={`max ${max} GPU`}
+                  title={t("ddp.peer_max_title", { n: max })}
                 />
                 <span className="ddp-dispatcher__peer-max">/ {max}</span>
               </div>
@@ -438,18 +452,18 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
 
         <div className="ddp-dispatcher__row">
           <label className="ddp-dispatcher__field">
-            <span>Backend</span>
+            <span>{t("ddp.backend_label")}</span>
             <select
               value={backend}
               onChange={(e) => setBackend(e.target.value as "nccl" | "gloo")}
               disabled={isLaunching}
             >
-              <option value="nccl">NCCL (GPU)</option>
-              <option value="gloo">Gloo (CPU/GPU)</option>
+              <option value="nccl">{t("ddp.backend_nccl")}</option>
+              <option value="gloo">{t("ddp.backend_gloo")}</option>
             </select>
           </label>
           <label className="ddp-dispatcher__field ddp-dispatcher__field--narrow">
-            <span>Port maître</span>
+            <span>{t("ddp.master_port_label")}</span>
             <input
               type="number"
               min={29500}
@@ -460,7 +474,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
             />
           </label>
           <label className="ddp-dispatcher__field ddp-dispatcher__field--narrow">
-            <span>Timeout (s)</span>
+            <span>{t("ddp.timeout_label")}</span>
             <input
               type="number"
               min={30}
@@ -473,7 +487,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
         </div>
 
         <div className="ddp-dispatcher__field">
-          <span>Script Python</span>
+          <span>{t("ddp.script_label")}</span>
           <div className="ddp-dispatcher__file-row">
             <button
               type="button"
@@ -481,7 +495,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
               onClick={() => scriptInputRef.current?.click()}
               disabled={isLaunching}
             >
-              Choisir…
+              {t("ddp.script_pick")}
             </button>
             <input
               ref={scriptInputRef}
@@ -490,7 +504,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
               accept=".py,.sh"
               onChange={(e) => handleScriptPick(e.target.files)}
             />
-            <code>{scriptFile ? scriptFile.name : "— aucun —"}</code>
+            <code>{scriptFile ? scriptFile.name : t("ddp.script_none")}</code>
             {scriptFile && (
               <span className="ddp-dispatcher__file-size">
                 {formatBytes(scriptFile.size)}
@@ -500,7 +514,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
         </div>
 
         <div className="ddp-dispatcher__field">
-          <span>Arguments du script</span>
+          <span>{t("ddp.script_args_label")}</span>
           <input
             type="text"
             value={extraArgs}
@@ -513,7 +527,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
         </div>
 
         <div className="ddp-dispatcher__field">
-          <span>Fichiers compagnons</span>
+          <span>{t("ddp.extras_label")}</span>
           <div className="ddp-dispatcher__file-row">
             <button
               type="button"
@@ -521,7 +535,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
               onClick={() => extraInputRef.current?.click()}
               disabled={isLaunching}
             >
-              Ajouter…
+              {t("ddp.extras_add")}
             </button>
             <input
               ref={extraInputRef}
@@ -531,8 +545,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
               onChange={(e) => handleAddExtras(e.target.files)}
             />
             <small>
-              Limite totale (script + compagnons) :{" "}
-              {formatBytes(WORKSPACE_MAX_BYTES)}.
+              {t("ddp.extras_limit_hint", { limit: formatBytes(WORKSPACE_MAX_BYTES) })}
             </small>
           </div>
           {extraFiles.length > 0 && (
@@ -570,8 +583,8 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
             }
           >
             {isLaunching
-              ? `Lancement… (${totalSelectedGpus} ranks)`
-              : `Lancer (${totalSelectedGpus} ranks)`}
+              ? t("ddp.btn_launching", { n: totalSelectedGpus })
+              : t("ddp.btn_launch", { n: totalSelectedGpus })}
           </button>
           {isLaunching && assignments.length > 0 && (
             <button
@@ -579,7 +592,7 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
               className="btn btn--secondary"
               onClick={() => void handleCancelAll()}
             >
-              Tout annuler
+              {t("ddp.btn_cancel_all")}
             </button>
           )}
         </div>
@@ -589,23 +602,24 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
 
       {assignments.length > 0 && (
         <div className="ddp-dispatcher__ranks">
-          <h4>Ranks</h4>
+          <h4>{t("ddp.ranks_title")}</h4>
           <table className="ddp-dispatcher__rank-table">
             <thead>
               <tr>
-                <th>Rank</th>
-                <th>Pair</th>
-                <th>GPU</th>
-                <th>État</th>
-                <th>Progression</th>
+                <th>{t("ddp.col_rank")}</th>
+                <th>{t("ddp.col_peer")}</th>
+                <th>{t("ddp.col_gpu")}</th>
+                <th>{t("ddp.col_state")}</th>
+                <th>{t("ddp.col_progress")}</th>
               </tr>
             </thead>
             <tbody>
               {assignments.map((a) => {
-                const t = taskStates[a.localId];
-                const status = t?.status ?? "Queued";
-                const info =
-                  STATUS_LABELS[status] ?? { label: status, className: "" };
+                const task = taskStates[a.localId];
+                const status = task?.status ?? "Queued";
+                const info = STATUS_INFO[status];
+                const label = info ? t(info.key) : status;
+                const className = info?.className ?? "";
                 return (
                   <tr key={a.localId}>
                     <td>{a.rank}</td>
@@ -613,19 +627,17 @@ export function DDPDispatcher({ peers }: DDPDispatcherProps) {
                       {a.peer.display_name || a.peer.hostname}{" "}
                       <small>({a.peer.ip})</small>
                     </td>
-                    <td>dev {a.deviceIndex}</td>
+                    <td>{t("ddp.dev_label", { n: a.deviceIndex })}</td>
                     <td>
-                      <span className={`badge ${info.className}`}>
-                        {info.label}
-                      </span>
+                      <span className={`badge ${className}`}>{label}</span>
                     </td>
                     <td>
                       <div className="ddp-dispatcher__progress">
                         <div
                           className="ddp-dispatcher__progress-fill"
-                          style={{ width: `${t?.progress ?? 0}%` }}
+                          style={{ width: `${task?.progress ?? 0}%` }}
                         />
-                        <span>{Math.round(t?.progress ?? 0)}%</span>
+                        <span>{Math.round(task?.progress ?? 0)}%</span>
                       </div>
                     </td>
                   </tr>
