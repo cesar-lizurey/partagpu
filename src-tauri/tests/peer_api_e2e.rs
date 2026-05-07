@@ -229,3 +229,43 @@ fn rejects_request_without_auth_header() {
         Err(e) => panic!("expected 401, got {e}"),
     }
 }
+
+/// A captured legitimate request, replayed byte-for-byte within the
+/// 30-s window, must be rejected by the server's replay cache. Without
+/// the cache, the receiver would happily run the same task twice.
+#[test]
+fn rejects_replay_within_window() {
+    let _env = fresh_env();
+    let (port, server_eph, secret_b32) = start_test_server();
+    let room_key = crypto::derive_room_key(&secret_b32).unwrap();
+
+    let body = serde_json::json!({"args": ["true"], "timeout_secs": 5});
+    let body_str = serde_json::to_string(&body).unwrap();
+    let (env, _) =
+        crypto::encrypt_v2(&room_key, &server_eph.public_b64(), body_str.as_bytes()).unwrap();
+    let env_json = serde_json::to_string(&env).unwrap();
+    let path = "/peer/v1/tasks";
+    let auth = auth_header(&secret_b32, "POST", path, env_json.as_bytes());
+
+    let url = format!("http://127.0.0.1:{port}{path}");
+
+    // First send: accepted.
+    let r1 = ureq::post(&url)
+        .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
+        .set("X-PartaGPU-AUTH", &auth)
+        .send_string(&env_json)
+        .expect("first dispatch");
+    assert_eq!(r1.status(), 200);
+
+    // Second send with the EXACT same auth header, body, path: replay.
+    // Must be rejected.
+    let r2 = ureq::post(&url)
+        .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
+        .set("X-PartaGPU-AUTH", &auth)
+        .send_string(&env_json);
+    match r2 {
+        Err(ureq::Error::Status(401, _)) => {}
+        Ok(r) => panic!("replay should have been rejected, got {}", r.status()),
+        Err(e) => panic!("expected 401 replay reject, got {e}"),
+    }
+}

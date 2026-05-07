@@ -21,8 +21,10 @@ use crate::security_log::{EventCategory, EventLevel, SecurityLog};
 use crate::sharing::{SharingController, SharingStatus};
 use crate::task_runner::IncomingTasks;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
@@ -40,6 +42,48 @@ const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 /// enough that 1 000 spurious connections get queued behind the semaphore
 /// instead of all spawning at once.
 const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+/// Anti-replay cache : remember every successfully-authenticated
+/// `X-PartaGPU-AUTH` header for two clock-skew windows. The HMAC scheme
+/// already binds auth to ts + method + path + body_hash, so two requests
+/// with the same header are by definition byte-identical replays. Cap on
+/// entries below acts as a safety net if pruning lags.
+const REPLAY_RETENTION_SECS: u64 = crate::crypto::AUTH_WINDOW_SECS * 2;
+const REPLAY_CACHE_MAX_ENTRIES: usize = 4096;
+
+/// In-memory cache of recently-seen, successfully-authenticated request
+/// headers. `check_and_insert` returns `Ok(())` for a fresh request and
+/// `Err(())` for an exact replay seen within `REPLAY_RETENTION_SECS`.
+#[derive(Default)]
+struct ReplayCache {
+    entries: Mutex<HashMap<String, u64>>,
+}
+
+impl ReplayCache {
+    fn check_and_insert(&self, header: &str) -> Result<(), ()> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut m = match self.entries.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(), // poisoned : recover and continue
+        };
+        // Drop everything older than the retention window. O(n) — acceptable
+        // at our scale (entries are bounded by REPLAY_CACHE_MAX_ENTRIES).
+        m.retain(|_, ts| now.saturating_sub(*ts) < REPLAY_RETENTION_SECS);
+        // Hard cap : if we ever blow past the cap, just clear the cache.
+        // Worst case a few legitimate replays slip through during the
+        // catch-up, no security impact.
+        if m.len() >= REPLAY_CACHE_MAX_ENTRIES {
+            m.clear();
+        }
+        if m.contains_key(header) {
+            return Err(());
+        }
+        m.insert(header.to_string(), now);
+        Ok(())
+    }
+}
 
 #[derive(Deserialize)]
 struct SubmitBody {
@@ -149,6 +193,9 @@ pub fn start_on_addr(
             // start refusing connections beyond the kernel limit, which is
             // exactly what we want.
             let conn_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+            // Shared replay-cache across all connections (one process-wide
+            // instance — replays would naturally come from different conns).
+            let replay_cache = Arc::new(ReplayCache::default());
 
             loop {
                 // Hold the permit for the lifetime of the connection's
@@ -169,10 +216,19 @@ pub fn start_on_addr(
                 let sharing = sharing.clone();
                 let sec_log = sec_log.clone();
                 let server_eph = server_eph.clone();
+                let replay_cache = replay_cache.clone();
 
                 tokio::spawn(async move {
                     if let Err(e) = handle_connection(
-                        stream, addr, incoming, auth, discovery, sharing, sec_log, server_eph,
+                        stream,
+                        addr,
+                        incoming,
+                        auth,
+                        discovery,
+                        sharing,
+                        sec_log,
+                        server_eph,
+                        replay_cache,
                     )
                     .await
                     {
@@ -197,6 +253,7 @@ async fn handle_connection(
     sharing: SharingController,
     sec_log: SecurityLog,
     server_eph: EphemeralKey,
+    replay_cache: Arc<ReplayCache>,
 ) -> Result<(), String> {
     let mut req = read_request(&mut stream).await?;
 
@@ -246,7 +303,22 @@ async fn handle_connection(
                     &req.path,
                     req.body.as_bytes(),
                 ) {
-                    Ok(()) => None,
+                    Ok(()) => {
+                        // Auth passed — guard against an attacker replaying
+                        // a captured (legitimate) request within the 30 s
+                        // window. Two requests with the same auth header
+                        // are byte-identical by construction (HMAC binds
+                        // ts + method + path + body_hash) — they can only
+                        // be replays.
+                        if replay_cache.check_and_insert(&header_value).is_err() {
+                            Some((
+                                "401 Unauthorized",
+                                "requête déjà reçue dans la fenêtre courante (replay)".into(),
+                            ))
+                        } else {
+                            None
+                        }
+                    }
                     Err(e) => Some(("401 Unauthorized", format!("auth invalide : {e}"))),
                 }
             }
@@ -647,4 +719,32 @@ async fn write_response(
 
 fn json_string<T: Serialize>(v: &T) -> String {
     serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_cache_accepts_first_then_rejects_dup() {
+        let cache = ReplayCache::default();
+        assert!(cache.check_and_insert("header-A").is_ok());
+        // Same header within window → replay rejected.
+        assert!(cache.check_and_insert("header-A").is_err());
+        // Different header → still accepted.
+        assert!(cache.check_and_insert("header-B").is_ok());
+    }
+
+    #[test]
+    fn replay_cache_clears_when_full() {
+        let cache = ReplayCache::default();
+        // Pump enough distinct headers to exceed the cap.
+        for i in 0..(REPLAY_CACHE_MAX_ENTRIES + 10) {
+            assert!(cache.check_and_insert(&format!("h-{i}")).is_ok());
+        }
+        // After overflow the cache was cleared, so an old header that
+        // would have collided is now accepted again. Acceptable: the
+        // overflow path is a safety net, not a correctness guarantee.
+        assert!(cache.check_and_insert("h-0").is_ok());
+    }
 }
