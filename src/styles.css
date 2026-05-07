@@ -1430,6 +1430,184 @@ select.task-dispatcher__input option {
   color: var(--color-text-muted);
 }
 
+/* Fleet view */
+
+.fleet__summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 0 0 20px 0;
+  padding: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.fleet__stat {
+  text-align: center;
+  padding: 6px 8px;
+}
+
+.fleet__stat-value {
+  font-size: 1.5em;
+  font-weight: 700;
+  color: var(--color-primary);
+  line-height: 1.1;
+}
+
+.fleet__stat-label {
+  font-size: 0.85em;
+  color: var(--color-text);
+  margin-top: 2px;
+}
+
+.fleet__stat-hint {
+  font-size: 0.75em;
+  color: var(--color-text-muted);
+  margin-top: 1px;
+}
+
+.fleet__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.peer-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.peer-card--unusable {
+  opacity: 0.6;
+}
+
+.peer-card__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.peer-card__name {
+  margin: 0;
+  font-size: 1.05em;
+  font-weight: 600;
+  flex: 1;
+}
+
+.peer-card__ip {
+  font-size: 0.8em;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.peer-card__badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.badge--ok {
+  background: rgba(16, 185, 129, 0.15);
+  color: #059669;
+}
+
+.badge--warn {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+}
+
+.badge--off {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--color-text-muted);
+}
+
+.badge--alert {
+  background: rgba(245, 158, 11, 0.15);
+  color: #d97706;
+}
+
+.peer-card__caps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--color-bg, #0f1117);
+  border-radius: 6px;
+}
+
+.peer-card__caps > div {
+  text-align: center;
+}
+
+.peer-card__caps dt {
+  font-size: 0.75em;
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+.peer-card__caps dd {
+  font-size: 0.95em;
+  font-weight: 600;
+  margin: 2px 0 0;
+}
+
+.peer-card__caps dd small {
+  font-weight: normal;
+  font-size: 0.8em;
+  color: var(--color-text-muted);
+}
+
+.peer-card__tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.peer-card__idle {
+  font-style: italic;
+  color: var(--color-text-muted);
+  font-size: 0.9em;
+}
+
+.peer-card__task-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.peer-card__task-list li {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  background: var(--color-bg, #0f1117);
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
+.peer-card__task-cmd {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85em;
+  word-break: break-all;
+}
+
+.peer-card__task-metrics {
+  font-size: 0.8em;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
 .concurrency-cap {
   margin: 0 0 12px 0;
   padding: 8px 10px;

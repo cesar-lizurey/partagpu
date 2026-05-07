@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { MySharing } from "./pages/MySharing";
 import { MyUsage } from "./pages/MyUsage";
+import { Fleet } from "./pages/Fleet";
 import { Guide } from "./pages/Guide";
 import { RoomSetup } from "./components/RoomSetup";
 import { getMachineInfo, setDisplayName } from "./lib/api";
@@ -8,11 +9,12 @@ import type { MachineInfo } from "./lib/api";
 import { version as APP_VERSION } from "../package.json";
 import "./styles.css";
 
-type Tab = "sharing" | "usage" | "guide";
+type Tab = "sharing" | "usage" | "fleet" | "guide";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "sharing", label: "Mon partage" },
   { id: "usage", label: "Mon utilisation" },
+  { id: "fleet", label: "Vue parc" },
   { id: "guide", label: "Guide" },
 ];
 
@@ -135,6 +137,7 @@ export default function App() {
       <main className="app__main">
         {activeTab === "sharing" && <MySharing />}
         {activeTab === "usage" && <MyUsage />}
+        {activeTab === "fleet" && <Fleet />}
         {activeTab === "guide" && <Guide />}
       </main>
     </div>
