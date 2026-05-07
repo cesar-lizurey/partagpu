@@ -1,6 +1,27 @@
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
+
+/// Resource history sample : one tick of CPU / RAM / GPU usage with a
+/// unix-epoch timestamp. Compact representation chosen for cheap JSON
+/// serialization to the frontend (which renders sparklines).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceSample {
+    pub timestamp_secs: u64,
+    pub cpu_percent: f32,
+    pub ram_used_mb: u64,
+    pub gpu_percent: f32,
+}
+
+/// Sampling cadence of the background history collector. 5 s gives good
+/// resolution without burning CPU on `refresh_all` calls.
+const HISTORY_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How many samples to keep in the ring buffer. 60 × 5 s = 5 minutes.
+const HISTORY_MAX_SAMPLES: usize = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ResourceUsage {
@@ -42,6 +63,9 @@ pub struct GpuInfo {
 
 pub struct ResourceMonitor {
     sys: System,
+    /// Ring buffer of recent CPU/RAM/GPU samples. Filled by a background
+    /// collector thread spawned in `new()`. Rendered as sparklines in the UI.
+    history: Arc<Mutex<VecDeque<ResourceSample>>>,
 }
 
 impl Default for ResourceMonitor {
@@ -54,7 +78,54 @@ impl ResourceMonitor {
     pub fn new() -> Self {
         let mut sys = System::new_all();
         sys.refresh_all();
-        Self { sys }
+        let history = Arc::new(Mutex::new(VecDeque::with_capacity(HISTORY_MAX_SAMPLES)));
+        Self::spawn_history_collector(history.clone());
+        Self { sys, history }
+    }
+
+    /// Background thread that owns its own `sysinfo::System` (since `snapshot`
+    /// requires `&mut self`) and pushes one `ResourceSample` to the ring buffer
+    /// every `HISTORY_SAMPLE_INTERVAL`. Drops the oldest sample when full.
+    fn spawn_history_collector(history: Arc<Mutex<VecDeque<ResourceSample>>>) {
+        std::thread::spawn(move || {
+            let mut sys = System::new_all();
+            sys.refresh_all();
+            loop {
+                std::thread::sleep(HISTORY_SAMPLE_INTERVAL);
+                sys.refresh_all();
+                std::thread::sleep(Duration::from_millis(200));
+                sys.refresh_cpu_usage();
+
+                let cpu_percent = sys.global_cpu_usage();
+                let ram_used_mb = sys.used_memory() / (1024 * 1024);
+                let gpu_percent = list_gpus()
+                    .first()
+                    .map(|g| g.utilization)
+                    .unwrap_or(0.0);
+                let timestamp_secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                let sample = ResourceSample {
+                    timestamp_secs,
+                    cpu_percent,
+                    ram_used_mb,
+                    gpu_percent,
+                };
+                let mut h = history.lock().unwrap();
+                h.push_back(sample);
+                if h.len() > HISTORY_MAX_SAMPLES {
+                    h.pop_front();
+                }
+            }
+        });
+    }
+
+    /// Snapshot of the resource history ring buffer (oldest → newest).
+    /// Cheap clone of a small `VecDeque` — at most `HISTORY_MAX_SAMPLES` items.
+    pub fn history(&self) -> Vec<ResourceSample> {
+        self.history.lock().unwrap().iter().cloned().collect()
     }
 
     pub fn snapshot(&mut self) -> ResourceUsage {

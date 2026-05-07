@@ -126,6 +126,15 @@ pub fn get_resources(
     monitor.lock().unwrap().snapshot()
 }
 
+/// Snapshot of the recent resource history (last ~5 min, sampled every 5 s).
+/// Used by the UI to render CPU/RAM/GPU sparklines.
+#[tauri::command]
+pub fn get_resource_history(
+    monitor: State<'_, std::sync::Arc<Mutex<ResourceMonitor>>>,
+) -> Vec<crate::resource::ResourceSample> {
+    monitor.lock().unwrap().history()
+}
+
 // ── Sharing control ────────────────────────────────────────
 
 #[tauri::command]

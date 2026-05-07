@@ -161,6 +161,7 @@ pub fn run() {
             api::get_user_status,
             api::set_user_password,
             api::get_resources,
+            api::get_resource_history,
             api::get_sharing_config,
             api::enable_sharing,
             api::disable_sharing,

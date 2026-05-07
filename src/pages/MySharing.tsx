@@ -8,6 +8,7 @@ import { UsageBreakdown } from "../components/UsageBreakdown";
 import { SecurityLogPanel } from "../components/SecurityLog";
 import {
   getResources,
+  getResourceHistory,
   getSharingConfig,
   enableSharing,
   disableSharing,
@@ -20,7 +21,14 @@ import {
   getMaxConcurrentTasks,
   setMaxConcurrentTasks,
 } from "../lib/api";
-import type { ResourceUsage, SharingConfig, Task, UserStatus } from "../lib/api";
+import type {
+  ResourceSample,
+  ResourceUsage,
+  SharingConfig,
+  Task,
+  UserStatus,
+} from "../lib/api";
+import { Sparkline } from "../components/Sparkline";
 
 function UserSetup({
   userStatus,
@@ -115,8 +123,55 @@ function UserSetup({
   );
 }
 
+function HistoryPanel({
+  label,
+  unit,
+  values,
+  max,
+  current,
+  color,
+  fill,
+}: {
+  label: string;
+  unit: string;
+  values: number[];
+  max: number;
+  current: number;
+  color: string;
+  fill: string;
+}) {
+  const peak = values.length > 0 ? Math.max(...values) : 0;
+  const avg =
+    values.length > 0
+      ? values.reduce((s, v) => s + v, 0) / values.length
+      : 0;
+  return (
+    <div className="history__panel">
+      <div className="history__panel-header">
+        <span className="history__panel-label">{label}</span>
+        <span className="history__panel-current">
+          {Math.round(current)} {unit}
+        </span>
+      </div>
+      <Sparkline
+        values={values}
+        max={max}
+        height={50}
+        color={color}
+        fillColor={fill}
+        ariaLabel={`Historique ${label}`}
+      />
+      <div className="history__panel-stats">
+        <span>moy. {Math.round(avg)} {unit}</span>
+        <span>pic {Math.round(peak)} {unit}</span>
+      </div>
+    </div>
+  );
+}
+
 export function MySharing() {
   const [resources, setResources] = useState<ResourceUsage | null>(null);
+  const [history, setHistory] = useState<ResourceSample[]>([]);
   const [config, setConfig] = useState<SharingConfig | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [userStatus, setUserStatus] = useState<UserStatus>("Missing");
@@ -125,14 +180,16 @@ export function MySharing() {
 
   const refresh = useCallback(async () => {
     try {
-      const [res, cfg, t, us, mc] = await Promise.all([
+      const [res, hist, cfg, t, us, mc] = await Promise.all([
         getResources(),
+        getResourceHistory(),
         getSharingConfig(),
         getIncomingTasks(),
         getUserStatus(),
         getMaxConcurrentTasks(),
       ]);
       setResources(res);
+      setHistory(hist);
       setConfig(cfg);
       setTasks(t);
       setUserStatus(us);
@@ -296,6 +353,48 @@ export function MySharing() {
               />
             )}
           </div>
+
+          {history.length > 1 && (
+            <div className="history">
+              <h4 className="history__title">
+                Historique des 5 dernières minutes
+                <span className="history__sublabel">
+                  {" "}— échantillonné toutes les 5 s
+                </span>
+              </h4>
+              <div className="history__row">
+                <HistoryPanel
+                  label="CPU"
+                  unit="%"
+                  values={history.map((s) => s.cpu_percent)}
+                  max={100}
+                  current={resources.cpu_percent}
+                  color="#6366f1"
+                  fill="rgba(99,102,241,0.18)"
+                />
+                <HistoryPanel
+                  label="RAM"
+                  unit="Mo"
+                  values={history.map((s) => s.ram_used_mb)}
+                  max={resources.ram_total_mb || 1}
+                  current={resources.ram_used_mb}
+                  color="#10b981"
+                  fill="rgba(16,185,129,0.18)"
+                />
+                {resources.gpu_available && (
+                  <HistoryPanel
+                    label="GPU"
+                    unit="%"
+                    values={history.map((s) => s.gpu_percent)}
+                    max={100}
+                    current={resources.gpu_percent}
+                    color="#f59e0b"
+                    fill="rgba(245,158,11,0.18)"
+                  />
+                )}
+              </div>
+            </div>
+          )}
         </section>
       )}
 

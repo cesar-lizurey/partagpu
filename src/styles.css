@@ -1430,6 +1430,66 @@ select.task-dispatcher__input option {
   color: var(--color-text-muted);
 }
 
+/* Resource history sparklines */
+
+.history {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.history__title {
+  margin: 0 0 10px 0;
+  font-size: 0.95em;
+  font-weight: 600;
+}
+
+.history__sublabel {
+  font-weight: normal;
+  color: var(--color-text-muted);
+  font-size: 0.85em;
+}
+
+.history__row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.history__panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+.history__panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.history__panel-label {
+  font-weight: 600;
+  font-size: 0.95em;
+}
+
+.history__panel-current {
+  font-size: 0.9em;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.history__panel-stats {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 0.78em;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Fleet view */
 
 .fleet__summary {

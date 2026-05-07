@@ -107,6 +107,18 @@ export const getPeers = () => invoke<Peer[]>("get_peers");
 
 export const getResources = () => invoke<ResourceUsage>("get_resources");
 
+export interface ResourceSample {
+  timestamp_secs: number;
+  cpu_percent: number;
+  ram_used_mb: number;
+  gpu_percent: number;
+}
+
+/** Last ~5 min of CPU/RAM/GPU samples (one every 5 s). Used to render
+ *  sparkline graphs of recent resource usage. */
+export const getResourceHistory = () =>
+  invoke<ResourceSample[]>("get_resource_history");
+
 export const getSharingConfig = () =>
   invoke<SharingConfig>("get_sharing_config");
 
