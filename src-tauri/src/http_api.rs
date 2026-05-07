@@ -142,6 +142,19 @@ pub fn start(
 async fn handle_connection(mut stream: TcpStream, state: ApiState) -> Result<(), String> {
     let req = read_request(&mut stream).await?;
 
+    // ── Anti-CSRF / DNS-rebinding gate ─────────────────────────────────────
+    // Reject any request that doesn't look like a local CLI/SDK client.
+    // - `Host` MUST be 127.0.0.1:7654 or localhost:7654. DNS rebinding
+    //   (evil.com → 127.0.0.1) leaves the original Host in the request even
+    //   though the TCP connection lands here, so this catches the rebind.
+    // - `Origin` MUST be absent. Browsers always set Origin on cross-origin
+    //   fetch ; legitimate callers (`requests`, `curl`, Tauri IPC bypass) do
+    //   not. A browser-driven dispatch attempt from any tab thus fails.
+    if let Some((status, msg)) = check_local_origin(&req) {
+        let body = format!(r#"{{"error":{}}}"#, json_string_escape(msg));
+        return write_short_response(&mut stream, status, &body).await;
+    }
+
     let (status, body) = match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/api/peers") => {
             let peers = state.discovery.get_peers();
@@ -170,12 +183,12 @@ async fn handle_connection(mut stream: TcpStream, state: ApiState) -> Result<(),
         _ => ("404 Not Found", r#"{"error":"Not found"}"#.to_string()),
     };
 
+    // No CORS headers: this API is local-only and explicitly NOT meant to
+    // be reached by browsers. The check_local_origin gate above blocks any
+    // cross-origin call before it reaches a handler.
     let response = format!(
         "HTTP/1.1 {status}\r\n\
          Content-Type: application/json\r\n\
-         Access-Control-Allow-Origin: *\r\n\
-         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n\
          \r\n\
@@ -684,6 +697,86 @@ fn json_string<T: Serialize>(v: &T) -> String {
     serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string())
 }
 
+/// Minimal JSON string escaper for one-off error bodies built before we
+/// hit serde_json. Just covers the characters that would break a literal
+/// `{"error":"…"}` envelope.
+fn json_string_escape(s: &str) -> String {
+    let escaped: String = s
+        .chars()
+        .flat_map(|c| match c {
+            '"' => vec!['\\', '"'],
+            '\\' => vec!['\\', '\\'],
+            '\n' => vec!['\\', 'n'],
+            '\r' => vec!['\\', 'r'],
+            '\t' => vec!['\\', 't'],
+            c if (c as u32) < 0x20 => format!("\\u{:04x}", c as u32).chars().collect(),
+            c => vec![c],
+        })
+        .collect();
+    format!("\"{escaped}\"")
+}
+
+/// Verify the request looks like a local CLI/SDK client and not a browser
+/// pivot. Returns `Some((status, msg))` if the request must be rejected.
+///
+/// Two checks:
+/// - `Host` must be `127.0.0.1:7654` or `localhost:7654` (case-insensitive).
+///   This catches DNS rebinding (`evil.com` → 127.0.0.1) which preserves the
+///   original Host header even though the TCP connection lands here.
+/// - `Origin` must be absent. `requests`, `curl`, and Tauri's internal IPC
+///   never set Origin ; browsers always set it on cross-origin fetch.
+fn check_local_origin(req: &Request) -> Option<(&'static str, &'static str)> {
+    let host = req
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("host"))
+        .map(|(_, v)| v.trim().to_ascii_lowercase());
+    match host.as_deref() {
+        Some("127.0.0.1:7654") | Some("localhost:7654") => {}
+        _ => {
+            return Some((
+                "403 Forbidden",
+                "Host header must be 127.0.0.1:7654 (local CLI/SDK only).",
+            ));
+        }
+    }
+
+    let has_origin = req
+        .headers
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("origin") && !v.trim().is_empty());
+    if has_origin {
+        return Some((
+            "403 Forbidden",
+            "Cross-origin requests are not accepted (local CLI/SDK only).",
+        ));
+    }
+
+    None
+}
+
+async fn write_short_response(
+    stream: &mut TcpStream,
+    status: &str,
+    body: &str,
+) -> Result<(), String> {
+    let response = format!(
+        "HTTP/1.1 {status}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .await
+        .map_err(|e| format!("write: {e}"))?;
+    let _ = stream.shutdown().await;
+    Ok(())
+}
+
 // ── HTTP request reader ────────────────────────────────────────────────────
 
 struct Request {
@@ -764,4 +857,73 @@ async fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
         body,
         headers,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req_with_headers(headers: Vec<(&str, &str)>) -> Request {
+        Request {
+            method: "POST".into(),
+            path: "/api/dispatch".into(),
+            body: String::new(),
+            headers: headers
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn local_origin_accepts_localhost_host() {
+        let req = req_with_headers(vec![("Host", "127.0.0.1:7654")]);
+        assert!(check_local_origin(&req).is_none());
+    }
+
+    #[test]
+    fn local_origin_accepts_localhost_alias() {
+        let req = req_with_headers(vec![("Host", "localhost:7654")]);
+        assert!(check_local_origin(&req).is_none());
+    }
+
+    #[test]
+    fn local_origin_rejects_dns_rebind_host() {
+        // DNS rebinding leaves the original Host even when the connection
+        // lands on 127.0.0.1.
+        let req = req_with_headers(vec![("Host", "evil.com:7654")]);
+        assert_eq!(
+            check_local_origin(&req).map(|(s, _)| s),
+            Some("403 Forbidden")
+        );
+    }
+
+    #[test]
+    fn local_origin_rejects_missing_host() {
+        let req = req_with_headers(vec![]);
+        assert_eq!(
+            check_local_origin(&req).map(|(s, _)| s),
+            Some("403 Forbidden")
+        );
+    }
+
+    #[test]
+    fn local_origin_rejects_browser_origin_header() {
+        let req = req_with_headers(vec![
+            ("Host", "127.0.0.1:7654"),
+            ("Origin", "https://evil.com"),
+        ]);
+        assert_eq!(
+            check_local_origin(&req).map(|(s, _)| s),
+            Some("403 Forbidden")
+        );
+    }
+
+    #[test]
+    fn local_origin_accepts_empty_origin_header() {
+        // Some clients set an empty Origin (uncommon but harmless) ; we
+        // tolerate that and only reject non-empty values.
+        let req = req_with_headers(vec![("Host", "127.0.0.1:7654"), ("Origin", "")]);
+        assert!(check_local_origin(&req).is_none());
+    }
 }
