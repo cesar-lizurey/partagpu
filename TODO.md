@@ -6,53 +6,31 @@ Travail restant. Les mesures **déjà en place** ne sont pas listées ici — el
 
 ---
 
-## 🔴 Sécurité — chantiers prioritaires
+## 🔴 Sécurité — chantier restant
 
-Issus d'un audit interne (threat-modeling « attaquant chevronné sur le LAN ou en local »).
+### Brute-force offline du passphrase via mDNS — phase 2
 
-### `room.json` lisible par tous les utilisateurs locaux
+- **Phase 1 (faite, 1.10.0)** : `derive_auth_key` est passé de HKDF (~1 µs/candidat) à PBKDF2-HMAC-SHA256 600 000 itérations (~100 ms/candidat). Le brute-force passive d'`auth_proof` mDNS est passé de ~10 min laptop à ~7 jours CPU = ~1 500 € de cloud.
+- **Phase 2 (à faire)** : retirer entièrement `auth_proof` du TXT mDNS et déplacer la vérification dans une route `/peer/v1/verify` qui exige un challenge HMAC bidirectionnel rate-limité par IP source. Supprime le leak passif au lieu de le rendre coûteux.
+- **Coût** : ~3-4 h de boulot (nouvelle route + refactor discovery pour probe async + état UI verified=false par défaut + tests).
+- **Priorité** : moyenne (l'exposition résiduelle après phase 1 n'est plus exploitable au threat model salle de cours).
 
-- **Problème** : `~/.config/partagpu/room.json` contient `secret_base32` en clair. `fs::write` n'applique pas de `chmod` explicite — le fichier hérite de l'umask par défaut (0644) → les autres utilisateurs locaux peuvent le lire.
-- **Impact** : sur une machine multi-utilisateurs, un autre user lit le secret de salle complet et peut envoyer des tâches arbitraires aux pairs.
-- **Fix** : `set_permissions(&path, 0o600)` après le `fs::write` dans `auth.rs::save_room`.
-- **Priorité** : haute (1 ligne, ferme un trou évident).
+---
 
-### CSRF / DNS rebinding sur l'API locale `127.0.0.1:7654`
+## ✅ Sécurité — réglés en 1.10.0
 
-- **Problème** : `http_api.rs` répond `Access-Control-Allow-Origin: *` et ne vérifie ni `Origin` ni `Referer` ni `Host`. Toute page web ouverte dans le navigateur de la victime peut faire `fetch("http://127.0.0.1:7654/api/dispatch", ...)` et dispatcher des tâches sur les pairs vérifiés. DNS rebinding (`evil.com` → 127.0.0.1) bypasse même PNA sur Firefox.
-- **Impact** : exécution de code arbitraire sur tous les pairs vérifiés depuis n'importe quel onglet ouvert sur la machine de la victime.
-- **Fix** : refuser toute requête sans `Host: 127.0.0.1:7654` (ou dont l'`Origin` est non-vide et non-Tauri). Les invocations Tauri internes n'envoient pas d'`Origin` ; le client Python utilise `requests` avec `Host: 127.0.0.1:7654`.
-- **Priorité** : haute.
+Liste courte avec les commits, gardée comme historique. Détails dans SECURITY.md / SECURITY.en.md.
 
-### Brute-force offline du passphrase via mDNS — atténuation faite, redesign restant
-
-- **Problème** : `crypto.rs::current_auth_proof` produit un HMAC tronqué à 32 bits (8 hex chars), broadcasté en clair en TXT mDNS. Un attaquant passif sur le LAN collecte 2-3 windows et brute-force offline les 256^4 ≈ 4.3 G passphrases possibles.
-- **Phase 1 (faite, depuis 1.10.0)** : la dérivation `auth_key` est passée de HKDF (~1 µs/candidat) à PBKDF2-HMAC-SHA256 600 000 itérations (~100 ms/candidat). Le brute-force passe de ~10 minutes laptop à ~7 jours CPU = ~1 500 € de cloud — infeasible au modèle « camarade curieux ».
-- **Phase 2 (à faire)** : retirer entièrement `auth_proof` du TXT mDNS et déplacer la vérification dans une route `/peer/v1/verify` qui exige un challenge HMAC bidirectionnel rate-limité par IP source. Élimine le leak passif au lieu de le rendre coûteux.
-- **Priorité** : moyenne (le risque pratique a chuté d'un facteur 10⁵, l'exposition restante n'est plus exploitable au threat model salle de cours).
-
-<!-- Items réglés depuis l'audit — gardés ici comme historique court avant
-nettoyage final. Les détails techniques vivent dans les commits / SECURITY.md. -->
-
-### ✅ Cap de connexions concurrentes sur peer API
-
-Réglé en 1.10.0 : `tokio::sync::Semaphore` de 64 permits acquis avant `accept()`. Au-delà, le surplus est absorbé par le TCP backlog du kernel.
-
-### ✅ `pids.max` sur cgroup
-
-Réglé en 1.10.0 : contrôleur `pids` activé dans `subtree_control` + `pids.max=1024` sur le cgroup parent (héritage automatique aux sub-cgroups par tâche).
-
-### ✅ Anti-replay au-delà de la fenêtre de timestamp
-
-Réglé en 1.10.0 : `ReplayCache` en mémoire dans `peer_api.rs`. Après auth réussie, le header `X-PartaGPU-AUTH` est inséré dans la cache (rétention 60 s, cap 4096 entrées, clear si débordement). Replay byte-identique → 401.
-
-### ✅ CSP stricte dans Tauri
-
-Réglé en 1.10.0 : `tauri.conf.json` passe de `"csp": null` à une politique stricte (`default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: …; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`).
-
-### ✅ Trust boundary documentée
-
-Réglé en 1.10.0 : section dédiée dans `SECURITY.md` / `SECURITY.en.md` qui explicite « un pair vérifié peut exécuter du code arbitraire dans le sandbox cible, c'est attendu ; les défenses sont l'isolation (sandbox + compte durci + cgroup), pas le filtrage de commandes ».
+| # | Item | Commit |
+|---|------|--------|
+| 1 | `room.json` en `chmod 600` (sinon `0644` par umask → autres users locaux lisent le secret) | `8fa7c33` |
+| 2 | Origin/Host gate sur `127.0.0.1:7654` contre CSRF + DNS rebinding | `e6cc705` |
+| 3 | Slow KDF (PBKDF2 600 k iters) sur la dérivation `auth_key` | `26a4c35` |
+| 4 | `Semaphore(64)` de connexions concurrentes sur peer API | `44278d1` |
+| 5 | `pids.max=1024` + contrôleur `pids` activé sur cgroup | `33bfb6f` |
+| 6 | `ReplayCache` 60 s contre rejeu d'une requête capturée | `f4d69ed` |
+| 7 | CSP stricte dans `tauri.conf.json` | `73acfed` |
+| 8 | Trust boundary explicitée (pair vérifié = exécution arbitraire dans le sandbox, c'est attendu) | `dd8b8df` |
 
 ---
 
