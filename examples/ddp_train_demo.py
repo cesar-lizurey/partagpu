@@ -3,12 +3,32 @@
 This script is designed to be shipped to each peer's sandbox via
 `partagpu.distribute(...)`. It reads the standard DDP env vars (RANK,
 WORLD_SIZE, MASTER_ADDR, MASTER_PORT, plus BACKEND set by PartaGPU) and
-runs a tiny CNN over synthetic data with NCCL/Gloo all-reduce between ranks.
+runs a CNN over synthetic data with NCCL/Gloo all-reduce between ranks.
 
-Usage (don't run by hand — use partagpu.distribute):
+Two modes :
+
+- **default (smoke test)** : tiny CNN (~10 k params) on 32×32 images.
+  Finishes in a couple of seconds. Verifies the wiring (auth, sandbox,
+  DDP rendezvous, all-reduce). Doesn't really load the GPU — most of
+  the time is spent in init / I/O / network round-trips, the per-PID
+  GPU sampler usually shows 0 %.
+
+- **`--heavy`** : ~5 M-param CNN on 128×128 images. Forward+backward
+  takes ~10-20 ms per batch on a modern GPU, enough to register
+  consistently in `nvidia-smi pmon`. Use this when you want to *see*
+  the GPU column climb in the PartaGPU UI.
+
+Usage (don't run by hand — use partagpu.distribute) ::
 
     import partagpu
+    # smoke test, fast
     results = partagpu.distribute("ddp_train_demo.py", args=["--epochs", "3"])
+    # real GPU load, slower
+    results = partagpu.distribute(
+        "ddp_train_demo.py",
+        args=["--heavy", "--epochs", "3"],
+        timeout=600,
+    )
 
 The script is intentionally self-contained: no external data files, no
 relative imports. Every peer that runs it needs `torch` available to its
@@ -31,8 +51,13 @@ from torch.utils.data import DataLoader, DistributedSampler, TensorDataset
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--epochs", type=int, default=3)
-    p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--samples", type=int, default=1024)
+    p.add_argument("--batch-size", type=int, default=None,
+                   help="Default 32 (smoke) / 64 (--heavy).")
+    p.add_argument("--samples", type=int, default=None,
+                   help="Default 1024 (smoke) / 4096 (--heavy).")
+    p.add_argument("--heavy", action="store_true",
+                   help="Use a 5 M-param CNN on 128×128 images so the GPU "
+                        "actually shows up in monitoring (instead of 0 %).")
     return p.parse_args()
 
 
@@ -47,6 +72,47 @@ def pick_backend() -> str:
     return "nccl" if torch.cuda.is_available() else "gloo"
 
 
+def build_smoke_model() -> nn.Module:
+    """~10 k params CNN — fast wiring test, GPU stays idle."""
+    return nn.Sequential(
+        nn.Conv2d(3, 16, 3, padding=1),
+        nn.ReLU(),
+        nn.Conv2d(16, 32, 3, padding=1),
+        nn.ReLU(),
+        nn.AdaptiveAvgPool2d(4),
+        nn.Flatten(),
+        nn.Linear(32 * 4 * 4, 10),
+    )
+
+
+def build_heavy_model() -> nn.Module:
+    """~5 M params CNN — same architecture as the local-training notebook
+    cell so the comparison is meaningful. Each batch hits the GPU long
+    enough (~10-20 ms on a 3060) to register in `nvidia-smi pmon`."""
+    def block(in_c: int, out_c: int) -> nn.Sequential:
+        return nn.Sequential(
+            nn.Conv2d(in_c, out_c, 3, padding=1),
+            nn.BatchNorm2d(out_c),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_c, out_c, 3, padding=1),
+            nn.BatchNorm2d(out_c),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+        )
+    return nn.Sequential(
+        block(3, 64),     # 128 -> 64
+        block(64, 128),   # 64  -> 32
+        block(128, 256),  # 32  -> 16
+        block(256, 512),  # 16  -> 8
+        nn.AdaptiveAvgPool2d(1),
+        nn.Flatten(),
+        nn.Linear(512, 256),
+        nn.ReLU(inplace=True),
+        nn.Dropout(0.3),
+        nn.Linear(256, 10),
+    )
+
+
 def main() -> int:
     args = parse_args()
     rank = int(os.environ["RANK"])
@@ -55,8 +121,24 @@ def main() -> int:
     master_port = os.environ.get("MASTER_PORT", "?")
     backend = pick_backend()
 
+    # Pick smoke vs heavy defaults. Explicit user values still override.
+    if args.heavy:
+        image_size = 128
+        samples = args.samples if args.samples is not None else 4096
+        batch_size = args.batch_size if args.batch_size is not None else 64
+    else:
+        image_size = 32
+        samples = args.samples if args.samples is not None else 1024
+        batch_size = args.batch_size if args.batch_size is not None else 32
+
     host = socket.gethostname()
-    print(f"[rank {rank}/{world_size}] host={host} backend={backend}", flush=True)
+    mode = "heavy" if args.heavy else "smoke"
+    print(
+        f"[rank {rank}/{world_size}] host={host} backend={backend} "
+        f"mode={mode} img={image_size}x{image_size} samples={samples} "
+        f"batch={batch_size}",
+        flush=True,
+    )
     print(
         f"[rank {rank}] cuda={torch.cuda.is_available()} "
         f"master={master_addr}:{master_port}",
@@ -70,24 +152,23 @@ def main() -> int:
     if device.type == "cuda":
         print(f"[rank {rank}] gpu={torch.cuda.get_device_name(0)}", flush=True)
 
-    # Synthetic dataset (3x32x32 images, 10 classes) — small so this runs
-    # quickly enough to verify the wiring.
+    # Synthetic dataset, fits entirely in CPU RAM.
     torch.manual_seed(rank)
-    X = torch.randn(args.samples, 3, 32, 32)
-    y = torch.randint(0, 10, (args.samples,))
+    X = torch.randn(samples, 3, image_size, image_size)
+    y = torch.randint(0, 10, (samples,))
     ds = TensorDataset(X, y)
     sampler = DistributedSampler(ds, num_replicas=world_size, rank=rank, shuffle=True)
-    loader = DataLoader(ds, batch_size=args.batch_size, sampler=sampler)
+    loader = DataLoader(
+        ds,
+        batch_size=batch_size,
+        sampler=sampler,
+        pin_memory=(device.type == "cuda"),
+    )
 
-    model = nn.Sequential(
-        nn.Conv2d(3, 16, 3, padding=1),
-        nn.ReLU(),
-        nn.Conv2d(16, 32, 3, padding=1),
-        nn.ReLU(),
-        nn.AdaptiveAvgPool2d(4),
-        nn.Flatten(),
-        nn.Linear(32 * 4 * 4, 10),
-    ).to(device)
+    model = (build_heavy_model() if args.heavy else build_smoke_model()).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    if rank == 0:
+        print(f"[rank 0] model params: {n_params / 1e6:.2f} M", flush=True)
 
     if device.type == "cuda":
         model = DDP(model, device_ids=[0])
@@ -110,6 +191,8 @@ def main() -> int:
             opt.step()
             running += loss.item()
             n += 1
+        if device.type == "cuda":
+            torch.cuda.synchronize()
         # Every rank prints to make the parallelism visible in the output.
         print(
             f"[rank {rank}] epoch {epoch + 1}/{args.epochs} "
