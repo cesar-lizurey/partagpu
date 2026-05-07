@@ -19,7 +19,7 @@ Trigger: tag `vX.Y.Z` (e.g. `v1.7.1`).
    git tag v1.7.1
    git push origin main v1.7.1
    ```
-4. CI runs `cargo test --all-targets --locked` first ; if any test fails the release is aborted. On green, it builds the `.deb` + `.AppImage` and creates the GitHub Release.
+4. CI runs `cargo fmt --check`, `cargo clippy -- -D warnings`, then `cargo test --all-targets --locked`. Any clippy warning or test failure aborts the release. On green it builds the `.deb` + `.AppImage` and creates the GitHub Release.
 5. Verify the release on the [releases page](https://github.com/cesar-lizurey/partagpu/releases).
 
 To avoid publishing the release immediately, mark the tag as a prerelease by editing the release after creation (the workflow defaults to `prerelease: false`).
@@ -41,5 +41,6 @@ Trigger: tag `python-vX.Y.Z` (e.g. `python-v1.4.1`). Independent of the Tauri ve
 ## Before pushing a tag
 
 - `npx tsc --noEmit` must pass.
-- `cargo test` (under `src-tauri/`) must pass — including the integration suite (`cargo test --test peer_api_e2e`). The release workflow already runs this gate, so a failed local run means the CI will reject the tag.
+- `cargo fmt --all --check` then `cargo clippy --all-targets --all-features --locked -- -D warnings` (from `src-tauri/`) must pass. CI promotes every clippy warning to an error — what passes locally passes in CI.
+- `cargo test` (from `src-tauri/`) must pass — including the integration suite (`cargo test --test peer_api_e2e`). The release workflow already runs this gate, so a failed local run means the CI will reject the tag.
 - `npx tauri build --bundles deb` once locally to confirm the bundle assembles cleanly before consuming a CI run.

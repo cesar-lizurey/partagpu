@@ -32,6 +32,12 @@ pub struct SharingController {
     config: Arc<Mutex<SharingConfig>>,
 }
 
+impl Default for SharingController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SharingController {
     pub fn new() -> Self {
         Self {

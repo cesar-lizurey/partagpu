@@ -12,38 +12,32 @@ const ROOM_FILE: &str = "room.json";
 /// 256 common French words — short, easy to spell, easy to dictate.
 /// 4 words = 256^4 = ~4 billion combinations.
 const WORDLIST: &[&str; 256] = &[
-    "abri","acier","aigle","aimer","algue","aller","ambre","amour",
-    "ancre","ange","arbre","arche","astre","atlas","avion","azote",
-    "badge","balai","barbe","barre","beton","bijou","blanc","blaze",
-    "boeuf","boire","bombe","bonne","bosse","bravo","brise","brume",
-    "cable","cacao","cadre","calme","canal","cargo","cedre","celer",
-    "champ","chose","cible","cidre","clair","clown","cobra","coeur",
-    "conte","coude","crabe","crane","cycle","dalle","danse","delta",
-    "digue","dorer","douze","dragon","droit","duvet","ecart","echec",
-    "ecran","effet","eleve","email","envoi","epice","etage","etoile",
-    "etude","exact","exode","facile","faune","ferme","fibre","figue",
-    "final","fleur","force","forme","foule","frais","fruit","fumee",
-    "galet","garce","geler","genou","givre","globe","gomme","goyave",
-    "grain","grise","guide","habit","herbe","heure","hiver","huile",
-    "icone","image","index","infra","issue","ivoire","jadis","jeton",
-    "joker","jouet","juice","jurer","karma","kayak","koala","label",
-    "lacet","laine","lampe","lance","large","laser","laver","lever",
-    "libre","ligue","lilas","linge","liste","livre","loche","lotus",
-    "loupe","lueur","lundi","macle","magen","mains","major","marge",
-    "masse","melon","merle","micro","mille","mitre","modem","moine",
-    "monde","morse","moule","muret","nappe","neige","niche","noble",
-    "noeud","nuage","ocean","olive","ombre","ongle","opale","orage",
-    "oscar","otage","ovale","ozone","pagne","panda","panne","parer",
-    "patio","pause","peage","perle","phase","piece","piste","pixel",
-    "place","plage","plomb","pluie","pneu","poele","point","pomme",
-    "porte","poste","prime","prune","pulse","quand","radar","radis",
-    "rampe","ravin","rebut","regle","reine","repos","riche","rival",
-    "roche","roman","rotin","rouge","ruban","sable","sabot","sapin",
-    "sauce","sauge","selle","seuil","siege","signe","socle","sonar",
-    "souci","spore","stage","style","sucre","table","talon","tamis",
-    "tasse","temps","tigre","tonne","trace","train","trial","tribu",
-    "tulip","turbo","ultra","union","urine","utile","vague","valse",
-    "vaste","verre","vigne","ville","vitre","voile","volte","wagon",
+    "abri", "acier", "aigle", "aimer", "algue", "aller", "ambre", "amour", "ancre", "ange",
+    "arbre", "arche", "astre", "atlas", "avion", "azote", "badge", "balai", "barbe", "barre",
+    "beton", "bijou", "blanc", "blaze", "boeuf", "boire", "bombe", "bonne", "bosse", "bravo",
+    "brise", "brume", "cable", "cacao", "cadre", "calme", "canal", "cargo", "cedre", "celer",
+    "champ", "chose", "cible", "cidre", "clair", "clown", "cobra", "coeur", "conte", "coude",
+    "crabe", "crane", "cycle", "dalle", "danse", "delta", "digue", "dorer", "douze", "dragon",
+    "droit", "duvet", "ecart", "echec", "ecran", "effet", "eleve", "email", "envoi", "epice",
+    "etage", "etoile", "etude", "exact", "exode", "facile", "faune", "ferme", "fibre", "figue",
+    "final", "fleur", "force", "forme", "foule", "frais", "fruit", "fumee", "galet", "garce",
+    "geler", "genou", "givre", "globe", "gomme", "goyave", "grain", "grise", "guide", "habit",
+    "herbe", "heure", "hiver", "huile", "icone", "image", "index", "infra", "issue", "ivoire",
+    "jadis", "jeton", "joker", "jouet", "juice", "jurer", "karma", "kayak", "koala", "label",
+    "lacet", "laine", "lampe", "lance", "large", "laser", "laver", "lever", "libre", "ligue",
+    "lilas", "linge", "liste", "livre", "loche", "lotus", "loupe", "lueur", "lundi", "macle",
+    "magen", "mains", "major", "marge", "masse", "melon", "merle", "micro", "mille", "mitre",
+    "modem", "moine", "monde", "morse", "moule", "muret", "nappe", "neige", "niche", "noble",
+    "noeud", "nuage", "ocean", "olive", "ombre", "ongle", "opale", "orage", "oscar", "otage",
+    "ovale", "ozone", "pagne", "panda", "panne", "parer", "patio", "pause", "peage", "perle",
+    "phase", "piece", "piste", "pixel", "place", "plage", "plomb", "pluie", "pneu", "poele",
+    "point", "pomme", "porte", "poste", "prime", "prune", "pulse", "quand", "radar", "radis",
+    "rampe", "ravin", "rebut", "regle", "reine", "repos", "riche", "rival", "roche", "roman",
+    "rotin", "rouge", "ruban", "sable", "sabot", "sapin", "sauce", "sauge", "selle", "seuil",
+    "siege", "signe", "socle", "sonar", "souci", "spore", "stage", "style", "sucre", "table",
+    "talon", "tamis", "tasse", "temps", "tigre", "tonne", "trace", "train", "trial", "tribu",
+    "tulip", "turbo", "ultra", "union", "urine", "utile", "vague", "valse", "vaste", "verre",
+    "vigne", "ville", "vitre", "voile", "volte", "wagon",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,9 +77,7 @@ fn config_path() -> PathBuf {
 fn dirs_next() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"))
-        })
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
 }
 
 fn save_room(room_name: &str, secret_base32: &str) {
@@ -111,6 +103,12 @@ fn load_room() -> Option<SavedRoom> {
 fn delete_room_file() {
     let path = config_path();
     let _ = fs::remove_file(&path);
+}
+
+impl Default for AuthManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AuthManager {
@@ -252,9 +250,12 @@ impl AuthManager {
     }
 
     pub fn get_secret(&self) -> Option<String> {
-        self.state.lock().unwrap().as_ref().map(|s| s.secret_base32.clone())
+        self.state
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.secret_base32.clone())
     }
-
 }
 
 pub struct CreateRoomOutput {
@@ -269,14 +270,8 @@ fn build_totp(secret_base32: &str, _room_name: &str) -> Result<TOTP, String> {
         .to_bytes()
         .map_err(|e| format!("Secret invalide : {e}"))?;
 
-    TOTP::new(
-        Algorithm::SHA1,
-        TOTP_DIGITS,
-        1,
-        TOTP_STEP,
-        secret,
-    )
-    .map_err(|e| format!("Erreur TOTP : {e}"))
+    TOTP::new(Algorithm::SHA1, TOTP_DIGITS, 1, TOTP_STEP, secret)
+        .map_err(|e| format!("Erreur TOTP : {e}"))
 }
 
 fn now_secs() -> u64 {
@@ -291,7 +286,9 @@ fn now_secs() -> u64 {
 /// Convert a base32 secret to a 4-word passphrase.
 /// Takes the first 4 bytes of the decoded secret as word indices.
 fn secret_to_passphrase(secret_b32: &str) -> String {
-    let bytes = data_encoding::BASE32.decode(secret_b32.as_bytes()).unwrap_or_default();
+    let bytes = data_encoding::BASE32
+        .decode(secret_b32.as_bytes())
+        .unwrap_or_default();
     let mut words = Vec::with_capacity(4);
     for i in 0..4 {
         let idx = *bytes.get(i).unwrap_or(&0) as usize;
@@ -326,12 +323,12 @@ fn passphrase_to_secret(passphrase: &str) -> Result<String, String> {
     // can recover the words), then 16 bytes of SHA1(seed) as padding.
     use sha1::Digest;
     let mut hasher = sha1::Sha1::new();
-    hasher.update(&seed);
+    hasher.update(seed);
     let hash = hasher.finalize();
 
     let mut secret_bytes = Vec::with_capacity(20);
-    secret_bytes.extend_from_slice(&seed);           // bytes 0..4: original words
-    secret_bytes.extend_from_slice(&hash[..16]);     // bytes 4..20: deterministic padding
+    secret_bytes.extend_from_slice(&seed); // bytes 0..4: original words
+    secret_bytes.extend_from_slice(&hash[..16]); // bytes 4..20: deterministic padding
 
     Ok(data_encoding::BASE32.encode(&secret_bytes))
 }

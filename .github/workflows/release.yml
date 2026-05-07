@@ -27,6 +27,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+          components: rustfmt, clippy
 
       - name: Cache Rust
         uses: actions/cache@v5
@@ -39,14 +40,25 @@ jobs:
 
       - name: Stub helper resource for tests
         # tauri-build verifies that every file listed in `tauri.conf.json`
-        # `bundle.resources` exists, even at `cargo test` time. The real
-        # helper is built in the `build` job ; tests don't invoke it, so
-        # we just create an executable placeholder. Real binary always
-        # ships from the build job — this stub never reaches users.
+        # `bundle.resources` exists, even at `cargo test` / `cargo clippy`
+        # time. The real helper is built in the `build` job ; tests and
+        # lints don't invoke it, so we just create an executable
+        # placeholder. Real binary always ships from the build job — this
+        # stub never reaches users.
         run: |
           mkdir -p src-tauri/resources
           printf '#!/bin/sh\nexit 0\n' > src-tauri/resources/partagpu-helper
           chmod +x src-tauri/resources/partagpu-helper
+
+      - name: Check formatting (cargo fmt)
+        working-directory: src-tauri
+        run: cargo fmt --all --check
+
+      - name: Lint (cargo clippy)
+        working-directory: src-tauri
+        # `-D warnings` promotes every clippy warning to an error so a new
+        # warning blocks the release just like a test failure would.
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Run unit + integration tests
         working-directory: src-tauri

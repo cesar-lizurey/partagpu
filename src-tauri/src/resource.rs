@@ -44,6 +44,12 @@ pub struct ResourceMonitor {
     sys: System,
 }
 
+impl Default for ResourceMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResourceMonitor {
     pub fn new() -> Self {
         let mut sys = System::new_all();

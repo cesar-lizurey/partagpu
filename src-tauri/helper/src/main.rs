@@ -122,9 +122,11 @@ fn chown_recursive(path: &str, user: &str) {
 }
 
 fn validate_int(name: &str, value: &str) -> u64 {
-    value
-        .parse::<u64>()
-        .unwrap_or_else(|_| die(&format!("{name} must be a positive integer, got: '{value}'")))
+    value.parse::<u64>().unwrap_or_else(|_| {
+        die(&format!(
+            "{name} must be a positive integer, got: '{value}'"
+        ))
+    })
 }
 
 // ── Commands ───────────────────────────────────────────────
@@ -149,10 +151,13 @@ fn cmd_create_user() {
         if !run(
             "useradd",
             &[
-                "--shell", RESTRICTED_SHELL,
+                "--shell",
+                RESTRICTED_SHELL,
                 "--create-home",
-                "--home-dir", PARTAGPU_HOME,
-                "--comment", "PartaGPU — partage de calcul",
+                "--home-dir",
+                PARTAGPU_HOME,
+                "--comment",
+                "PartaGPU — partage de calcul",
                 PARTAGPU_USER,
             ],
         ) {
@@ -160,10 +165,13 @@ fn cmd_create_user() {
             let _ = run(
                 "useradd",
                 &[
-                    "--shell", "/bin/bash",
+                    "--shell",
+                    "/bin/bash",
                     "--create-home",
-                    "--home-dir", PARTAGPU_HOME,
-                    "--comment", "PartaGPU — partage de calcul",
+                    "--home-dir",
+                    PARTAGPU_HOME,
+                    "--comment",
+                    "PartaGPU — partage de calcul",
                     PARTAGPU_USER,
                 ],
             );
@@ -172,10 +180,10 @@ fn cmd_create_user() {
     }
 
     // 2. Set password expiration (90 days)
-    let _ = run("chage", &[
-        "--maxdays", &PASSWORD_MAX_DAYS.to_string(),
-        PARTAGPU_USER,
-    ]);
+    let _ = run(
+        "chage",
+        &["--maxdays", &PASSWORD_MAX_DAYS.to_string(), PARTAGPU_USER],
+    );
 
     // 3. Block SSH access
     install_ssh_deny();
@@ -233,7 +241,9 @@ exec {exec_path}
 "#
     );
 
-    let parent = Path::new(RESTRICTED_SHELL).parent().unwrap_or(Path::new("/"));
+    let parent = Path::new(RESTRICTED_SHELL)
+        .parent()
+        .unwrap_or(Path::new("/"));
     mkdir_p(&parent.to_string_lossy());
     write_file(RESTRICTED_SHELL, &shell_script);
     set_permissions(RESTRICTED_SHELL, 0o755);
@@ -241,10 +251,7 @@ exec {exec_path}
     // Register in /etc/shells so display managers accept it
     let shells_content = fs::read_to_string("/etc/shells").unwrap_or_default();
     if !shells_content.contains(RESTRICTED_SHELL) {
-        let mut f = fs::OpenOptions::new()
-            .append(true)
-            .open("/etc/shells")
-            .ok();
+        let mut f = fs::OpenOptions::new().append(true).open("/etc/shells").ok();
         if let Some(ref mut file) = f {
             use std::io::Write;
             let _ = writeln!(file, "{RESTRICTED_SHELL}");
@@ -254,13 +261,17 @@ exec {exec_path}
 
 /// Block SSH access for the partagpu user.
 fn install_ssh_deny() {
-    let sshd_dir = Path::new(SSHD_DENY_FILE).parent().unwrap_or(Path::new("/etc/ssh"));
+    let sshd_dir = Path::new(SSHD_DENY_FILE)
+        .parent()
+        .unwrap_or(Path::new("/etc/ssh"));
 
     // Only write if the sshd_config.d directory exists (modern sshd)
     if sshd_dir.is_dir() {
         write_file(
             SSHD_DENY_FILE,
-            &format!("# PartaGPU: block SSH access for the sharing account\nDenyUsers {PARTAGPU_USER}\n"),
+            &format!(
+                "# PartaGPU: block SSH access for the sharing account\nDenyUsers {PARTAGPU_USER}\n"
+            ),
         );
         set_permissions(SSHD_DENY_FILE, 0o644);
         // Reload sshd to apply (best effort)
@@ -304,7 +315,9 @@ fn cmd_set_password() {
     }
 
     if !user_exists() {
-        die(&format!("user {PARTAGPU_USER} does not exist. Create it first."));
+        die(&format!(
+            "user {PARTAGPU_USER} does not exist. Create it first."
+        ));
     }
 
     // Pipe to chpasswd via stdin
@@ -318,7 +331,9 @@ fn cmd_set_password() {
         let _ = writeln!(stdin, "{PARTAGPU_USER}:{password}");
     }
 
-    let status = child.wait().unwrap_or_else(|e| die(&format!("chpasswd error: {e}")));
+    let status = child
+        .wait()
+        .unwrap_or_else(|e| die(&format!("chpasswd error: {e}")));
     if !status.success() {
         die("chpasswd failed");
     }
@@ -384,7 +399,8 @@ fn cmd_remove_user() {
             .lines()
             .filter(|l| l.trim() != RESTRICTED_SHELL)
             .collect::<Vec<_>>()
-            .join("\n") + "\n";
+            .join("\n")
+            + "\n";
         let _ = fs::write("/etc/shells", filtered);
     }
 
@@ -438,7 +454,12 @@ fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
     if let Ok(uid_str) = env::var("PKEXEC_UID") {
         if let Ok(uid) = uid_str.parse::<u32>() {
             // Limit + procs files of the parent cgroup.
-            for file in ["cpu.max", "memory.max", "cgroup.procs", "cgroup.subtree_control"] {
+            for file in [
+                "cpu.max",
+                "memory.max",
+                "cgroup.procs",
+                "cgroup.subtree_control",
+            ] {
                 let path = format!("{CGROUP_PATH}/{file}");
                 let _ = chown(&path, Some(uid), None);
             }
@@ -447,13 +468,14 @@ fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
         }
     }
 
-    println!("Cgroup configured: cpu={cpu_percent}% ram={ram_limit_mb}M (per-task sub-cgroups enabled)");
+    println!(
+        "Cgroup configured: cpu={cpu_percent}% ram={ram_limit_mb}M (per-task sub-cgroups enabled)"
+    );
 }
 
 fn cmd_remove_cgroup() {
     if Path::new(CGROUP_PATH).exists() {
-        let _ = fs::remove_dir(CGROUP_PATH)
-            .or_else(|_| fs::remove_dir_all(CGROUP_PATH));
+        let _ = fs::remove_dir(CGROUP_PATH).or_else(|_| fs::remove_dir_all(CGROUP_PATH));
     }
     println!("Cgroup removed");
 }
@@ -474,38 +496,118 @@ fn cmd_open_port() {
         );
     } else if which("iptables") {
         for port in [APP_PORT, PEER_PORT] {
-            let comment = if port == APP_PORT { "PartaGPU" } else { "PartaGPU peer" };
+            let comment = if port == APP_PORT {
+                "PartaGPU"
+            } else {
+                "PartaGPU peer"
+            };
             let _ = run_silent(
                 "iptables",
-                &["-D", "INPUT", "-p", "tcp", "--dport", &port.to_string(),
-                  "-m", "comment", "--comment", comment, "-j", "ACCEPT"],
+                &[
+                    "-D",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    &port.to_string(),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    comment,
+                    "-j",
+                    "ACCEPT",
+                ],
             );
             run(
                 "iptables",
-                &["-A", "INPUT", "-p", "tcp", "--dport", &port.to_string(),
-                  "-m", "comment", "--comment", comment, "-j", "ACCEPT"],
+                &[
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    &port.to_string(),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    comment,
+                    "-j",
+                    "ACCEPT",
+                ],
             );
         }
         // Rendezvous range for distributed training
         let _ = run_silent(
             "iptables",
-            &["-D", "INPUT", "-p", "tcp", "-m", "multiport", "--dports", RENDEZVOUS_RANGE,
-              "-m", "comment", "--comment", "PartaGPU DDP", "-j", "ACCEPT"],
+            &[
+                "-D",
+                "INPUT",
+                "-p",
+                "tcp",
+                "-m",
+                "multiport",
+                "--dports",
+                RENDEZVOUS_RANGE,
+                "-m",
+                "comment",
+                "--comment",
+                "PartaGPU DDP",
+                "-j",
+                "ACCEPT",
+            ],
         );
         run(
             "iptables",
-            &["-A", "INPUT", "-p", "tcp", "-m", "multiport", "--dports", RENDEZVOUS_RANGE,
-              "-m", "comment", "--comment", "PartaGPU DDP", "-j", "ACCEPT"],
+            &[
+                "-A",
+                "INPUT",
+                "-p",
+                "tcp",
+                "-m",
+                "multiport",
+                "--dports",
+                RENDEZVOUS_RANGE,
+                "-m",
+                "comment",
+                "--comment",
+                "PartaGPU DDP",
+                "-j",
+                "ACCEPT",
+            ],
         );
         let _ = run_silent(
             "iptables",
-            &["-D", "INPUT", "-p", "udp", "--dport", &MDNS_PORT.to_string(),
-              "-m", "comment", "--comment", "PartaGPU mDNS", "-j", "ACCEPT"],
+            &[
+                "-D",
+                "INPUT",
+                "-p",
+                "udp",
+                "--dport",
+                &MDNS_PORT.to_string(),
+                "-m",
+                "comment",
+                "--comment",
+                "PartaGPU mDNS",
+                "-j",
+                "ACCEPT",
+            ],
         );
         run(
             "iptables",
-            &["-A", "INPUT", "-p", "udp", "--dport", &MDNS_PORT.to_string(),
-              "-m", "comment", "--comment", "PartaGPU mDNS", "-j", "ACCEPT"],
+            &[
+                "-A",
+                "INPUT",
+                "-p",
+                "udp",
+                "--dport",
+                &MDNS_PORT.to_string(),
+                "-m",
+                "comment",
+                "--comment",
+                "PartaGPU mDNS",
+                "-j",
+                "ACCEPT",
+            ],
         );
         println!(
             "Firewall opened (iptables): TCP {APP_PORT}, TCP {PEER_PORT}, TCP {RENDEZVOUS_RANGE}, UDP {MDNS_PORT}"
@@ -529,16 +631,44 @@ fn cmd_close_port() {
         for (port, comment) in [(APP_PORT, "PartaGPU"), (PEER_PORT, "PartaGPU peer")] {
             let _ = run_silent(
                 "iptables",
-                &["-D", "INPUT", "-p", "tcp", "--dport", &port.to_string(),
-                  "-m", "comment", "--comment", comment, "-j", "ACCEPT"],
+                &[
+                    "-D",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    &port.to_string(),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    comment,
+                    "-j",
+                    "ACCEPT",
+                ],
             );
         }
         let _ = run_silent(
             "iptables",
-            &["-D", "INPUT", "-p", "tcp", "-m", "multiport", "--dports", RENDEZVOUS_RANGE,
-              "-m", "comment", "--comment", "PartaGPU DDP", "-j", "ACCEPT"],
+            &[
+                "-D",
+                "INPUT",
+                "-p",
+                "tcp",
+                "-m",
+                "multiport",
+                "--dports",
+                RENDEZVOUS_RANGE,
+                "-m",
+                "comment",
+                "--comment",
+                "PartaGPU DDP",
+                "-j",
+                "ACCEPT",
+            ],
         );
-        println!("Firewall closed (iptables): TCP {APP_PORT}, TCP {PEER_PORT}, TCP {RENDEZVOUS_RANGE}");
+        println!(
+            "Firewall closed (iptables): TCP {APP_PORT}, TCP {PEER_PORT}, TCP {RENDEZVOUS_RANGE}"
+        );
     } else {
         println!("No firewall detected, skipping");
     }

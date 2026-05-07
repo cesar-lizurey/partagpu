@@ -94,8 +94,8 @@ struct KeyState {
 }
 
 fn make_key_entry() -> KeyEntry {
-    let mut rng = rand::rngs::OsRng;
-    let secret = StaticSecret::random_from_rng(&mut rng);
+    let rng = rand::rngs::OsRng;
+    let secret = StaticSecret::random_from_rng(rng);
     let pk = PublicKey::from(&secret);
     KeyEntry {
         secret,
@@ -171,10 +171,7 @@ impl EphemeralKey {
     /// key is still in the grace window. The first element is always the
     /// current-key shared secret. Used by `decrypt_request_v2` to try the
     /// AES-GCM tag against both keys.
-    pub(crate) fn dh_candidates(
-        &self,
-        peer_pub_b64: &str,
-    ) -> Result<(Vec<[u8; 32]>, ()), String> {
+    pub(crate) fn dh_candidates(&self, peer_pub_b64: &str) -> Result<(Vec<[u8; 32]>, ()), String> {
         let raw = data_encoding::BASE64
             .decode(peer_pub_b64.as_bytes())
             .map_err(|e| format!("eph_pk base64 invalide : {e}"))?;
@@ -224,8 +221,8 @@ impl EphemeralKey {
 /// (private_secret, public_b64). The private secret stays on the stack and
 /// is dropped after the request is sent.
 pub fn fresh_client_eph() -> (StaticSecret, String) {
-    let mut rng = rand::rngs::OsRng;
-    let secret = StaticSecret::random_from_rng(&mut rng);
+    let rng = rand::rngs::OsRng;
+    let secret = StaticSecret::random_from_rng(rng);
     let pk = PublicKey::from(&secret);
     let pk_b64 = data_encoding::BASE64.encode(pk.as_bytes());
     (secret, pk_b64)
@@ -322,10 +319,7 @@ pub fn encrypt_v2(
 /// Encrypt `plaintext` with a known session key (no fresh DH). Used by the
 /// server to send back a response after it has derived the shared key from
 /// an incoming v=2 request, and by the client to decrypt that response.
-pub fn encrypt_with_session(
-    session_key: &[u8; 32],
-    plaintext: &[u8],
-) -> Result<Envelope, String> {
+pub fn encrypt_with_session(session_key: &[u8; 32], plaintext: &[u8]) -> Result<Envelope, String> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(session_key));
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
@@ -364,15 +358,12 @@ fn decrypt_inner(key: &[u8; 32], env: &Envelope) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("ciphertext base64 : {e}"))?;
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce = Nonce::from_slice(&nonce_bytes);
-    cipher
-        .decrypt(nonce, ct_bytes.as_ref())
-        .map_err(|_| {
-            // Don't leak details — could be tag mismatch, key mismatch, or
-            // truncated ciphertext. All of them mean "this didn't come from
-            // a peer in our room".
-            "déchiffrement AES-GCM échoué (clé invalide ou message altéré)"
-                .to_string()
-        })
+    cipher.decrypt(nonce, ct_bytes.as_ref()).map_err(|_| {
+        // Don't leak details — could be tag mismatch, key mismatch, or
+        // truncated ciphertext. All of them mean "this didn't come from
+        // a peer in our room".
+        "déchiffrement AES-GCM échoué (clé invalide ou message altéré)".to_string()
+    })
 }
 
 /// Server-side decryption of a v=2 envelope : extracts the client's ephemeral
@@ -414,10 +405,7 @@ pub fn encrypt_json<T: Serialize>(key: &[u8; 32], value: &T) -> Result<String, S
 }
 
 /// Convenience: decrypt a JSON-string envelope and parse the plaintext as JSON.
-pub fn decrypt_json<T: for<'a> Deserialize<'a>>(
-    key: &[u8; 32],
-    body: &str,
-) -> Result<T, String> {
+pub fn decrypt_json<T: for<'a> Deserialize<'a>>(key: &[u8; 32], body: &str) -> Result<T, String> {
     let env: Envelope = serde_json::from_str(body)
         .map_err(|e| format!("body n'est pas une enveloppe JSON : {e}"))?;
     let plain = decrypt(key, &env)?;
@@ -501,8 +489,7 @@ mod tests {
                 .unwrap();
         let server_eph = EphemeralKey::generate();
 
-        let (env, _) =
-            encrypt_v2(&room_key1, &server_eph.public_b64(), b"payload").unwrap();
+        let (env, _) = encrypt_v2(&room_key1, &server_eph.public_b64(), b"payload").unwrap();
         // Different room key → different session key → AES-GCM tag fails.
         assert!(decrypt_request_v2(&room_key2, &server_eph, &env).is_err());
     }
@@ -515,8 +502,7 @@ mod tests {
         let real_server = EphemeralKey::generate();
         let other_server = EphemeralKey::generate();
 
-        let (env, _) =
-            encrypt_v2(&room_key, &real_server.public_b64(), b"payload").unwrap();
+        let (env, _) = encrypt_v2(&room_key, &real_server.public_b64(), b"payload").unwrap();
         // Encrypted for `real_server` but `other_server` tries to read it.
         assert!(decrypt_request_v2(&room_key, &other_server, &env).is_err());
     }
@@ -530,8 +516,12 @@ mod tests {
                 .unwrap();
         let old_server_eph = EphemeralKey::generate();
 
-        let (captured, _) =
-            encrypt_v2(&room_key, &old_server_eph.public_b64(), b"yesterday's secret").unwrap();
+        let (captured, _) = encrypt_v2(
+            &room_key,
+            &old_server_eph.public_b64(),
+            b"yesterday's secret",
+        )
+        .unwrap();
 
         // Simulate app restart : new ephemeral keypair, old one is gone.
         let new_server_eph = EphemeralKey::generate();

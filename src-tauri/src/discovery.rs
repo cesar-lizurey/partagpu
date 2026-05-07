@@ -70,9 +70,7 @@ pub struct Discovery {
 fn display_name_path() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-        })
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     base.join("partagpu").join("display-name")
 }
@@ -80,7 +78,11 @@ fn display_name_path() -> std::path::PathBuf {
 fn load_display_name() -> Option<String> {
     let content = std::fs::read_to_string(display_name_path()).ok()?;
     let trimmed = content.trim().to_string();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 fn save_display_name(name: &str) {
@@ -321,177 +323,173 @@ impl Discovery {
         let sec_log = self.sec_log.clone();
 
         std::thread::spawn(move || {
-            loop {
-                match receiver.recv() {
-                    Ok(event) => match event {
-                        ServiceEvent::ServiceResolved(info) => {
-                            let name = info.get_fullname().to_string();
-                            if name.contains(&my_name) {
-                                continue;
-                            }
+            while let Ok(event) = receiver.recv() {
+                match event {
+                    ServiceEvent::ServiceResolved(info) => {
+                        let name = info.get_fullname().to_string();
+                        if name.contains(&my_name) {
+                            continue;
+                        }
 
-                            // ── Rate limiting ──────────────────────
-                            {
-                                let mut meta = peer_meta.lock().unwrap();
-                                if let Some(m) = meta.get(&name) {
-                                    if m.last_update.elapsed().as_secs() < RATE_LIMIT_SECS {
-                                        continue; // too fast, drop
-                                    }
+                        // ── Rate limiting ──────────────────────
+                        {
+                            let mut meta = peer_meta.lock().unwrap();
+                            if let Some(m) = meta.get(&name) {
+                                if m.last_update.elapsed().as_secs() < RATE_LIMIT_SECS {
+                                    continue; // too fast, drop
                                 }
-                                meta.insert(
-                                    name.clone(),
-                                    PeerMeta {
-                                        last_update: Instant::now(),
-                                    },
-                                );
                             }
+                            meta.insert(
+                                name.clone(),
+                                PeerMeta {
+                                    last_update: Instant::now(),
+                                },
+                            );
+                        }
 
-                            // ── Max peers limit ────────────────────
-                            {
-                                let map = peers.lock().unwrap();
-                                if map.len() >= MAX_PEERS && !map.contains_key(&name) {
-                                    eprintln!(
+                        // ── Max peers limit ────────────────────
+                        {
+                            let map = peers.lock().unwrap();
+                            if map.len() >= MAX_PEERS && !map.contains_key(&name) {
+                                eprintln!(
                                         "SECURITY: max peers ({MAX_PEERS}) reached, ignoring new peer: {name}"
                                     );
-                                    continue;
-                                }
+                                continue;
                             }
+                        }
 
-                            let ip = info
-                                .get_addresses()
-                                .iter()
-                                .find(|a| matches!(a, IpAddr::V4(_)))
-                                .map(|a| a.to_string())
-                                .unwrap_or_default();
+                        let ip = info
+                            .get_addresses()
+                            .iter()
+                            .find(|a| matches!(a, IpAddr::V4(_)))
+                            .map(|a| a.to_string())
+                            .unwrap_or_default();
 
-                            let props = info.get_properties();
-                            let hostname = props
-                                .get_property_val_str("hostname")
-                                .unwrap_or("unknown")
-                                .to_string();
-                            let display_name = props
-                                .get_property_val_str("display_name")
-                                .unwrap_or("")
-                                .to_string();
-                            let sharing = props
-                                .get_property_val_str("sharing")
-                                .unwrap_or("false")
-                                == "true";
-                            let cpu_limit: f32 = props
-                                .get_property_val_str("cpu_limit")
-                                .unwrap_or("0")
-                                .parse()
-                                .unwrap_or(0.0);
-                            let ram_limit: f32 = props
-                                .get_property_val_str("ram_limit")
-                                .unwrap_or("0")
-                                .parse()
-                                .unwrap_or(0.0);
-                            let gpu_limit: f32 = props
-                                .get_property_val_str("gpu_limit")
-                                .unwrap_or("0")
-                                .parse()
-                                .unwrap_or(0.0);
-                            let gpu_count: u32 = props
-                                .get_property_val_str("gpu_count")
-                                .unwrap_or("0")
-                                .parse()
-                                .unwrap_or(0);
-                            let totp_code = props
-                                .get_property_val_str("totp")
-                                .unwrap_or("")
-                                .to_string();
-                            let eph_pk = props
-                                .get_property_val_str("eph_pk")
-                                .unwrap_or("")
-                                .to_string();
+                        let props = info.get_properties();
+                        let hostname = props
+                            .get_property_val_str("hostname")
+                            .unwrap_or("unknown")
+                            .to_string();
+                        let display_name = props
+                            .get_property_val_str("display_name")
+                            .unwrap_or("")
+                            .to_string();
+                        let sharing =
+                            props.get_property_val_str("sharing").unwrap_or("false") == "true";
+                        let cpu_limit: f32 = props
+                            .get_property_val_str("cpu_limit")
+                            .unwrap_or("0")
+                            .parse()
+                            .unwrap_or(0.0);
+                        let ram_limit: f32 = props
+                            .get_property_val_str("ram_limit")
+                            .unwrap_or("0")
+                            .parse()
+                            .unwrap_or(0.0);
+                        let gpu_limit: f32 = props
+                            .get_property_val_str("gpu_limit")
+                            .unwrap_or("0")
+                            .parse()
+                            .unwrap_or(0.0);
+                        let gpu_count: u32 = props
+                            .get_property_val_str("gpu_count")
+                            .unwrap_or("0")
+                            .parse()
+                            .unwrap_or(0);
+                        let totp_code =
+                            props.get_property_val_str("totp").unwrap_or("").to_string();
+                        let eph_pk = props
+                            .get_property_val_str("eph_pk")
+                            .unwrap_or("")
+                            .to_string();
 
-                            let verified = match &auth {
-                                Some(a) if !totp_code.is_empty() => a.verify_code(&totp_code),
-                                Some(_) => false,
-                                None => true,
-                            };
+                        let verified = match &auth {
+                            Some(a) if !totp_code.is_empty() => a.verify_code(&totp_code),
+                            Some(_) => false,
+                            None => true,
+                        };
 
-                            // ── Hostname conflict detection ────────
-                            let hostname_conflict = {
-                                let map = peers.lock().unwrap();
-                                map.values().any(|p| {
-                                    p.hostname == hostname && p.id != name && p.ip != ip
-                                })
-                            };
+                        // ── Hostname conflict detection ────────
+                        let hostname_conflict = {
+                            let map = peers.lock().unwrap();
+                            map.values()
+                                .any(|p| p.hostname == hostname && p.id != name && p.ip != ip)
+                        };
 
-                            if hostname_conflict {
-                                if let Some(ref log) = sec_log {
-                                    log.peer_event(
+                        if hostname_conflict {
+                            if let Some(ref log) = sec_log {
+                                log.peer_event(
                                         crate::security_log::EventCategory::HostnameConflict,
                                         &format!("Conflit : « {hostname} » annoncé par {ip} mais déjà connu depuis une autre IP"),
                                         &ip, &hostname,
                                     );
+                            }
+                        }
+
+                        let peer = Peer {
+                            id: name.clone(),
+                            display_name,
+                            hostname,
+                            ip,
+                            port: info.get_port(),
+                            sharing_enabled: sharing,
+                            cpu_limit,
+                            ram_limit,
+                            gpu_limit,
+                            gpu_count,
+                            totp_code,
+                            verified,
+                            hostname_conflict,
+                            eph_pk,
+                        };
+
+                        if let Ok(mut map) = peers.lock() {
+                            let is_new = !map.contains_key(&name);
+                            map.insert(name, peer.clone());
+
+                            if let Some(ref log) = sec_log {
+                                if is_new {
+                                    let cat = if peer.verified {
+                                        crate::security_log::EventCategory::PeerVerified
+                                    } else {
+                                        crate::security_log::EventCategory::PeerRejected
+                                    };
+                                    log.peer_event(
+                                        cat,
+                                        &format!(
+                                            "Pair {} ({})",
+                                            peer.hostname,
+                                            if peer.verified {
+                                                "vérifié"
+                                            } else {
+                                                "non vérifié"
+                                            },
+                                        ),
+                                        &peer.ip,
+                                        &peer.hostname,
+                                    );
                                 }
                             }
-
-                            let peer = Peer {
-                                id: name.clone(),
-                                display_name,
-                                hostname,
-                                ip,
-                                port: info.get_port(),
-                                sharing_enabled: sharing,
-                                cpu_limit,
-                                ram_limit,
-                                gpu_limit,
-                                gpu_count,
-                                totp_code,
-                                verified,
-                                hostname_conflict,
-                                eph_pk,
-                            };
-
-                            if let Ok(mut map) = peers.lock() {
-                                let is_new = !map.contains_key(&name);
-                                map.insert(name, peer.clone());
-
+                        }
+                    }
+                    ServiceEvent::ServiceRemoved(_, name) => {
+                        if let Ok(mut map) = peers.lock() {
+                            if let Some(removed) = map.remove(&name) {
                                 if let Some(ref log) = sec_log {
-                                    if is_new {
-                                        let cat = if peer.verified {
-                                            crate::security_log::EventCategory::PeerVerified
-                                        } else {
-                                            crate::security_log::EventCategory::PeerRejected
-                                        };
-                                        log.peer_event(
-                                            cat,
-                                            &format!(
-                                                "Pair {} ({})",
-                                                peer.hostname,
-                                                if peer.verified { "vérifié" } else { "non vérifié" },
-                                            ),
-                                            &peer.ip,
-                                            &peer.hostname,
-                                        );
-                                    }
+                                    log.peer_event(
+                                        crate::security_log::EventCategory::PeerDisconnected,
+                                        &format!("Pair déconnecté : {}", removed.hostname),
+                                        &removed.ip,
+                                        &removed.hostname,
+                                    );
                                 }
                             }
                         }
-                        ServiceEvent::ServiceRemoved(_, name) => {
-                            if let Ok(mut map) = peers.lock() {
-                                if let Some(removed) = map.remove(&name) {
-                                    if let Some(ref log) = sec_log {
-                                        log.peer_event(
-                                            crate::security_log::EventCategory::PeerDisconnected,
-                                            &format!("Pair déconnecté : {}", removed.hostname),
-                                            &removed.ip,
-                                            &removed.hostname,
-                                        );
-                                    }
-                                }
-                            }
-                            if let Ok(mut meta) = peer_meta.lock() {
-                                meta.remove(&name);
-                            }
+                        if let Ok(mut meta) = peer_meta.lock() {
+                            meta.remove(&name);
                         }
-                        _ => {}
-                    },
-                    Err(_) => break,
+                    }
+                    _ => {}
                 }
             }
         });

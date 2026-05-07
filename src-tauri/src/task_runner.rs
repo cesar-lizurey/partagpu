@@ -29,8 +29,7 @@ fn save_atomic<T: Serialize>(path: &std::path::Path, value: &T) -> std::io::Resu
         std::fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension("json.tmp");
-    let json = serde_json::to_string_pretty(value)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let json = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
     std::fs::write(&tmp, json)?;
     std::fs::rename(tmp, path)
 }
@@ -308,16 +307,13 @@ impl IncomingTasks {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 sys.refresh_processes(ProcessesToUpdate::All, true);
 
-                let snapshot_pids: HashMap<String, u32> =
-                    pids.lock().unwrap().clone();
+                let snapshot_pids: HashMap<String, u32> = pids.lock().unwrap().clone();
                 if snapshot_pids.is_empty() {
                     continue;
                 }
                 let mut changed = false;
-                let snapshot_starts: HashMap<String, Instant> =
-                    starts.lock().unwrap().clone();
-                let snapshot_timeouts: HashMap<String, u64> =
-                    timeouts.lock().unwrap().clone();
+                let snapshot_starts: HashMap<String, Instant> = starts.lock().unwrap().clone();
+                let snapshot_timeouts: HashMap<String, u64> = timeouts.lock().unwrap().clone();
 
                 // One-shot poll of nvidia-smi pmon to learn per-PID GPU SM%.
                 // Empty map when the host has no GPU or pmon failed; we just
@@ -516,7 +512,10 @@ impl IncomingTasks {
                 timeout_secs,
                 &options,
                 move |pid| {
-                    pids_for_callback.lock().unwrap().insert(id_for_callback, pid);
+                    pids_for_callback
+                        .lock()
+                        .unwrap()
+                        .insert(id_for_callback, pid);
                 },
                 Some(&sink),
             );
@@ -529,7 +528,11 @@ impl IncomingTasks {
                 if let Some(task) = map.get_mut(&id) {
                     let already_cancelled = task.status == TaskStatus::Cancelled;
                     match result {
-                        Ok(SandboxResult { exit_code, stdout, stderr }) => {
+                        Ok(SandboxResult {
+                            exit_code,
+                            stdout,
+                            stderr,
+                        }) => {
                             task.output = stdout;
                             task.error_output = stderr;
                             task.exit_code = Some(exit_code);
@@ -660,6 +663,12 @@ impl<'de> Deserialize<'de> for RemoteRef {
             peer_ip: r.peer_ip,
             remote_task_id: r.remote_task_id,
         })
+    }
+}
+
+impl Default for OutgoingTasks {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -888,7 +897,9 @@ fn sample_gpu_per_pid() -> HashMap<u32, f32> {
         if parts.len() < 4 {
             continue;
         }
-        let Ok(pid) = parts[1].parse::<u32>() else { continue };
+        let Ok(pid) = parts[1].parse::<u32>() else {
+            continue;
+        };
         let sm: f32 = parts[3].parse().unwrap_or(0.0);
         *out.entry(pid).or_insert(0.0) += sm;
     }

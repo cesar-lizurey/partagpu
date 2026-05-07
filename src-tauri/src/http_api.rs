@@ -167,10 +167,7 @@ async fn handle_connection(mut stream: TcpStream, state: ApiState) -> Result<(),
         ("POST", "/api/dispatch") => handle_dispatch(&req, &state).await,
         ("POST", "/api/cancel") => handle_cancel(&req, &state).await,
         ("OPTIONS", _) => ("204 No Content", String::new()),
-        _ => (
-            "404 Not Found",
-            r#"{"error":"Not found"}"#.to_string(),
-        ),
+        _ => ("404 Not Found", r#"{"error":"Not found"}"#.to_string()),
     };
 
     let response = format!(
@@ -218,7 +215,7 @@ async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, Stri
             &auth,
             &discovery,
             &outgoing,
-            &body.peer_ip.trim().to_string(),
+            body.peer_ip.trim(),
             body.args,
             body.user,
             body.timeout_secs.unwrap_or(3600).min(24 * 3600),
@@ -230,10 +227,7 @@ async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, Stri
     .await;
 
     match result {
-        Ok(Ok(task)) => (
-            "200 OK",
-            serde_json::to_string(&task).unwrap_or_default(),
-        ),
+        Ok(Ok(task)) => ("200 OK", serde_json::to_string(&task).unwrap_or_default()),
         Ok(Err(e)) => {
             // Map the most common error prefixes to dedicated status codes
             // so the Python client can distinguish "no room" from "peer
@@ -253,6 +247,7 @@ async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, Stri
 /// Reusable from any blocking context (HTTP handler via spawn_blocking, or a
 /// Tauri command on the worker thread). Mutates the OutgoingTasks map as the
 /// task progresses.
+#[allow(clippy::too_many_arguments)] // dispatch is intrinsically wide ; refactor to a struct would just rename the args
 pub fn dispatch_task_blocking(
     auth: &AuthManager,
     discovery: &Discovery,
@@ -299,9 +294,8 @@ pub fn dispatch_task_blocking(
     // ourselves) is handled specially because we exclude our own announcement
     // from `get_peers()`, so the lookup would fall back to the raw IP.
     let local_lan_ip = local_ip_address::local_ip().map(|ip| ip.to_string()).ok();
-    let is_loopback_target = peer_ip == "127.0.0.1"
-        || peer_ip == "0.0.0.0"
-        || local_lan_ip.as_deref() == Some(peer_ip);
+    let is_loopback_target =
+        peer_ip == "127.0.0.1" || peer_ip == "0.0.0.0" || local_lan_ip.as_deref() == Some(peer_ip);
 
     // Look up the peer's ephemeral X25519 pubkey from mDNS. Empty string
     // means the peer is on an older PartaGPU that doesn't support v=2 yet —
@@ -342,12 +336,7 @@ pub fn dispatch_task_blocking(
     };
 
     // Reserve the OutgoingTask entry immediately so the UI shows activity.
-    let mut local_task = new_task(
-        args.clone(),
-        local_hostname,
-        user.clone(),
-        target_machine,
-    );
+    let mut local_task = new_task(args.clone(), local_hostname, user.clone(), target_machine);
     if let Some(client_id) = local_id_override.as_ref().filter(|s| !s.is_empty()) {
         local_task.id = client_id.clone();
     }
@@ -426,9 +415,7 @@ pub fn cancel_outgoing_task(
     let acknowledged = match resp {
         Ok(r) if r.status() >= 200 && r.status() < 300 => true,
         Ok(r) => return Err(format!("le pair a répondu HTTP {}", r.status())),
-        Err(ureq::Error::Status(s, _)) => {
-            return Err(format!("le pair a répondu HTTP {s}"))
-        }
+        Err(ureq::Error::Status(s, _)) => return Err(format!("le pair a répondu HTTP {s}")),
         Err(e) => return Err(format!("erreur de connexion au pair : {e}")),
     };
 
@@ -441,10 +428,7 @@ async fn handle_cancel(req: &Request, state: &ApiState) -> (&'static str, String
     let body: CancelBody = match serde_json::from_str(&req.body) {
         Ok(b) => b,
         Err(e) => {
-            return error_resp(
-                "400 Bad Request",
-                &format!("Corps JSON invalide : {e}"),
-            );
+            return error_resp("400 Bad Request", &format!("Corps JSON invalide : {e}"));
         }
     };
     let local_id = match body.local_id {
@@ -455,9 +439,10 @@ async fn handle_cancel(req: &Request, state: &ApiState) -> (&'static str, String
     let auth = state.auth.clone();
     let outgoing = state.outgoing.clone();
     let local_id_for_worker = local_id.clone();
-    let result =
-        tokio::task::spawn_blocking(move || cancel_outgoing_task(&auth, &outgoing, &local_id_for_worker))
-            .await;
+    let result = tokio::task::spawn_blocking(move || {
+        cancel_outgoing_task(&auth, &outgoing, &local_id_for_worker)
+    })
+    .await;
 
     match result {
         Ok(Ok(remote)) => (
@@ -509,14 +494,14 @@ fn run_remote_blocking(
     ) -> Result<(String, [u8; 32]), String> {
         if peer_eph_pk.is_empty() {
             let env = crypto::encrypt(room_key, plaintext_json.as_bytes())?;
-            let s = serde_json::to_string(&env)
-                .map_err(|e| format!("envelope sérialisation : {e}"))?;
+            let s =
+                serde_json::to_string(&env).map_err(|e| format!("envelope sérialisation : {e}"))?;
             Ok((s, *room_key))
         } else {
             let (env, session) =
                 crypto::encrypt_v2(room_key, peer_eph_pk, plaintext_json.as_bytes())?;
-            let s = serde_json::to_string(&env)
-                .map_err(|e| format!("envelope sérialisation : {e}"))?;
+            let s =
+                serde_json::to_string(&env).map_err(|e| format!("envelope sérialisation : {e}"))?;
             Ok((s, session))
         }
     }
@@ -529,8 +514,7 @@ fn run_remote_blocking(
         "network_enabled": network_enabled,
         "workspace": workspace,
     });
-    let body_str = serde_json::to_string(&body)
-        .map_err(|e| format!("JSON sérialisation : {e}"))?;
+    let body_str = serde_json::to_string(&body).map_err(|e| format!("JSON sérialisation : {e}"))?;
     let (body_env, submit_session_key) = encrypt_for(key, peer_eph_pk, &body_str)?;
 
     let resp = ureq::post(&url_submit)
@@ -565,7 +549,10 @@ fn run_remote_blocking(
 
     // Poll until terminal state, with a wall-clock budget = task timeout + grace.
     let deadline = Instant::now() + Duration::from_secs(timeout_secs.saturating_add(30));
-    let url_get = format!("http://{peer_ip}:{PEER_PORT}/peer/v1/tasks/{}", submit.task_id);
+    let url_get = format!(
+        "http://{peer_ip}:{PEER_PORT}/peer/v1/tasks/{}",
+        submit.task_id
+    );
 
     loop {
         if Instant::now() > deadline {
@@ -657,7 +644,7 @@ fn build_gpu_list(discovery: &Discovery, _monitor: &Arc<Mutex<ResourceMonitor>>)
             continue;
         }
         let count = peer.gpu_count.max(1); // backwards compat: if peer
-        // doesn't announce gpu_count (older app), assume 1 GPU.
+                                           // doesn't announce gpu_count (older app), assume 1 GPU.
         for idx in 0..count {
             gpus.push(GpuInfo {
                 host: peer.display_name.clone(),
@@ -718,8 +705,8 @@ async fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
         }
     }
 
-    let header_part = std::str::from_utf8(&buf[..header_end])
-        .map_err(|_| "en-têtes non UTF-8".to_string())?;
+    let header_part =
+        std::str::from_utf8(&buf[..header_end]).map_err(|_| "en-têtes non UTF-8".to_string())?;
     let mut lines = header_part.split("\r\n");
     let first = lines.next().ok_or("requête vide".to_string())?;
     let mut parts = first.split_whitespace();

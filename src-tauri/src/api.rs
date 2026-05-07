@@ -120,7 +120,9 @@ pub fn set_user_password(password: String) -> Result<String, String> {
 // ── Resource monitoring ────────────────────────────────────
 
 #[tauri::command]
-pub fn get_resources(monitor: State<'_, std::sync::Arc<Mutex<ResourceMonitor>>>) -> crate::resource::ResourceUsage {
+pub fn get_resources(
+    monitor: State<'_, std::sync::Arc<Mutex<ResourceMonitor>>>,
+) -> crate::resource::ResourceUsage {
     monitor.lock().unwrap().snapshot()
 }
 
@@ -177,6 +179,7 @@ pub fn get_outgoing_tasks(tasks: State<'_, OutgoingTasks>) -> Vec<Task> {
 /// `args` is the command split into arguments: ["python3", "train.py", "--epochs", "10"]
 /// Rejects tasks from unverified peers when a room is configured.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri commands need every State + every payload field
 pub fn submit_task(
     tasks: State<'_, IncomingTasks>,
     auth: State<'_, AuthManager>,
@@ -196,14 +199,21 @@ pub fn submit_task(
     // Block tasks from unverified peers when a room is active
     if auth.is_joined() {
         let peers = discovery.get_peers();
-        let peer = peers.iter().find(|p| p.hostname == source_machine || p.ip == source_machine);
+        let peer = peers
+            .iter()
+            .find(|p| p.hostname == source_machine || p.ip == source_machine);
         match peer {
             Some(p) if !p.verified => {
                 sec_log.peer_event(
                     EventCategory::TaskRejected,
-                    &format!("Tâche refusée de {} ({}) : pair non vérifié — commande : {}",
-                        source_machine, source_user, args.join(" ")),
-                    &p.ip, &p.hostname,
+                    &format!(
+                        "Tâche refusée de {} ({}) : pair non vérifié — commande : {}",
+                        source_machine,
+                        source_user,
+                        args.join(" ")
+                    ),
+                    &p.ip,
+                    &p.hostname,
                 );
                 return Err(format!(
                     "Tâche refusée : la machine « {} » n'est pas vérifiée. \
@@ -215,9 +225,14 @@ pub fn submit_task(
                 sec_log.log(
                     crate::security_log::EventLevel::Alert,
                     EventCategory::TaskRejected,
-                    &format!("Tâche refusée de {} ({}) : pair inconnu — commande : {}",
-                        source_machine, source_user, args.join(" ")),
-                    Some(&source_machine), None,
+                    &format!(
+                        "Tâche refusée de {} ({}) : pair inconnu — commande : {}",
+                        source_machine,
+                        source_user,
+                        args.join(" ")
+                    ),
+                    Some(&source_machine),
+                    None,
                 );
                 return Err(format!(
                     "Tâche refusée : la machine « {} » est inconnue.",
@@ -233,8 +248,12 @@ pub fn submit_task(
     sec_log.log(
         crate::security_log::EventLevel::Info,
         EventCategory::TaskSubmitted,
-        &format!("Tâche acceptée de {} ({}) : {}", source_machine, source_user, cmd_str),
-        Some(&source_machine), None,
+        &format!(
+            "Tâche acceptée de {} ({}) : {}",
+            source_machine, source_user, cmd_str
+        ),
+        Some(&source_machine),
+        None,
     );
 
     let target_machine = hostname::get()
@@ -359,6 +378,7 @@ pub async fn remove_managed_venv() -> Result<(), String> {
 /// `workspace` : fichiers à pousser dans `/workspace` du sandbox du pair
 /// avant l'exécution (déjà encodés en base64 côté caller).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri commands need every State + every payload field
 pub async fn dispatch_task(
     auth: State<'_, AuthManager>,
     discovery: State<'_, Discovery>,
@@ -382,15 +402,7 @@ pub async fn dispatch_task(
 
     tokio::task::spawn_blocking(move || {
         crate::http_api::dispatch_task_blocking(
-            &auth,
-            &discovery,
-            &outgoing,
-            &peer_ip,
-            args,
-            user,
-            timeout,
-            network,
-            workspace,
+            &auth, &discovery, &outgoing, &peer_ip, args, user, timeout, network, workspace,
             local_id,
         )
     })

@@ -19,7 +19,7 @@ Déclencheur : tag `vX.Y.Z` (ex. `v1.6.1`).
    git tag v1.7.1
    git push origin main v1.7.1
    ```
-4. La CI exécute d'abord `cargo test --all-targets --locked` ; si un test échoue, la release est avortée. Sinon elle build le `.deb` + `.AppImage` puis crée la GitHub Release.
+4. La CI exécute d'abord `cargo fmt --check`, `cargo clippy -- -D warnings`, puis `cargo test --all-targets --locked`. Le moindre warning clippy ou échec de test avorte la release. Sinon elle build le `.deb` + `.AppImage` puis crée la GitHub Release.
 5. Vérifier la release sur la [page des releases](https://github.com/cesar-lizurey/partagpu/releases).
 
 Pour ne pas créer la release publique tout de suite, marquer le tag en
@@ -47,6 +47,7 @@ la version Tauri — le paquet Python évolue à son propre rythme.
 ## Avant de pousser un tag
 
 - `npx tsc --noEmit` doit passer sans erreur.
+- `cargo fmt --all --check` puis `cargo clippy --all-targets --all-features --locked -- -D warnings` (depuis `src-tauri/`) doivent passer. La CI promeut chaque warning clippy en erreur — ce qui passe en local passe en CI.
 - `cargo test` (depuis `src-tauri/`) doit passer — y compris la suite
   d'intégration (`cargo test --test peer_api_e2e`). Le workflow release
   exécute déjà ce gate ; un échec local signifie que la CI rejettera le

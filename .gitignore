@@ -51,3 +51,5 @@ examples/__pycache__/
 __pycache__/
 *.pyc
 .pytest_cache/
+python/build/
+python/dist/

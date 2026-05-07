@@ -19,7 +19,7 @@
 //! to the protocol layer, and CI doesn't ship a usable bwrap.
 
 use partagpu_lib::auth::AuthManager;
-use partagpu_lib::crypto::{self, EphemeralKey, Envelope, ENCRYPTED_CONTENT_TYPE};
+use partagpu_lib::crypto::{self, Envelope, EphemeralKey, ENCRYPTED_CONTENT_TYPE};
 use partagpu_lib::discovery::Discovery;
 use partagpu_lib::peer_api;
 use partagpu_lib::sandbox::Sandbox;
@@ -73,8 +73,8 @@ fn start_test_server() -> (u16, EphemeralKey, String) {
     // via a dedicated test-only method (see crates/lib changes).
     sharing.force_active_for_tests();
 
-    let discovery = Discovery::new(&format!("test-host-{id}"), &format!("mid-{id}"))
-        .expect("Discovery::new");
+    let discovery =
+        Discovery::new(&format!("test-host-{id}"), &format!("mid-{id}")).expect("Discovery::new");
 
     let sandbox = Sandbox::new();
     let incoming = IncomingTasks::new(sandbox);

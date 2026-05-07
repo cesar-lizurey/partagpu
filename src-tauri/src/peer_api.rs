@@ -23,10 +23,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const LISTEN_ADDR: &str = "0.0.0.0:7655";
-
-/// Start the peer-API listening on the canonical port (0.0.0.0:7655).
-/// The integration tests use `start_on_addr` instead so they can bind to
-/// 127.0.0.1:0 and avoid port conflicts.
 const TOTP_HEADER: &str = "x-partagpu-totp";
 /// Cap on raw request size (post-base64, post-encryption-envelope). Sized
 /// to comfortably hold a 16 MB sandbox workspace after JSON+base64+encrypt
@@ -67,6 +63,9 @@ struct ErrorResponse {
     error: String,
 }
 
+/// Start the peer-API listening on the canonical port (0.0.0.0:7655).
+/// The integration tests use `start_on_addr` instead so they can bind to
+/// 127.0.0.1:0 and avoid port conflicts.
 pub fn start(
     incoming: IncomingTasks,
     auth: AuthManager,
@@ -161,6 +160,7 @@ pub fn start_on_addr(
     Ok(port)
 }
 
+#[allow(clippy::too_many_arguments)] // protocol-driven, every arg is required
 async fn handle_connection(
     mut stream: TcpStream,
     addr: SocketAddr,
@@ -204,34 +204,28 @@ async fn handle_connection(
             ))
         } else {
             match &room_key {
-                None => Some(
-                    "Cette machine n'est dans aucune salle PartaGPU."
-                        .to_string(),
-                ),
-                Some(key) => {
-                    match serde_json::from_str::<crypto::Envelope>(&req.body) {
-                        Ok(env) => {
-                            let result = match env.v {
-                                1 => crypto::decrypt(key, &env)
-                                    .map(|plain| (plain, *key)),
-                                2 => crypto::decrypt_request_v2(key, &server_eph, &env),
-                                v => Err(format!("version d'enveloppe non supportée : {v}")),
-                            };
-                            match result {
-                                Ok((plain, session_key)) => match String::from_utf8(plain) {
-                                    Ok(s) => {
-                                        req.body = s;
-                                        response_key = Some(session_key);
-                                        None
-                                    }
-                                    Err(_) => Some("plaintext non UTF-8".to_string()),
-                                },
-                                Err(e) => Some(e),
-                            }
+                None => Some("Cette machine n'est dans aucune salle PartaGPU.".to_string()),
+                Some(key) => match serde_json::from_str::<crypto::Envelope>(&req.body) {
+                    Ok(env) => {
+                        let result = match env.v {
+                            1 => crypto::decrypt(key, &env).map(|plain| (plain, *key)),
+                            2 => crypto::decrypt_request_v2(key, &server_eph, &env),
+                            v => Err(format!("version d'enveloppe non supportée : {v}")),
+                        };
+                        match result {
+                            Ok((plain, session_key)) => match String::from_utf8(plain) {
+                                Ok(s) => {
+                                    req.body = s;
+                                    response_key = Some(session_key);
+                                    None
+                                }
+                                Err(_) => Some("plaintext non UTF-8".to_string()),
+                            },
+                            Err(e) => Some(e),
                         }
-                        Err(e) => Some(format!("envelope JSON invalide : {e}")),
                     }
-                }
+                    Err(e) => Some(format!("envelope JSON invalide : {e}")),
+                },
             }
         }
     } else {
@@ -271,12 +265,9 @@ async fn handle_connection(
     // requests, and a freshly-derived ECDH session key for v=2.
     // Errors stay plain (the caller may not have the key — that's why the
     // call failed).
-    let (final_body, content_type) = if route_needs_encryption
-        && status.starts_with('2')
-        && !body.is_empty()
-        && response_key.is_some()
+    let (final_body, content_type) = if let Some(key) = response_key
+        .filter(|_| route_needs_encryption && status.starts_with('2') && !body.is_empty())
     {
-        let key = response_key.unwrap();
         match crypto::encrypt_with_session(&key, body.as_bytes()) {
             Ok(env) => match serde_json::to_string(&env) {
                 Ok(s) => (s, ENCRYPTED_CONTENT_TYPE),
@@ -377,7 +368,11 @@ fn handle_submit(
 
     let timeout = body.timeout_secs.unwrap_or(3600).min(24 * 3600);
 
-    let net_tag = if body.network_enabled { " [reseau]" } else { "" };
+    let net_tag = if body.network_enabled {
+        " [reseau]"
+    } else {
+        ""
+    };
     sec_log.log(
         EventLevel::Info,
         EventCategory::TaskSubmitted,
@@ -462,10 +457,7 @@ fn handle_cancel_task(
             );
             ("200 OK", "{\"cancelled\":true}".to_string())
         }
-        Err(e) => (
-            "404 Not Found",
-            json_string(&ErrorResponse { error: e }),
-        ),
+        Err(e) => ("404 Not Found", json_string(&ErrorResponse { error: e })),
     }
 }
 
@@ -501,10 +493,7 @@ fn check_auth(
         ));
     }
     if !auth.verify_code(&code) {
-        return Err((
-            "401 Unauthorized",
-            "Code TOTP invalide ou expiré.".into(),
-        ));
+        return Err(("401 Unauthorized", "Code TOTP invalide ou expiré.".into()));
     }
     Ok(())
 }

@@ -85,8 +85,8 @@ pub fn run() {
     // forward-secrecy window short even within a single session.
     let server_eph = EphemeralKey::generate();
 
-    let mut discovery = Discovery::new(&hostname, &machine_id)
-        .expect("Failed to initialize mDNS discovery");
+    let mut discovery =
+        Discovery::new(&hostname, &machine_id).expect("Failed to initialize mDNS discovery");
     discovery.set_auth(auth.clone());
     discovery.set_sharing(sharing.clone());
     discovery.set_security_log(sec_log.clone());

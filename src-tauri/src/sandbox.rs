@@ -74,6 +74,12 @@ pub struct OutputSink {
     pub stderr: Arc<Mutex<String>>,
 }
 
+impl Default for OutputSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OutputSink {
     pub fn new() -> Self {
         Self {
@@ -95,19 +101,43 @@ pub struct Sandbox {
     allowlist: Arc<Mutex<HashSet<String>>>,
 }
 
+impl Default for Sandbox {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Sandbox {
     pub fn new() -> Self {
         let mut defaults = HashSet::new();
         for cmd in [
-            "python3", "python", "pip3",
-            "env",  // useful for prefixing env vars in DDP launches
+            "python3",
+            "python",
+            "pip3",
+            "env", // useful for prefixing env vars in DDP launches
             "bash",
             "sh",
-            "cat", "head", "tail", "wc", "sort", "uniq", "grep", "awk", "sed",
-            "tar", "gzip", "gunzip",
+            "cat",
+            "head",
+            "tail",
+            "wc",
+            "sort",
+            "uniq",
+            "grep",
+            "awk",
+            "sed",
+            "tar",
+            "gzip",
+            "gunzip",
             "nvidia-smi",
-            "make", "cmake", "gcc", "g++", "rustc", "cargo",
-            "julia", "Rscript",
+            "make",
+            "cmake",
+            "gcc",
+            "g++",
+            "rustc",
+            "cargo",
+            "julia",
+            "Rscript",
         ] {
             defaults.insert(cmd.to_string());
         }
@@ -247,7 +277,10 @@ impl Sandbox {
         // Writable workspace: bind the host-prepared directory.
         cmd.args([
             "--bind",
-            workspace_host.path.to_str().ok_or("chemin workspace non UTF-8")?,
+            workspace_host
+                .path
+                .to_str()
+                .ok_or("chemin workspace non UTF-8")?,
             "/workspace",
         ]);
         cmd.args(["--chdir", "/workspace"]);
@@ -263,9 +296,7 @@ impl Sandbox {
             cmd.args(["--ro-bind", MANAGED_VENV_HOST, MANAGED_VENV_SANDBOX]);
         }
         let path_value = if managed_venv_active {
-            format!(
-                "{MANAGED_VENV_SANDBOX}/bin:/usr/local/bin:/usr/bin:/bin"
-            )
+            format!("{MANAGED_VENV_SANDBOX}/bin:/usr/local/bin:/usr/bin:/bin")
         } else {
             "/usr/local/bin:/usr/bin:/bin".to_string()
         };
@@ -295,7 +326,9 @@ impl Sandbox {
         cmd.stderr(Stdio::piped());
         cmd.stdin(Stdio::null());
 
-        let mut child = cmd.spawn().map_err(|e| format!("Impossible de lancer bwrap : {e}"))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Impossible de lancer bwrap : {e}"))?;
 
         let pid = child.id();
         on_pid(pid);

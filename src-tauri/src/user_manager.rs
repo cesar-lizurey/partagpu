@@ -85,7 +85,8 @@ impl UserManager {
             }
         }
 
-        let output = child.wait_with_output()
+        let output = child
+            .wait_with_output()
             .map_err(|e| format!("Erreur d'attente du helper : {e}"))?;
 
         if output.status.success() {
@@ -123,7 +124,7 @@ impl UserManager {
             .and_then(|o| {
                 if o.status.success() {
                     let line = String::from_utf8_lossy(&o.stdout).to_string();
-                    line.trim().split(':').last().map(|s| s.to_string())
+                    line.trim().split(':').next_back().map(|s| s.to_string())
                 } else {
                     None
                 }
@@ -177,10 +178,7 @@ impl UserManager {
 
     fn cgroup_is_writable() -> bool {
         let cpu_max = format!("{CGROUP_PATH}/cpu.max");
-        fs::OpenOptions::new()
-            .write(true)
-            .open(&cpu_max)
-            .is_ok()
+        fs::OpenOptions::new().write(true).open(&cpu_max).is_ok()
     }
 
     /// Check if the cgroup directory exists.
@@ -206,11 +204,7 @@ impl UserManager {
 
         // If cgroup exists but isn't writable, or doesn't exist at all,
         // try pkexec. If that fails (e.g. no admin rights), log and continue.
-        match Self::run_helper(&[
-            "setup-cgroup",
-            &cpu.to_string(),
-            &ram.to_string(),
-        ]) {
+        match Self::run_helper(&["setup-cgroup", &cpu.to_string(), &ram.to_string()]) {
             Ok(_) => Ok(()),
             Err(e) if Self::cgroup_exists() => {
                 // Cgroup exists from a previous setup, just can't adjust limits — acceptable
@@ -287,10 +281,7 @@ impl UserManager {
     /// is provided) emits each line as a Tauri event so the frontend can
     /// display a live install log. Used by `setup-venv` which can take
     /// 5-10 minutes.
-    fn run_helper_streaming(
-        args: &[&str],
-        app: Option<&tauri::AppHandle>,
-    ) -> Result<(), String> {
+    fn run_helper_streaming(args: &[&str], app: Option<&tauri::AppHandle>) -> Result<(), String> {
         use std::io::{BufRead, BufReader};
         use std::process::Stdio;
         use tauri::Emitter;
@@ -355,7 +346,9 @@ impl UserManager {
             if code == 126 {
                 return Err("Authentification annulée par l'utilisateur.".to_string());
             }
-            Err(format!("Erreur du helper (code {code}). Voir le log d'install."))
+            Err(format!(
+                "Erreur du helper (code {code}). Voir le log d'install."
+            ))
         }
     }
 }
