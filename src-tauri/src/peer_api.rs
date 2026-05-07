@@ -22,8 +22,10 @@ use crate::sharing::{SharingController, SharingStatus};
 use crate::task_runner::IncomingTasks;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 
 const LISTEN_ADDR: &str = "0.0.0.0:7655";
 const AUTH_HEADER: &str = "x-partagpu-auth";
@@ -31,6 +33,13 @@ const AUTH_HEADER: &str = "x-partagpu-auth";
 /// to comfortably hold a 16 MB sandbox workspace after JSON+base64+encrypt
 /// inflation (~28 MB worst case).
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
+/// Cap on the number of concurrent peer-API connections. Without this an
+/// attacker on the LAN could open thousands of TCP streams and have each
+/// hold a 32 MB read buffer in flight, exhausting RAM. 64 is generous for
+/// a classroom (a single DDP run uses ≤ N peers × ~1 conn) but strict
+/// enough that 1 000 spurious connections get queued behind the semaphore
+/// instead of all spawning at once.
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
 
 #[derive(Deserialize)]
 struct SubmitBody {
@@ -134,7 +143,21 @@ pub fn start_on_addr(
             };
             eprintln!("Peer API listening on port {port}");
 
+            // Bound concurrency so a flood of LAN connections can't OOM us.
+            // We acquire a permit BEFORE accepting the next stream — the
+            // listener's TCP backlog absorbs the queue, and the OS will
+            // start refusing connections beyond the kernel limit, which is
+            // exactly what we want.
+            let conn_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+
             loop {
+                // Hold the permit for the lifetime of the connection's
+                // tokio task ; dropping the permit releases the slot.
+                let permit = match conn_sem.clone().acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => return, // semaphore closed → shutdown
+                };
+
                 let (stream, addr) = match listener.accept().await {
                     Ok(conn) => conn,
                     Err(_) => continue,
@@ -155,6 +178,7 @@ pub fn start_on_addr(
                     {
                         eprintln!("Peer API: connection error from {addr}: {e}");
                     }
+                    drop(permit);
                 });
             }
         });
