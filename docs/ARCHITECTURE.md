@@ -858,7 +858,6 @@ Voir [SECURITY.md](../SECURITY.md) pour le détail. En résumé :
 - [README du package Python](../python/README.md) — référence des APIs Python
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — diagnostic des erreurs courantes
 - [SECURITY.md](../SECURITY.md) — détail des mesures de sécurité
-- [TODO.md](../TODO.md) — ce qui reste à faire
 - Code source :
   - Backend Rust : [`src-tauri/src/`](../src-tauri/src/)
   - Helper privilégié : [`src-tauri/helper/src/main.rs`](../src-tauri/helper/src/main.rs)

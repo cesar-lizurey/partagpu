@@ -13,7 +13,7 @@ const ACTIVE_STATUSES: ReadonlySet<TaskStatus> = new Set(["Queued", "Running"]);
  *  Limitation: only shows MY tasks per peer (we don't have a remote
  *  endpoint that exposes another peer's task list yet). For a "see what
  *  every classmate is running" view, a `/peer/v1/status` endpoint would
- *  be needed — see TODO.md. */
+ *  be needed. */
 export function Fleet() {
   const t = useT();
   const [peers, setPeers] = useState<Peer[]>([]);

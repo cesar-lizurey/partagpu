@@ -64,7 +64,7 @@ pub const ENCRYPTED_CONTENT_TYPE: &str = "application/x-partagpu-encrypted-v1";
 /// callers can pattern-match on specific failure modes (e.g. distinguish a
 /// malformed envelope from a key mismatch). The rest of the codebase still
 /// uses `String` errors — callers convert with `.map_err(|e| e.to_string())`
-/// at the boundary. See TODO.md for the broader migration.
+/// at the boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
     /// Base32 / base64 decode failed (room secret, nonce, ciphertext, eph_pk).

@@ -424,18 +424,6 @@ The room passphrase is **never displayed in clear by default** in the UI: the `R
 
 ---
 
-## Remaining measures
-
-See [TODO.en.md](TODO.en.md) for the up-to-date list. No critical measure remains: encryption (AES-256-GCM + X25519 forward secrecy), per-task isolation (cgroup sub-tree) and the concurrent-task cap are shipped. The remainder is low-priority polish:
-
-| Priority | Measure | Description |
-|----------|--------|-------------|
-| Low | Deeper integration tests | Two-instance test that exercises end-to-end dispatch (requires faking mDNS) |
-| None | Finer-grained re-keying | Rotate after N processed requests too, not just every 10 min |
-| Medium | Dependency audit | `cargo audit` + `npm audit` in CI, Dependabot |
-
----
-
 ## Reporting a vulnerability
 
 If you find a vulnerability in PartaGPU, please report it responsibly by opening a private issue on the GitHub repo or contacting the maintainers directly. Don't publish exploitation details before a fix is available.

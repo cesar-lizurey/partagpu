@@ -374,8 +374,8 @@ async fn handle_connection(
                         // Crypto layer is now typed (CryptoError) ; the
                         // peer-API handler still propagates errors as String,
                         // so we collapse via `.map_err(|e| e.to_string())`.
-                        // This will go away when the broader migration to
-                        // typed errors happens (see TODO.md).
+                        // This will go away if the broader migration to
+                        // typed errors happens.
                         let result: Result<(Vec<u8>, [u8; 32]), String> = match env.v {
                             1 => crypto::decrypt(key, &env)
                                 .map(|plain| (plain, *key))

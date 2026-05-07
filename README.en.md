@@ -245,7 +245,7 @@ The application has **4 tabs**:
 
 *Aggregate dashboard of every machine in the room.*
 
-Global stats up top (visible peers, usable peers, GPUs in the room, my active tasks + my total CPU/RAM/GPU usage), then one card per peer showing its offered capacity (CPU/RAM/GPU limits and GPU count) and the list of tasks **you** are currently running on it. Handy for supervising the room at a glance — a teacher, for example. The view only shows your own tasks per peer (an aggregated `/peer/v1/status` route would be needed to also see what other classmates dispatch — see TODO.md).
+Global stats up top (visible peers, usable peers, GPUs in the room, my active tasks + my total CPU/RAM/GPU usage), then one card per peer showing its offered capacity (CPU/RAM/GPU limits and GPU count) and the list of tasks **you** are currently running on it. Handy for supervising the room at a glance — a teacher, for example. The view only shows your own tasks per peer (an aggregated `/peer/v1/status` route would be needed to also see what other classmates dispatch).
 
 ### "Guide" tab
 
@@ -365,7 +365,6 @@ partagpu/
 │   └── images/                  # SVG diagrams
 ├── package.json, tsconfig.json, vite.config.ts
 ├── SECURITY.md                  # Detailed security measures
-├── TODO.md                      # Remaining security plan
 └── README.md
 ```
 
@@ -416,8 +415,6 @@ Slider adjustments, status reads, and monitoring **never call pkexec** — every
 - **Local control**: each machine keeps full control — *Pause* (suspend temporarily) or *Disable* (clean everything as if PartaGPU had never been installed) in one click; remote tasks in progress are stopped immediately
 
 For the full detail of every mechanism (diagrams, files involved, attack scenarios), see [SECURITY.en.md](SECURITY.en.md).
-
-For the full list of remaining measures, see [TODO.en.md](TODO.en.md).
 
 ---
 

@@ -857,7 +857,6 @@ See [SECURITY.en.md](../SECURITY.en.md) for the full detail. In summary:
 - [Python package README](../python/README.en.md) — Python API reference
 - [TROUBLESHOOTING.en.md](TROUBLESHOOTING.en.md) — diagnosis of common errors
 - [SECURITY.en.md](../SECURITY.en.md) — detail of security measures
-- [TODO.en.md](../TODO.en.md) — what's still to do
 - Source code:
   - Rust backend: [`src-tauri/src/`](../src-tauri/src/)
   - Privileged helper: [`src-tauri/helper/src/main.rs`](../src-tauri/helper/src/main.rs)

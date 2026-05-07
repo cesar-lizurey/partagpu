@@ -323,7 +323,7 @@ const fr = {
   "fleet.note_p2": "vous",
   "fleet.note_p3":
     " exécutez sur chaque pair. Pour savoir ce que d'autres classmates dispatchent sur eux, une route ",
-  "fleet.note_p4": " agrégée serait nécessaire — cf. TODO.md.",
+  "fleet.note_p4": " agrégée serait nécessaire.",
   "fleet.peer_auth_label": "Auth : ",
   "fleet.peer_auth_ok": "OK",
   "fleet.peer_auth_unknown": "?",
@@ -651,7 +651,7 @@ const en: Record<keyof typeof fr, string> = {
   "fleet.note_p2": "you",
   "fleet.note_p3":
     " are running on each peer. To see what other classmates dispatch on them, an aggregated ",
-  "fleet.note_p4": " route would be needed — see TODO.md.",
+  "fleet.note_p4": " route would be needed.",
   "fleet.peer_auth_label": "Auth: ",
   "fleet.peer_auth_ok": "OK",
   "fleet.peer_auth_unknown": "?",

@@ -35,8 +35,9 @@ hmac = "0.12"
 sha1 = "0.10"
 log = "0.4"
 env_logger = "0.11"
-# Typed errors via #[derive(Error)] — used by the crypto module so far
-# (the rest of the codebase is still on Result<T, String>, see TODO.md).
+# Typed errors via #[derive(Error)] — used by the crypto module ; the rest
+# of the codebase is still on Result<T, String> (no consumer of typed
+# errors so far, no migration in flight).
 thiserror = "2"
 # HTTP client used to dispatch tasks to remote peers (no TLS needed on LAN).
 ureq = { version = "2", default-features = false, features = ["json"] }

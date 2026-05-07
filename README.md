@@ -245,7 +245,7 @@ L'application a **4 onglets** :
 
 *Tableau de bord agrégé de toutes les machines de la salle.*
 
-Stats globales en haut (pairs visibles, pairs utilisables, GPU dans la salle, mes tâches actives + ma conso CPU/RAM/GPU totale), puis une carte par pair avec sa capacité offerte (limites CPU/RAM/GPU et nombre de GPU) et la liste des tâches que **vous** y exécutez en ce moment. Utile pour superviser la salle d'un coup d'œil — un prof, par exemple. La vue ne montre que vos propres tâches par pair (une route `/peer/v1/status` agrégée serait nécessaire pour voir aussi celles des autres camarades — cf. TODO.md).
+Stats globales en haut (pairs visibles, pairs utilisables, GPU dans la salle, mes tâches actives + ma conso CPU/RAM/GPU totale), puis une carte par pair avec sa capacité offerte (limites CPU/RAM/GPU et nombre de GPU) et la liste des tâches que **vous** y exécutez en ce moment. Utile pour superviser la salle d'un coup d'œil — un prof, par exemple. La vue ne montre que vos propres tâches par pair (une route `/peer/v1/status` agrégée serait nécessaire pour voir aussi celles des autres camarades).
 
 ### Onglet « Guide »
 
@@ -365,7 +365,6 @@ partagpu/
 │   └── images/                  # Schémas SVG
 ├── package.json, tsconfig.json, vite.config.ts
 ├── SECURITY.md                  # Détail des mesures de sécurité
-├── TODO.md                      # Plan de sécurité restant
 └── README.md
 ```
 
@@ -416,8 +415,6 @@ Les ajustements de sliders, la consultation du statut, et le monitoring **n'appe
 - **Contrôle local** : chaque machine garde le contrôle total — *Pause* (suspend temporairement) ou *Désactiver* (nettoie tout, comme si PartaGPU n'avait jamais été installé) en un clic ; les tâches distantes en cours sont immédiatement arrêtées
 
 Pour le détail complet de chaque mécanisme (schémas, fichiers concernés, scénarios d'attaque), voir [SECURITY.md](SECURITY.md).
-
-Pour le détail de toutes les mesures restantes, voir [TODO.md](TODO.md).
 
 ---
 

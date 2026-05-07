@@ -424,18 +424,6 @@ La passphrase de salle n'est **jamais affichée en clair par défaut** dans l'in
 
 ---
 
-## Mesures restantes à implémenter
-
-Voir [TODO.md](TODO.md) pour le détail à jour. Plus aucune mesure critique : le chiffrement (AES-256-GCM + forward secrecy X25519), l'isolation par tâche (cgroup/sub-tree) et le cap de tâches concurrentes sont livrés. Restent uniquement des améliorations de priorité faible :
-
-| Priorité | Mesure | Description |
-|----------|--------|-------------|
-| Faible | Tests d'intégration plus poussés | Test à deux instances pour exercer le dispatch end-to-end (impose de simuler mDNS) |
-| Nulle | Re-keying à granularité plus fine | Tourner aussi après N requêtes traitées, pas seulement toutes les 10 min |
-| Moyen | Audit des dépendances | `cargo audit` + `npm audit` en CI, Dependabot |
-
----
-
 ## Signaler une vulnérabilité
 
 Si vous trouvez une vulnérabilité dans PartaGPU, merci de la signaler de manière responsable en ouvrant une issue privée sur le dépôt GitHub ou en contactant directement les mainteneurs. Ne publiez pas de détails d'exploitation publiquement avant qu'un correctif ne soit disponible.
