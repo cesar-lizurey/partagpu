@@ -103,6 +103,7 @@ fn dirs_next() -> Option<PathBuf> {
 }
 
 fn save_room(room_name: &str, secret_base32: &str) {
+    use std::os::unix::fs::PermissionsExt;
     let path = config_path();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -113,12 +114,21 @@ fn save_room(room_name: &str, secret_base32: &str) {
     };
     if let Ok(json) = serde_json::to_string_pretty(&data) {
         let _ = fs::write(&path, json);
+        // Lock down to owner-only — the file holds the room secret in clear,
+        // a 0644 default umask would let any local user read it. Apply the
+        // chmod even if the write happened to fail above (idempotent : if
+        // the path doesn't exist, set_permissions silently fails too).
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
     }
 }
 
 fn load_room() -> Option<SavedRoom> {
+    use std::os::unix::fs::PermissionsExt;
     let path = config_path();
     let content = fs::read_to_string(&path).ok()?;
+    // Retro-fix old installs that wrote room.json under the default umask
+    // (0644) before the explicit chmod was added. Idempotent.
+    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
     serde_json::from_str(&content).ok()
 }
 
