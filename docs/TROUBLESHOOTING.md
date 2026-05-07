@@ -130,6 +130,19 @@ L'allowlist du pair ne contient pas la commande. Sur la machine du pair : UI →
 
 PartaGPU côté pair est désuet — `git pull && npm run tauri:dev` sur le pair pour mettre à jour. Le workspace doit être créé sous `/tmp` (writable par l'app), pas sous `/var/lib/partagpu` (mode 700, owned par `partagpu`).
 
+### `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`
+
+Le noyau Ubuntu 24.04+ restreint la création de user namespaces non-privilégiés (`kernel.apparmor_restrict_unprivileged_userns=1`). Bwrap ne peut donc pas configurer `lo` dans son namespace réseau et chaque tâche reçue échoue avec ce message.
+
+Le `.deb` PartaGPU pose normalement un drop-in `/etc/sysctl.d/60-partagpu-userns.conf` qui repasse ce réglage à `0` au moment de l'install. Si l'erreur survient, c'est qu'il a été supprimé, ou que vous avez installé via AppImage / depuis les sources. Pour le réappliquer :
+
+```bash
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/60-partagpu-userns.conf
+```
+
+Le réglage persiste après reboot grâce au fichier dans `/etc/sysctl.d/`. Pour revenir au défaut Ubuntu 24+ : `sudo rm /etc/sysctl.d/60-partagpu-userns.conf && sudo sysctl --system`.
+
 ### Une tâche reste en `Queued` indéfiniment
 
 Le sandbox n'arrive pas à se lancer. Causes :

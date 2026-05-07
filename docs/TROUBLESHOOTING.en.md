@@ -130,6 +130,19 @@ The peer's allowlist doesn't contain that command. On the peer's machine: UI →
 
 The peer's PartaGPU is out of date — `git pull && npm run tauri:dev` on the peer to update. The workspace must live under `/tmp` (writable by the app), not under `/var/lib/partagpu` (mode 700, owned by `partagpu`).
 
+### `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`
+
+The Ubuntu 24.04+ kernel restricts unprivileged user namespace creation (`kernel.apparmor_restrict_unprivileged_userns=1`). Bwrap therefore cannot configure `lo` in its network namespace and every incoming task fails with this message.
+
+The PartaGPU `.deb` ships a sysctl drop-in `/etc/sysctl.d/60-partagpu-userns.conf` that switches this back to `0` at install time. If the error happens, the file has been removed or you installed via AppImage / from source. To re-apply:
+
+```bash
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/60-partagpu-userns.conf
+```
+
+The setting persists across reboots thanks to the file under `/etc/sysctl.d/`. To revert to Ubuntu 24+ default: `sudo rm /etc/sysctl.d/60-partagpu-userns.conf && sudo sysctl --system`.
+
 ### A task is stuck in `Queued` indefinitely
 
 The sandbox can't start. Causes:

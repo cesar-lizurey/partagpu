@@ -60,7 +60,7 @@ Téléchargez la dernière version depuis la [page des releases](https://github.
 sudo dpkg -i partagpu_*_amd64.deb
 ```
 
-Le `.deb` installe tout automatiquement : l'application, le helper, et la règle PolicyKit. PartaGPU apparaît dans le menu d'applications.
+Le `.deb` installe tout automatiquement : l'application, le helper, la règle PolicyKit, et un drop-in sysctl `/etc/sysctl.d/60-partagpu-userns.conf` qui autorise la création de user namespaces non-privilégiés — nécessaire pour bubblewrap (le sandbox par tâche) sur Ubuntu 24.04+ qui restreint ça par défaut. Si vous préférez gérer vous-même cette politique AppArmor, supprimez le fichier après install et relancez `sudo sysctl --system` ; les tâches PartaGPU échoueront alors avec `bwrap: loopback: Failed RTM_NEWADDR` jusqu'à ce que vous fournissiez un profil AppArmor autorisant les user namespaces non-privilégiés à `bwrap`. PartaGPU apparaît dans le menu d'applications.
 
 ### Option B : AppImage (toute distribution Linux)
 
@@ -71,7 +71,14 @@ chmod +x PartaGPU-*.AppImage
 ./PartaGPU-*.AppImage
 ```
 
-Aucune installation nécessaire — l'AppImage est un exécutable autonome.
+L'AppImage est un exécutable autonome — mais sur Ubuntu 24.04+ vous devrez appliquer manuellement le réglage que le `.deb` pose automatiquement (le AppImage n'a pas de hook d'installation root) :
+
+```bash
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/60-partagpu-userns.conf
+```
+
+Sans ça, bubblewrap échouera à isoler les tâches reçues. Pas nécessaire sur Ubuntu ≤ 23.10 / Debian 12.
 
 ### Option C : depuis les sources (développement)
 
