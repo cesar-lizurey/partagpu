@@ -1,5 +1,9 @@
 🇬🇧 [English version](README.en.md)
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cesar-lizurey/partagpu/main/public/favicon.png" alt="PartaGPU" width="320">
+</p>
+
 # PartaGPU
 
 Application de partage de puissance de calcul (CPU/GPU/RAM) entre les ordinateurs d'une salle de cours, construite avec [Tauri](https://tauri.app/) (Rust + React/TypeScript).

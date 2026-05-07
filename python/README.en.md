@@ -1,5 +1,9 @@
 🇫🇷 [Version française](README.md)
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cesar-lizurey/partagpu/main/public/favicon.png" alt="PartaGPU" width="320">
+</p>
+
 # partagpu
 
 Python client for [PartaGPU](https://github.com/cesar-lizurey/partagpu) — use the GPUs of multiple classroom machines for distributed training.
@@ -119,7 +123,7 @@ cleanup_ddp()
 ## See also
 
 - [Main README](https://github.com/cesar-lizurey/partagpu) — app install, room management, UI
-- [Architecture](../docs/ARCHITECTURE.en.md) — how peer-to-peer dispatch, the sandbox, and DDP work
-- [Troubleshooting](../docs/TROUBLESHOOTING.en.md) — common errors (TOTP, NCCL, sandbox, missing torch, etc.)
-- Example notebook: `examples/decouverte_gpu.ipynb`
-- Smoke tests: `examples/smoke_run_remote.py`, `examples/smoke_ddp.py`, `examples/smoke_multi_gpu.py`
+- [Architecture](https://github.com/cesar-lizurey/partagpu/blob/main/docs/ARCHITECTURE.en.md) — how peer-to-peer dispatch, the sandbox, and DDP work
+- [Troubleshooting](https://github.com/cesar-lizurey/partagpu/blob/main/docs/TROUBLESHOOTING.en.md) — common errors (HMAC auth mismatch, NCCL, sandbox, missing torch, etc.)
+- Example notebook: [examples/decouverte_gpu.ipynb](https://github.com/cesar-lizurey/partagpu/blob/main/examples/decouverte_gpu.ipynb)
+- Smoke tests: [smoke_run_remote.py](https://github.com/cesar-lizurey/partagpu/blob/main/examples/smoke_run_remote.py), [smoke_ddp.py](https://github.com/cesar-lizurey/partagpu/blob/main/examples/smoke_ddp.py), [smoke_multi_gpu.py](https://github.com/cesar-lizurey/partagpu/blob/main/examples/smoke_multi_gpu.py)
