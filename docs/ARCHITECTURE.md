@@ -127,15 +127,22 @@ Le système est **partagé-secret** : tous les membres d'une salle dérivent les
 2. Les **4 premiers bytes** indexent dans un `WORDLIST` de 256 mots français → la passphrase (4 mots, ~4 milliards de combinaisons)
 3. La passphrase est dictée à l'oral aux camarades
 4. Au join, l'app reconvertit la passphrase en bytes, puis pad avec `SHA1(seed)[..16]` pour reconstruire les 20 bytes du secret canonique
-5. Le secret est sauvegardé en `~/.config/partagpu/room.json`
-6. À chaque chargement, l'`auth_key` (32 octets) est dérivée via `HKDF-SHA256(secret, info = "HMAC-SHA256 auth key v1")` — distincte de la `room_key` AES par l'`info` HKDF
+5. Le secret est sauvegardé en `~/.config/partagpu/room.json` (mode 0600)
+6. À chaque chargement, l'`auth_key` (32 octets) est dérivée via `PBKDF2-HMAC-SHA256(secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000)` — slow KDF anti-bruteforce (~100 ms en release), distincte de la `room_key` AES qui reste sur HKDF-SHA256
 
-### Vérification mutuelle (mDNS)
+### Vérification active des pairs (depuis 1.10.0)
 
-Chaque pair **publie un `auth_proof`** dans son TXT record mDNS (champ `auth_proof`). Le proof est `HMAC-SHA256(auth_key, current_30s_window)` tronqué à 8 caractères hex (32 bits, 1 chance sur 4 milliards de match aléatoire). Les autres pairs recalculent et comparent en temps constant :
+Plutôt que de broadcaster un tag HMAC périodique en TXT mDNS (l'ancien `auth_proof` jusqu'à 1.9.x, qui leakait 32 bits par fenêtre de 30 s — brute-forceable offline), chaque pair vérifié activement quand on le découvre.
 
-- Si match (à ±1 fenêtre près, soit ±30 s pour tolérer la dérive d'horloge) → `verified=true`
-- Sinon → `verified=false`, peer affiché grisé dans l'UI
+`Discovery` lance un thread par nouveau pair vu sur mDNS qui :
+1. Génère un nonce aléatoire de 16 octets
+2. `GET http://<peer_ip>:7655/peer/v1/verify?nonce=<hex>`
+3. Le pair (s'il est dans une salle) répond `{"hmac": "<HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes) hex>"}`
+4. Le sondeur recompute et compare en temps constant → `verified=true` si match, sinon `false`
+
+Une boucle `start_reverify_loop` re-sonde chaque pair toutes les 60 s pour détecter les changements (peer qui a quitté la salle, qui a rotaté la passphrase, etc.).
+
+La route `/peer/v1/verify` est **unauthenticated** (c'est le bootstrap d'auth), mais la combinaison [slow KDF + HMAC complet de 256 bits non-tronqué] rend la collecte massive de tags inutile pour l'attaquant : chaque candidat passphrase coûte ~100 ms PBKDF2 indépendamment du nombre de tags observés.
 
 ### Auth des requêtes HTTP entre pairs
 
@@ -770,16 +777,18 @@ Properties annoncées :
 - `sharing` (`true` si Active)
 - `cpu_limit`, `ram_limit`, `gpu_limit` (limites des sliders)
 - `gpu_count` (nombre de CUDA devices détectés)
-- `auth_proof` (HMAC-SHA256 tronqué à 8 hex sur la fenêtre 30 s courante)
 - `eph_pk` (pubkey X25519 éphémère pour le chiffrement v=2 forward-secret, regénérée à chaque démarrage et tournée toutes les 10 min)
+
+Pas d'`auth_proof` depuis 1.10.0 — la vérification est passée en challenge-response actif sur `/peer/v1/verify` pour ne plus broadcaster de tag HMAC en clair sur le LAN.
 
 Le browser (`Discovery::start_browsing`) consomme les events `ServiceResolved` / `ServiceRemoved`, applique :
 - **Rate limiting** par pair : 1 update / 2 s (anti-flood)
 - **Max peers** : 50 (anti-DOS)
 - **Detection de hostname conflict** (deux IPs pour le même hostname → flag `hostname_conflict` + log alerte)
-- **Vérification de la preuve HMAC** → `verified` boolean
+- **Probe `/peer/v1/verify` async** sur chaque nouveau pair → flippe `verified` après réponse HMAC valide
+- **Re-vérification périodique** (`start_reverify_loop`) toutes les 60 s pour détecter les peers qui ont quitté la salle
 
-Re-announcement périodique (`start_mdns_refresh`) toutes les 5 s **si l'état a changé** (`auth_proof`, sharing status, limits, gpu_count) — évite le flood quand rien ne bouge.
+Re-announcement périodique (`start_mdns_refresh`) toutes les 5 s **si l'état a changé** (sharing status, limits, gpu_count, eph_pk) — évite le flood quand rien ne bouge.
 
 ---
 

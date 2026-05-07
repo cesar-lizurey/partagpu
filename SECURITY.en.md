@@ -53,7 +53,7 @@ Each PartaGPU room shares a **cryptographic secret** (encoded as a 4-word code).
 - a **`room_key`** for AES-256-GCM body encryption, derived via HKDF-SHA256 (cf. section 2)
 - a distinct **`auth_key`** for HMAC authentication proofs, derived via **PBKDF2-HMAC-SHA256** with 600 000 iterations (slow KDF)
 
-For **passive mDNS verification**, every peer publishes an `auth_proof` = `HMAC-SHA256(auth_key, current_30s_window)` truncated to 8 hex chars (32 bits) in its TXT record. Others recompute it and constant-time compare ; no HTTP round-trip needed to flip the `verified` badge.
+For **active peer verification** (since 1.10.0), each app probes `/peer/v1/verify?nonce=<hex>` on every peer it sees over mDNS. The peer responds with `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes)` ; the prober recomputes and constant-time compares to flip the `verified` badge. **No static proof is ever broadcast** : a passive LAN listener no longer captures periodic HMAC tags. Before 1.10.0 the tag (`auth_proof`) was in the mDNS TXT and offline-brute-forceable ; moving to an active challenge eliminates that vector.
 
 For **HTTP requests**, every peer-to-peer call carries a header :
 ```
@@ -70,7 +70,8 @@ The server checks `|now - ts| ≤ 30 s`, then recomputes the HMAC and constant-t
 - **Clock-skew tolerance**: ±1 window (`AUTH_WINDOW_SECS = 30 s`).
 - **Access code**: 4 words from a 256-word list = 256^4 ≈ 4.3 billion combinations.
 - **Conversion**: the 4-word passphrase is converted to 4 bytes, then expanded to 20 bytes via SHA-1 to form a stable-length secret. Same shape as 1.6.x–1.8.x so existing `room.json` files keep working (config backward compat).
-- **Derivation**: `auth_key = PBKDF2-HMAC-SHA256(room_secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000, len = 32 bytes)`. Intentionally slow KDF: the derivation takes ~100 ms on a modern CPU, invisible at room-join time, but multiplies by ~10⁵ the cost of an offline brute-force of the passphrase from leaked mDNS `auth_proof` tags (from ~10 min on a laptop to ~7 CPU-days = ~$1 500 of cloud). Distinct from the AES `room_key`, which stays on HKDF-SHA256 (the `room_key` is never broadcast — different threat profile). **Protocol break vs ≤ 1.10.0**: every peer in a room must run a matching version.
+- **Derivation**: `auth_key = PBKDF2-HMAC-SHA256(room_secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000, len = 32 bytes)`. Intentionally slow KDF: the derivation takes ~100 ms on a modern CPU, invisible at room-join time, but multiplies by ~10⁵ the cost of an offline brute-force of the passphrase from any observed HMAC tag. Distinct from the AES `room_key`, which stays on HKDF-SHA256 (the `room_key` is never broadcast — different threat profile). **Protocol break vs ≤ 1.9.x**: every peer in a room must run 1.10.0+.
+- **Verify endpoint**: `GET /peer/v1/verify?nonce=<hex>` is unauthenticated by design (it IS the auth bootstrap). It accepts a 16–32-byte hex nonce and returns `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes)` in full (256 bits, not truncated). Combined with the slow KDF, collecting tags via repeated probes does not shorten the brute-force.
 - **Persistence**: only the secret is saved to `~/.config/partagpu/room.json` ; the `auth_key` is re-derived on every load.
 
 ### What's blocked

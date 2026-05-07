@@ -51,16 +51,9 @@ const HKDF_SALT: &[u8] = b"PartaGPU/peer-api/v1";
 const HKDF_INFO: &[u8] = b"AES-256-GCM message key";
 const HKDF_INFO_V2: &[u8] = b"AES-256-GCM session key v2 (room|ecdh)";
 
-/// Anti-replay window for HMAC request auth and mDNS auth proofs (seconds).
-/// Same value as the previous TOTP step — keeps the same anti-replay
-/// guarantees while letting clocks drift up to ±AUTH_WINDOW.
+/// Anti-replay window for HMAC request auth (seconds). Used by the
+/// `X-PartaGPU-AUTH` header check to bound the clock-skew tolerance.
 pub const AUTH_WINDOW_SECS: u64 = 30;
-
-/// Truncated length (hex chars) of the mDNS `auth_proof`. 8 hex = 32 bits =
-/// 1 chance in 4 billion of a random spoof match. Plenty for LAN passive
-/// verification ; full HMAC stays for HTTP request auth where we want full
-/// 256-bit strength.
-pub const AUTH_PROOF_HEX_LEN: usize = 8;
 
 /// Content-Type header used to signal an encrypted body. Receivers MUST
 /// reject bodies that don't carry this content-type — rejecting plaintext
@@ -372,12 +365,17 @@ pub fn derive_auth_key(secret_base32: &str) -> Result<[u8; 32], CryptoError> {
 
 // ── HMAC auth helpers ──────────────────────────────────────────────────────
 //
-// Two related primitives, both keyed by `auth_key` :
+// Two HMAC primitives, both keyed by `auth_key` :
 //
-//   1. `auth_proof_for_window` : truncated HMAC over a 30-s time window.
-//      Used in the mDNS TXT record so peers can verify each other passively
-//      without an HTTP round-trip. Functionally equivalent to a TOTP code
-//      but without the RFC 6238 / base32 / digit-formatting machinery.
+//   1. `compute_verify_response` / `verify_response` : challenge-response
+//      probe used by Discovery to verify that a peer holds the room secret.
+//      The verifier sends a fresh random nonce ; the prover responds with
+//      `HMAC(auth_key, "PartaGPU/verify-resp/v1\n" || nonce)`. Replaces the
+//      old static `auth_proof` broadcast in mDNS — that scheme leaked one
+//      HMAC tag per 30-s window passively, brute-forceable offline. The
+//      challenge-response variant requires an active TCP connection per
+//      tag and combines with PBKDF2-derived `auth_key` to make brute force
+//      cost prohibitive (~$1500 of cloud compute).
 //
 //   2. `compute_request_auth` / `verify_request_auth` : full HMAC bound to
 //      a specific HTTP request (timestamp + method + path + body hash).
@@ -392,55 +390,45 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn current_window() -> u64 {
-    now_secs() / AUTH_WINDOW_SECS
-}
+/// Minimum and maximum nonce sizes accepted by `verify_response`. 16 bytes
+/// is plenty (128 bits of randomness, no birthday-collision concern at our
+/// volume) ; 32 is a generous upper bound to allow callers some slack.
+pub const VERIFY_NONCE_MIN_BYTES: usize = 16;
+pub const VERIFY_NONCE_MAX_BYTES: usize = 32;
 
-/// Compute the truncated HMAC proof for a given 30-s window. Used by both
-/// the announcer (publishes it on mDNS) and verifiers (recompute and
-/// constant-time compare).
-fn auth_proof_for_window(auth_key: &[u8; 32], window: u64) -> String {
+/// Compute the HMAC response for a peer-verification challenge. The
+/// `nonce` is whatever bytes the verifier sent ; the response is the full
+/// 32-byte `HMAC-SHA256` (hex-encoded) over a fixed domain separator
+/// followed by those bytes. No truncation: at 256 bits the value is a
+/// distinct brute-force target per nonce, with the slow-KDF `auth_key`
+/// dominating the per-candidate cost.
+pub fn compute_verify_response(auth_key: &[u8; 32], nonce: &[u8]) -> String {
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(auth_key).expect("HMAC accepts any key length");
-    mac.update(b"PartaGPU/auth-proof/v1\n");
-    mac.update(&window.to_be_bytes());
+    mac.update(b"PartaGPU/verify-resp/v1\n");
+    mac.update(nonce);
     let bytes = mac.finalize().into_bytes();
-    // Hex-encode the first AUTH_PROOF_HEX_LEN/2 bytes ; one byte = 2 hex chars.
-    let prefix = &bytes[..AUTH_PROOF_HEX_LEN / 2];
-    let mut s = String::with_capacity(AUTH_PROOF_HEX_LEN);
-    for b in prefix {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes.iter() {
         use std::fmt::Write;
         write!(&mut s, "{b:02x}").expect("hex write into String can't fail");
     }
     s
 }
 
-/// Current mDNS auth proof for the local app to broadcast.
-pub fn current_auth_proof(auth_key: &[u8; 32]) -> String {
-    auth_proof_for_window(auth_key, current_window())
-}
-
-/// Verify a peer-announced auth proof, allowing ±1 window of clock skew
-/// (same tolerance as the previous TOTP scheme).
-pub fn verify_auth_proof(auth_key: &[u8; 32], candidate: &str) -> bool {
-    let now_w = current_window();
-    for w in [now_w, now_w.wrapping_sub(1), now_w.wrapping_add(1)] {
-        let expected = auth_proof_for_window(auth_key, w);
-        // Constant-time-ish comparison : both strings have the same length
-        // and the loop visits every byte regardless of position. Good enough
-        // for a 32-bit integrity tag broadcast on a LAN.
-        if expected.len() == candidate.len()
-            && expected
-                .as_bytes()
-                .iter()
-                .zip(candidate.as_bytes())
-                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-                == 0
-        {
-            return true;
-        }
+/// Verify a peer's `verify-resp` HMAC. Returns true iff `candidate_hex`
+/// matches the expected HMAC for `nonce`, in (near-)constant time.
+pub fn verify_response(auth_key: &[u8; 32], nonce: &[u8], candidate_hex: &str) -> bool {
+    let expected = compute_verify_response(auth_key, nonce);
+    if expected.len() != candidate_hex.len() {
+        return false;
     }
-    false
+    expected
+        .as_bytes()
+        .iter()
+        .zip(candidate_hex.as_bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 /// Build the HTTP request auth header value : `<unix_ts>:<hex hmac>`.
@@ -726,23 +714,35 @@ mod tests {
     // ── HMAC auth tests ────────────────────────────────────────────────
 
     #[test]
-    fn auth_proof_matches_for_same_key() {
+    fn verify_response_matches_for_same_key_and_nonce() {
         let secret_b32 = data_encoding::BASE32.encode(b"shared-room!!!!!!!!!!!!!");
         let k1 = derive_auth_key(&secret_b32).unwrap();
         let k2 = derive_auth_key(&secret_b32).unwrap();
-        let proof = current_auth_proof(&k1);
-        assert_eq!(proof.len(), AUTH_PROOF_HEX_LEN);
-        assert!(verify_auth_proof(&k2, &proof));
+        let nonce = b"random-nonce-1234";
+        let resp = compute_verify_response(&k1, nonce);
+        // Full HMAC-SHA256 = 32 bytes = 64 hex chars.
+        assert_eq!(resp.len(), 64);
+        assert!(verify_response(&k2, nonce, &resp));
     }
 
     #[test]
-    fn auth_proof_rejects_wrong_key() {
+    fn verify_response_rejects_wrong_key() {
         let s1 = data_encoding::BASE32.encode(b"room-1!!!!!!!!!!!!!!!!!!");
         let s2 = data_encoding::BASE32.encode(b"room-2!!!!!!!!!!!!!!!!!!");
         let k1 = derive_auth_key(&s1).unwrap();
         let k2 = derive_auth_key(&s2).unwrap();
-        let proof = current_auth_proof(&k1);
-        assert!(!verify_auth_proof(&k2, &proof));
+        let nonce = b"random-nonce-1234";
+        let resp = compute_verify_response(&k1, nonce);
+        assert!(!verify_response(&k2, nonce, &resp));
+    }
+
+    #[test]
+    fn verify_response_rejects_wrong_nonce() {
+        // A response valid for nonce A must not validate against nonce B.
+        let secret_b32 = data_encoding::BASE32.encode(b"shared-room!!!!!!!!!!!!!");
+        let k = derive_auth_key(&secret_b32).unwrap();
+        let resp = compute_verify_response(&k, b"nonce-A-1234");
+        assert!(!verify_response(&k, b"nonce-B-1234", &resp));
     }
 
     #[test]

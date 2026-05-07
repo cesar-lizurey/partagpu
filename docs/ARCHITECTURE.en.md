@@ -127,15 +127,22 @@ The system is **shared-secret**: every member of a room derives the same keys fr
 2. The **first 4 bytes** index into a `WORDLIST` of 256 French words → the passphrase (4 words, ~4 billion combinations)
 3. The passphrase is dictated aloud to classmates
 4. On join, the app converts the passphrase back to bytes, then pads with `SHA1(seed)[..16]` to reconstruct the 20-byte canonical secret
-5. The secret is saved to `~/.config/partagpu/room.json`
-6. On every load, the `auth_key` (32 bytes) is derived via `HKDF-SHA256(secret, info = "HMAC-SHA256 auth key v1")` — distinct from the AES `room_key` via the HKDF `info`
+5. The secret is saved to `~/.config/partagpu/room.json` (mode 0600)
+6. On every load, the `auth_key` (32 bytes) is derived via `PBKDF2-HMAC-SHA256(secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000)` — slow KDF for brute-force resistance (~100 ms in release), distinct from the AES `room_key` which stays on HKDF-SHA256
 
-### Mutual verification (mDNS)
+### Active peer verification (since 1.10.0)
 
-Each peer **publishes an `auth_proof`** in its mDNS TXT record (field `auth_proof`). The proof is `HMAC-SHA256(auth_key, current_30s_window)` truncated to 8 hex chars (32 bits, 1 in 4 billion random match). Other peers recompute and constant-time compare:
+Rather than broadcasting a periodic HMAC tag in the mDNS TXT (the previous `auth_proof` field, which leaked 32 bits per 30-s window — offline-bruteforceable), each peer is verified actively when discovered.
 
-- If match (within ±1 window, i.e. ±30 s for clock drift tolerance) → `verified=true`
-- Otherwise → `verified=false`, peer shown greyed out in the UI
+`Discovery` spawns a thread per newly-seen peer that:
+1. Generates a 16-byte random nonce
+2. `GET http://<peer_ip>:7655/peer/v1/verify?nonce=<hex>`
+3. The peer (if in a room) responds `{"hmac": "<HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce_bytes) hex>"}`
+4. The prober recomputes and constant-time compares → `verified=true` on match, `false` otherwise
+
+A `start_reverify_loop` background loop re-probes every peer every 60 s to catch state changes (peer leaving the room, passphrase rotation, etc.).
+
+The `/peer/v1/verify` route is **unauthenticated** (it IS the auth bootstrap), but the combination [slow KDF + full 256-bit non-truncated HMAC] makes mass tag collection useless for an attacker: each candidate passphrase costs ~100 ms of PBKDF2 regardless of how many tags they observe.
 
 ### HTTP request auth between peers
 
@@ -769,16 +776,18 @@ Announced properties:
 - `sharing` (`true` if Active)
 - `cpu_limit`, `ram_limit`, `gpu_limit` (slider limits)
 - `gpu_count` (number of detected CUDA devices)
-- `auth_proof` (truncated HMAC-SHA256 over the current 30-s window, 8 hex chars)
 - `eph_pk` (ephemeral X25519 pubkey for v=2 forward-secret encryption, regenerated at every app start and rotated every 10 minutes)
+
+No `auth_proof` since 1.10.0 — verification moved to an active challenge-response on `/peer/v1/verify` so no HMAC tag is broadcast in clear over the LAN.
 
 The browser (`Discovery::start_browsing`) consumes `ServiceResolved` / `ServiceRemoved` events and applies:
 - **Per-peer rate limiting**: 1 update / 2 s (anti-flood)
 - **Max peers**: 50 (anti-DoS)
 - **Hostname conflict detection** (two IPs for the same hostname → `hostname_conflict` flag + alert log)
-- **HMAC proof verification** → `verified` boolean
+- **Async `/peer/v1/verify` probe** on every new peer → flips `verified` after a valid HMAC response
+- **Periodic re-verification** (`start_reverify_loop`) every 60 s to catch peers that left the room
 
-Periodic re-announcement (`start_mdns_refresh`) every 5 s **if state changed** (`auth_proof`, sharing status, limits, gpu_count) — avoids flooding when nothing moves.
+Periodic re-announcement (`start_mdns_refresh`) every 5 s **if state changed** (sharing status, limits, gpu_count, eph_pk) — avoids flooding when nothing moves.
 
 ---
 

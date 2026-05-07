@@ -14,9 +14,8 @@ export interface Peer {
   gpu_limit: number;
   /** Number of CUDA devices visible on this peer (0 if no GPU). */
   gpu_count?: number;
-  /** HMAC auth proof broadcast over mDNS (truncated HMAC over the current
-   *  30-s window). Used by the verifier to flip the `verified` flag. */
-  auth_proof: string;
+  /** True iff this peer answered the active `/peer/v1/verify` HMAC challenge
+   *  with a valid response. Updated asynchronously after the first probe. */
   verified: boolean;
   hostname_conflict: boolean;
   /** Peer's ephemeral X25519 public key (base64), regenerated on app restart.

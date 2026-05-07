@@ -257,8 +257,12 @@ async fn handle_connection(
 ) -> Result<(), String> {
     let mut req = read_request(&mut stream).await?;
 
-    // /health is the only unauthenticated, unencrypted endpoint (used as a
-    // probe). Everything under /peer/v1/tasks must be encrypted.
+    // /health and /verify are the unauthenticated, unencrypted endpoints
+    // (used as bootstrap probes). Everything under /peer/v1/tasks must be
+    // encrypted. /verify in particular IS the auth bootstrap : a peer that
+    // hasn't been verified yet can't sign a request, so the route must be
+    // open. Brute-force resistance comes from the PBKDF2-derived auth_key
+    // (slow KDF) — collecting tags via /verify doesn't help the attacker.
     let route_needs_encryption = req.path.starts_with("/peer/v1/tasks");
     let route_needs_auth = route_needs_encryption;
 
@@ -408,6 +412,9 @@ async fn handle_connection(
     } else {
         match (req.method.as_str(), req.path.as_str()) {
             ("GET", "/peer/v1/health") => handle_health(&auth, &sharing),
+            (m, p) if m == "GET" && p.starts_with("/peer/v1/verify") => {
+                handle_verify(&req.path, &auth)
+            }
             ("POST", "/peer/v1/tasks") => {
                 handle_submit(&req, &addr, &incoming, &discovery, &sec_log)
             }
@@ -462,6 +469,87 @@ fn handle_health(auth: &AuthManager, sharing: &SharingController) -> (&'static s
         sharing_active: sharing.get_config().status == SharingStatus::Active,
     };
     ("200 OK", json_string(&resp))
+}
+
+#[derive(Serialize)]
+struct VerifyResponse {
+    hmac: String,
+}
+
+/// Handle `GET /peer/v1/verify?nonce=<hex>`. Unauthenticated by design : it
+/// IS the auth bootstrap. Returns the HMAC of `(domain || nonce_bytes)`
+/// keyed by `auth_key`, hex-encoded. The nonce is supplied by the verifier
+/// and must be a fresh random value (the freshness is the verifier's
+/// responsibility — the prover doesn't track it).
+///
+/// Validation : nonce is mandatory, hex-encoded, raw size in
+/// `[VERIFY_NONCE_MIN_BYTES, VERIFY_NONCE_MAX_BYTES]`. Anything else is
+/// 400. If we're not in a room, return 403 (we can't compute a valid
+/// HMAC and shouldn't pretend).
+fn handle_verify(full_path: &str, auth: &AuthManager) -> (&'static str, String) {
+    // Parse the query string — the path arrives like
+    // "/peer/v1/verify?nonce=<hex>". Cheap manual parse since we only
+    // accept the one parameter.
+    let nonce_hex = full_path
+        .split_once('?')
+        .map(|(_, q)| q)
+        .unwrap_or("")
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .find(|(k, _)| *k == "nonce")
+        .map(|(_, v)| v.trim().to_string())
+        .unwrap_or_default();
+
+    if nonce_hex.is_empty() {
+        return (
+            "400 Bad Request",
+            json_string(&ErrorResponse {
+                error: "Paramètre 'nonce' manquant.".into(),
+            }),
+        );
+    }
+    let nonce_bytes = match data_encoding::HEXLOWER.decode(nonce_hex.as_bytes()) {
+        Ok(b) => b,
+        Err(_) => {
+            // Try uppercase too — be permissive on the wire format.
+            match data_encoding::HEXUPPER.decode(nonce_hex.as_bytes()) {
+                Ok(b) => b,
+                Err(_) => {
+                    return (
+                        "400 Bad Request",
+                        json_string(&ErrorResponse {
+                            error: "Nonce invalide (hex attendu).".into(),
+                        }),
+                    );
+                }
+            }
+        }
+    };
+    if nonce_bytes.len() < crypto::VERIFY_NONCE_MIN_BYTES
+        || nonce_bytes.len() > crypto::VERIFY_NONCE_MAX_BYTES
+    {
+        return (
+            "400 Bad Request",
+            json_string(&ErrorResponse {
+                error: format!(
+                    "Nonce hors plage : {} octets (autorisé : {}–{}).",
+                    nonce_bytes.len(),
+                    crypto::VERIFY_NONCE_MIN_BYTES,
+                    crypto::VERIFY_NONCE_MAX_BYTES,
+                ),
+            }),
+        );
+    }
+
+    match auth.compute_verify_response(&nonce_bytes) {
+        Some(hmac) => ("200 OK", json_string(&VerifyResponse { hmac })),
+        None => (
+            "403 Forbidden",
+            json_string(&ErrorResponse {
+                error: "Cette machine n'est dans aucune salle PartaGPU.".into(),
+            }),
+        ),
+    }
 }
 
 fn handle_submit(

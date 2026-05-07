@@ -4,20 +4,20 @@
 //! passphrase. Every peer in the room derives the same secret and uses it
 //! to compute :
 //!
-//! - **mDNS auth proofs** ([`crypto::current_auth_proof`]) : a truncated
-//!   `HMAC-SHA256(auth_key, current_30s_window)` broadcast in the TXT
-//!   record. Other peers recompute and constant-time compare to verify
-//!   without an HTTP round-trip.
+//! - **active peer-verification challenges** ([`crypto::compute_verify_response`]) :
+//!   the verifier sends a fresh nonce over HTTP, the prover responds with
+//!   `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce)`. Replaces
+//!   the previous static `auth_proof` mDNS broadcast (1.9.x) which leaked
+//!   one HMAC tag per 30-s window passively.
 //! - **HTTP request auth headers** ([`crypto::compute_request_auth`]) :
 //!   `X-PartaGPU-AUTH: <unix_ts>:<full HMAC>` where the HMAC binds the
 //!   timestamp + method + path + body hash. Anti-replay window of
 //!   `crypto::AUTH_WINDOW_SECS` (30 s by default).
 //!
-//! This replaces the earlier TOTP scheme (RFC 6238) since 1.9.0 — the
-//! security guarantees are identical at the LAN-classroom threat model
-//! while removing the `totp-rs` / `base32` dependencies and binding the
-//! HTTP header to the request body (a captured TOTP code could be
-//! reused on any other request within 30 s).
+//! Since 1.9.0 the previous TOTP (RFC 6238) machinery is gone ; since
+//! 1.10.0 the mDNS static-proof leak is gone too (replaced by the active
+//! challenge above), and `auth_key` is derived via PBKDF2-HMAC-SHA256 with
+//! 600 000 iterations for offline-bruteforce resistance.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -64,11 +64,6 @@ pub struct RoomStatus {
     pub joined: bool,
     pub room_name: String,
     pub passphrase: String,
-    /// Current mDNS auth proof (truncated HMAC over the current 30-s window).
-    /// Surfaced for diagnostics ; the user typically doesn't need to read it.
-    pub current_auth_proof: String,
-    /// Seconds until the current auth-proof window flips over.
-    pub seconds_remaining: u64,
 }
 
 #[derive(Clone)]
@@ -135,13 +130,6 @@ fn load_room() -> Option<SavedRoom> {
 fn delete_room_file() {
     let path = config_path();
     let _ = fs::remove_file(&path);
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 impl Default for AuthManager {
@@ -237,23 +225,25 @@ impl AuthManager {
         delete_room_file();
     }
 
-    /// Current mDNS auth proof (truncated HMAC over the current 30-s window).
-    /// Returned as `None` if no room is joined. Broadcast in the `auth_proof`
-    /// TXT field by [`crate::discovery`].
-    pub fn current_auth_proof(&self) -> Option<String> {
+    /// Compute an HMAC response to a peer-verification challenge.
+    /// `nonce` is whatever bytes the verifier sent ; the response is
+    /// `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce)` hex.
+    /// Returns `None` if no room is joined.
+    pub fn compute_verify_response(&self, nonce: &[u8]) -> Option<String> {
         let state = self.state.lock().unwrap();
         state
             .as_ref()
-            .map(|s| crypto::current_auth_proof(&s.auth_key))
+            .map(|s| crypto::compute_verify_response(&s.auth_key, nonce))
     }
 
-    /// Verify an mDNS auth proof received from a peer (±1 window of skew).
-    /// Used by `Discovery` to flip the `verified` flag on a peer entry.
-    pub fn verify_auth_proof(&self, candidate: &str) -> bool {
+    /// Check whether `candidate_hex` is the expected `verify-resp` HMAC for
+    /// the given `nonce`. Used by `Discovery` to flip the `verified` flag
+    /// on a peer entry after an active `/peer/v1/verify` probe.
+    pub fn verify_response(&self, nonce: &[u8], candidate_hex: &str) -> bool {
         let state = self.state.lock().unwrap();
         match state.as_ref() {
             None => false,
-            Some(s) => crypto::verify_auth_proof(&s.auth_key, candidate),
+            Some(s) => crypto::verify_response(&s.auth_key, nonce, candidate_hex),
         }
     }
 
@@ -296,20 +286,12 @@ impl AuthManager {
                 joined: false,
                 room_name: String::new(),
                 passphrase: String::new(),
-                current_auth_proof: String::new(),
-                seconds_remaining: 0,
             },
-            Some(s) => {
-                let proof = crypto::current_auth_proof(&s.auth_key);
-                let remaining = crypto::AUTH_WINDOW_SECS - (now_secs() % crypto::AUTH_WINDOW_SECS);
-                RoomStatus {
-                    joined: true,
-                    room_name: s.room_name.clone(),
-                    passphrase: s.passphrase.clone(),
-                    current_auth_proof: proof,
-                    seconds_remaining: remaining,
-                }
-            }
+            Some(s) => RoomStatus {
+                joined: true,
+                room_name: s.room_name.clone(),
+                passphrase: s.passphrase.clone(),
+            },
         }
     }
 
@@ -430,11 +412,13 @@ mod tests {
         let key1 = crypto::derive_auth_key(&secret1).unwrap();
         let key2 = crypto::derive_auth_key(&secret2).unwrap();
         assert_eq!(key1, key2);
-        // And the auth proofs also match (they would by construction if the
-        // keys do, but the assertion documents the property).
+        // And the verify-resp HMAC over a fixed nonce matches across two
+        // independent derivations (would by construction if the keys do,
+        // but the assertion documents the property).
+        let nonce = b"test-nonce-1234567890";
         assert_eq!(
-            crypto::current_auth_proof(&key1),
-            crypto::current_auth_proof(&key2)
+            crypto::compute_verify_response(&key1, nonce),
+            crypto::compute_verify_response(&key2, nonce)
         );
     }
 }

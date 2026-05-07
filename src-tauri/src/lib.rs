@@ -101,6 +101,7 @@ pub fn run() {
         eprintln!("Warning: could not start mDNS browsing: {e}");
     }
     discovery.start_mdns_refresh();
+    discovery.start_reverify_loop();
     let sandbox = Sandbox::new();
     let monitor = Arc::new(Mutex::new(ResourceMonitor::new()));
     let incoming = IncomingTasks::new(sandbox);

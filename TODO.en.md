@@ -6,31 +6,21 @@ Remaining work. Already-shipped measures are **not** listed here — they live i
 
 ---
 
-## 🔴 Security — remaining item
+## ✅ Security — all items from the internal audit shipped in 1.10.0
 
-### Offline brute-force of the passphrase via mDNS — phase 2
-
-- **Phase 1 (shipped in 1.10.0)**: `derive_auth_key` moved from HKDF (~1 µs/candidate) to PBKDF2-HMAC-SHA256 with 600 000 iterations (~100 ms/candidate). Passive `auth_proof` brute-force went from ~10 min on a laptop to ~7 CPU-days = ~$1 500 of cloud.
-- **Phase 2 (pending)**: drop `auth_proof` from the mDNS TXT entirely and move verification to a `/peer/v1/verify` route that requires a bidirectional HMAC challenge, rate-limited per source IP. Eliminates the passive leak instead of just making it expensive.
-- **Cost**: ~3-4 h of work (new route + discovery refactor for async probe + UI state defaulting to `verified=false` + tests).
-- **Priority**: medium (residual exposure after phase 1 is no longer exploitable at the classroom threat model).
-
----
-
-## ✅ Security — shipped in 1.10.0
-
-Short list with commits, kept as history. Details in SECURITY.md / SECURITY.en.md.
+Short list with commits, kept as history. Details in SECURITY.md / SECURITY.en.md / docs/ARCHITECTURE.md.
 
 | # | Item | Commit |
 |---|------|--------|
 | 1 | `room.json` `chmod 600` (default umask 0644 was letting other local users read the secret) | `8fa7c33` |
 | 2 | Origin/Host gate on `127.0.0.1:7654` against CSRF + DNS rebinding | `e6cc705` |
-| 3 | Slow KDF (PBKDF2, 600 k iters) on `auth_key` derivation | `26a4c35` |
+| 3 | Slow KDF (PBKDF2, 600 k iters) on `auth_key` derivation — phase 1 of the mDNS fix | `26a4c35` |
 | 4 | `Semaphore(64)` of concurrent connections on the peer API | `44278d1` |
 | 5 | `pids.max=1024` + `pids` controller enabled on cgroup | `33bfb6f` |
 | 6 | `ReplayCache` (60 s) against replay of a captured request | `f4d69ed` |
 | 7 | Strict CSP in `tauri.conf.json` | `73acfed` |
 | 8 | Trust boundary made explicit (verified peer = arbitrary code in the target sandbox, by design) | `dd8b8df` |
+| 2-bis | **Drop `auth_proof` from mDNS** + active `/peer/v1/verify` endpoint (challenge-response HMAC) — phase 2 of the mDNS fix, eliminates the passive leak entirely instead of just making it expensive | (this commit) |
 
 ---
 

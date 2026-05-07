@@ -230,6 +230,54 @@ fn rejects_request_without_auth_header() {
     }
 }
 
+/// `GET /peer/v1/verify?nonce=<hex>` returns an HMAC over the supplied
+/// nonce that the verifier can recompute with its own `auth_key`.
+/// Unauthenticated by design — it IS the auth bootstrap.
+#[test]
+fn verify_returns_hmac_over_nonce() {
+    let _env = fresh_env();
+    let (port, _eph, secret_b32) = start_test_server();
+    let auth_key = crypto::derive_auth_key(&secret_b32).unwrap();
+
+    let nonce_bytes: [u8; 16] = [7u8; 16];
+    let nonce_hex = data_encoding::HEXLOWER.encode(&nonce_bytes);
+    let url = format!("http://127.0.0.1:{port}/peer/v1/verify?nonce={nonce_hex}");
+    let resp = ureq::get(&url).call().expect("verify call");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value =
+        serde_json::from_str(&resp.into_string().unwrap()).expect("verify json");
+    let hmac_hex = body["hmac"].as_str().expect("hmac field").to_string();
+    assert_eq!(hmac_hex.len(), 64); // full HMAC-SHA256 = 32 bytes hex
+    assert!(crypto::verify_response(&auth_key, &nonce_bytes, &hmac_hex));
+}
+
+#[test]
+fn verify_rejects_short_nonce() {
+    let _env = fresh_env();
+    let (port, _eph, _secret) = start_test_server();
+    // 4-byte nonce = 8 hex chars : below VERIFY_NONCE_MIN_BYTES.
+    let url = format!("http://127.0.0.1:{port}/peer/v1/verify?nonce=deadbeef");
+    let resp = ureq::get(&url).call();
+    match resp {
+        Err(ureq::Error::Status(400, _)) => {}
+        Ok(r) => panic!("short nonce should be rejected, got {}", r.status()),
+        Err(e) => panic!("expected 400, got {e}"),
+    }
+}
+
+#[test]
+fn verify_rejects_non_hex_nonce() {
+    let _env = fresh_env();
+    let (port, _eph, _secret) = start_test_server();
+    let url = format!("http://127.0.0.1:{port}/peer/v1/verify?nonce=not-hex-at-all-1234567890");
+    let resp = ureq::get(&url).call();
+    match resp {
+        Err(ureq::Error::Status(400, _)) => {}
+        Ok(r) => panic!("non-hex nonce should be rejected, got {}", r.status()),
+        Err(e) => panic!("expected 400, got {e}"),
+    }
+}
+
 /// A captured legitimate request, replayed byte-for-byte within the
 /// 30-s window, must be rejected by the server's replay cache. Without
 /// the cache, the receiver would happily run the same task twice.

@@ -6,31 +6,21 @@ Travail restant. Les mesures **déjà en place** ne sont pas listées ici — el
 
 ---
 
-## 🔴 Sécurité — chantier restant
+## ✅ Sécurité — tous les chantiers identifiés à l'audit interne sont réglés en 1.10.0
 
-### Brute-force offline du passphrase via mDNS — phase 2
-
-- **Phase 1 (faite, 1.10.0)** : `derive_auth_key` est passé de HKDF (~1 µs/candidat) à PBKDF2-HMAC-SHA256 600 000 itérations (~100 ms/candidat). Le brute-force passive d'`auth_proof` mDNS est passé de ~10 min laptop à ~7 jours CPU = ~1 500 € de cloud.
-- **Phase 2 (à faire)** : retirer entièrement `auth_proof` du TXT mDNS et déplacer la vérification dans une route `/peer/v1/verify` qui exige un challenge HMAC bidirectionnel rate-limité par IP source. Supprime le leak passif au lieu de le rendre coûteux.
-- **Coût** : ~3-4 h de boulot (nouvelle route + refactor discovery pour probe async + état UI verified=false par défaut + tests).
-- **Priorité** : moyenne (l'exposition résiduelle après phase 1 n'est plus exploitable au threat model salle de cours).
-
----
-
-## ✅ Sécurité — réglés en 1.10.0
-
-Liste courte avec les commits, gardée comme historique. Détails dans SECURITY.md / SECURITY.en.md.
+Liste courte avec les commits, gardée comme historique. Détails dans SECURITY.md / SECURITY.en.md / docs/ARCHITECTURE.md.
 
 | # | Item | Commit |
 |---|------|--------|
 | 1 | `room.json` en `chmod 600` (sinon `0644` par umask → autres users locaux lisent le secret) | `8fa7c33` |
 | 2 | Origin/Host gate sur `127.0.0.1:7654` contre CSRF + DNS rebinding | `e6cc705` |
-| 3 | Slow KDF (PBKDF2 600 k iters) sur la dérivation `auth_key` | `26a4c35` |
+| 3 | Slow KDF (PBKDF2 600 k iters) sur la dérivation `auth_key` — phase 1 du fix mDNS | `26a4c35` |
 | 4 | `Semaphore(64)` de connexions concurrentes sur peer API | `44278d1` |
 | 5 | `pids.max=1024` + contrôleur `pids` activé sur cgroup | `33bfb6f` |
 | 6 | `ReplayCache` 60 s contre rejeu d'une requête capturée | `f4d69ed` |
 | 7 | CSP stricte dans `tauri.conf.json` | `73acfed` |
 | 8 | Trust boundary explicitée (pair vérifié = exécution arbitraire dans le sandbox, c'est attendu) | `dd8b8df` |
+| 2-bis | **Drop `auth_proof` du mDNS** + endpoint `/peer/v1/verify` actif (challenge-response HMAC) — phase 2 du fix mDNS, élimine entièrement le leak passif au lieu de juste le rendre coûteux | (ce commit) |
 
 ---
 
