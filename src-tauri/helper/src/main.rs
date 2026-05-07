@@ -411,6 +411,13 @@ fn cmd_remove_user() {
     println!("User {PARTAGPU_USER} removed");
 }
 
+/// Hard cap on the number of processes a single sandbox subtree can spawn.
+/// Without this, a fork bomb in the sandbox (`:(){:|:&};:`) eats the whole
+/// system `pid_max`. 1024 is plenty for a Python+torch DDP workload (a few
+/// dozen processes typically) but tight enough that runaway fork bombs hit
+/// the wall fast.
+const PIDS_MAX_PER_SANDBOX: u32 = 1024;
+
 fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
     let cpu_percent = validate_int("cpu_percent", cpu_str);
     let ram_limit_mb = validate_int("ram_limit_mb", ram_str);
@@ -421,8 +428,10 @@ fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
 
     mkdir_p(CGROUP_PATH);
 
-    // Enable controllers
-    let _ = fs::write("/sys/fs/cgroup/cgroup.subtree_control", "+cpu +memory");
+    // Enable controllers (cpu, memory, pids). The pids controller is what
+    // makes pids.max actually enforce — without it, the file exists but
+    // writing to it is a no-op.
+    let _ = fs::write("/sys/fs/cgroup/cgroup.subtree_control", "+cpu +memory +pids");
 
     // CPU limit
     if cpu_percent > 0 && cpu_percent <= 100 {
@@ -441,11 +450,20 @@ fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
     };
     write_file(&format!("{CGROUP_PATH}/memory.max"), &mem_val);
 
-    // Enable cpu + memory controllers for sub-cgroups so per-task
+    // Process count cap — kills fork bombs cleanly. Applied at the parent
+    // partagpu cgroup so it caps the union of all running tasks. Per-task
+    // sub-cgroups inherit, so any single sandbox tree is also capped at
+    // this number.
+    write_file(
+        &format!("{CGROUP_PATH}/pids.max"),
+        &PIDS_MAX_PER_SANDBOX.to_string(),
+    );
+
+    // Enable cpu + memory + pids controllers for sub-cgroups so per-task
     // child cgroups can use them.
     let _ = fs::write(
         format!("{CGROUP_PATH}/cgroup.subtree_control"),
-        "+cpu +memory",
+        "+cpu +memory +pids",
     );
 
     // Grant calling user write access (PKEXEC_UID) so the main app can
@@ -457,6 +475,7 @@ fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
             for file in [
                 "cpu.max",
                 "memory.max",
+                "pids.max",
                 "cgroup.procs",
                 "cgroup.subtree_control",
             ] {
@@ -469,7 +488,7 @@ fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
     }
 
     println!(
-        "Cgroup configured: cpu={cpu_percent}% ram={ram_limit_mb}M (per-task sub-cgroups enabled)"
+        "Cgroup configured: cpu={cpu_percent}% ram={ram_limit_mb}M pids={PIDS_MAX_PER_SANDBOX} (per-task sub-cgroups enabled)"
     );
 }
 
