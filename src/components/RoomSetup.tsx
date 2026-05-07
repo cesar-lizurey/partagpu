@@ -6,6 +6,7 @@ import {
   getRoomStatus,
 } from "../lib/api";
 import type { RoomStatus } from "../lib/api";
+import { RevealOnHold } from "./RevealOnHold";
 
 export function RoomSetup() {
   const [status, setStatus] = useState<RoomStatus | null>(null);
@@ -173,10 +174,10 @@ export function RoomSetup() {
       <div className="room-setup__connected">
         <div className="room-setup__passphrase-section">
           <p className="room-setup__hint">
-            Dictez ce code d'accès aux camarades pour qu'ils rejoignent :
+            Dictez ce code d'accès aux camarades pour qu'ils rejoignent. Maintenez l'icône d'œil pour le révéler.
           </p>
           <div className="room-setup__passphrase">
-            {status.passphrase}
+            <RevealOnHold value={status.passphrase} />
           </div>
         </div>
       </div>

@@ -301,6 +301,56 @@ body {
   user-select: all;
 }
 
+/* Reveal-on-hold (used for passphrases and other low-stakes secrets) */
+
+.reveal-on-hold {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.reveal-on-hold__value {
+  /* Inherit the surrounding font (monospace for the passphrase, normal
+   * elsewhere) — so masked stars look stable while the value changes. */
+  font-variant-numeric: tabular-nums;
+}
+
+.reveal-on-hold__btn {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Suppress the OS text-selection cursor on long press. */
+  user-select: none;
+  -webkit-user-select: none;
+  /* Disable the iOS / Android touch callout that pops a context menu. */
+  -webkit-touch-callout: none;
+  /* Default to inheriting font color but leave size at our 18px svg. */
+  line-height: 0;
+}
+
+.reveal-on-hold__btn:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.reveal-on-hold__btn:active,
+.reveal-on-hold__btn[aria-pressed="true"] {
+  color: var(--color-primary);
+  background: rgba(99, 102, 241, 0.12);
+  border-color: var(--color-primary);
+}
+
+.reveal-on-hold__btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 .room-setup__form-hint {
   font-size: 0.8rem;
   color: var(--color-text-muted);
