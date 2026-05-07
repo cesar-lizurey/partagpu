@@ -44,6 +44,9 @@ ureq = { version = "2", default-features = false, features = ["json"] }
 aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
+# Slow KDF for auth_key derivation : raises the cost of an offline brute-force
+# of the 4-word passphrase from the leaked mDNS auth_proof tags.
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 rand = "0.8"
 # Forward secrecy : ephemeral X25519 keys derived via Diffie-Hellman per request.
 x25519-dalek = { version = "2", features = ["static_secrets"] }

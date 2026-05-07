@@ -50,7 +50,6 @@ type HmacSha256 = Hmac<Sha256>;
 const HKDF_SALT: &[u8] = b"PartaGPU/peer-api/v1";
 const HKDF_INFO: &[u8] = b"AES-256-GCM message key";
 const HKDF_INFO_V2: &[u8] = b"AES-256-GCM session key v2 (room|ecdh)";
-const HKDF_INFO_AUTH: &[u8] = b"HMAC-SHA256 auth key v1";
 
 /// Anti-replay window for HMAC request auth and mDNS auth proofs (seconds).
 /// Same value as the previous TOTP step — keeps the same anti-replay
@@ -337,9 +336,28 @@ pub fn derive_room_key(secret_base32: &str) -> Result<[u8; 32], CryptoError> {
     Ok(key)
 }
 
-/// Derive a 32-byte HMAC key from the same base32-encoded room secret.
-/// Distinct from the AES room key thanks to a different HKDF info string,
-/// so an attacker who somehow gained one half can't compute the other.
+/// Iteration count for the PBKDF2 derivation of `auth_key`. 600 000 is the
+/// OWASP 2023 recommendation for PBKDF2-HMAC-SHA256 used for password
+/// hardening. At this count the derivation takes ~100 ms on a modern CPU,
+/// which is invisible at room-join time but multiplies the cost of an
+/// offline brute-force of the 4-word passphrase by a factor of ~10^5
+/// versus the previous fast HKDF.
+const PBKDF2_AUTH_ITERS: u32 = 600_000;
+const PBKDF2_AUTH_SALT: &[u8] = b"PartaGPU/auth-key-pbkdf2-v2";
+
+/// Derive a 32-byte HMAC key from the base32-encoded room secret.
+///
+/// Uses PBKDF2-HMAC-SHA256 (slow on purpose) to harden against an offline
+/// brute-force attack on the 4-word passphrase via the leaked mDNS
+/// `auth_proof` tags : a passive listener can only check ~10 candidates
+/// per second per CPU core instead of ~1 000 000 with the old HKDF.
+///
+/// The cost is paid once at room join / load (~100 ms), then the key is
+/// cached in `RoomState`. HMAC computations using this key remain fast.
+///
+/// **Protocol break vs ≤ 1.10.0** : peers running an older version derive
+/// a different `auth_key` and will see each other as unverified / refuse
+/// HMAC headers. All peers in a room must run a matching version.
 pub fn derive_auth_key(secret_base32: &str) -> Result<[u8; 32], CryptoError> {
     let secret_bytes = data_encoding::BASE32
         .decode(secret_base32.as_bytes())
@@ -347,10 +365,8 @@ pub fn derive_auth_key(secret_base32: &str) -> Result<[u8; 32], CryptoError> {
             field: "room_secret",
             source: e,
         })?;
-    let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), &secret_bytes);
     let mut key = [0u8; 32];
-    hk.expand(HKDF_INFO_AUTH, &mut key)
-        .map_err(|_| CryptoError::Hkdf("auth_key", 32))?;
+    pbkdf2::pbkdf2_hmac::<Sha256>(&secret_bytes, PBKDF2_AUTH_SALT, PBKDF2_AUTH_ITERS, &mut key);
     Ok(key)
 }
 

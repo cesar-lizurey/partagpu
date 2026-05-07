@@ -24,12 +24,12 @@ Issus d'un audit interne (threat-modeling « attaquant chevronné sur le LAN ou 
 - **Fix** : refuser toute requête sans `Host: 127.0.0.1:7654` (ou dont l'`Origin` est non-vide et non-Tauri). Les invocations Tauri internes n'envoient pas d'`Origin` ; le client Python utilise `requests` avec `Host: 127.0.0.1:7654`.
 - **Priorité** : haute.
 
-### Brute-force offline du passphrase via mDNS
+### Brute-force offline du passphrase via mDNS — atténuation faite, redesign restant
 
-- **Problème** : `crypto.rs::current_auth_proof` produit un HMAC tronqué à 32 bits (8 hex chars), broadcasté en clair en TXT mDNS. Un attaquant passif sur le LAN collecte 2-3 windows consécutives et brute-force offline les 256^4 ≈ 4.3 G passphrases possibles : HMAC-SHA256 + HKDF ≈ 1-3 µs/candidat → ~10 min sur 16 cœurs pour récupérer la passphrase complète.
-- **Impact** : code de salle entièrement compromis depuis une écoute LAN passive en quelques minutes.
-- **Fix** : retirer `auth_proof` du TXT mDNS et déplacer la vérification dans une route `/peer/v1/verify` qui exige un challenge HMAC bidirectionnel ; OU passer à 5-6 mots dans le wordlist (256^5 ≈ 1.1 T → ~38 h CPU). La 1re option est meilleure (le secret cesse de fuir sur le réseau).
-- **Priorité** : haute.
+- **Problème** : `crypto.rs::current_auth_proof` produit un HMAC tronqué à 32 bits (8 hex chars), broadcasté en clair en TXT mDNS. Un attaquant passif sur le LAN collecte 2-3 windows et brute-force offline les 256^4 ≈ 4.3 G passphrases possibles.
+- **Phase 1 (faite, depuis 1.10.0)** : la dérivation `auth_key` est passée de HKDF (~1 µs/candidat) à PBKDF2-HMAC-SHA256 600 000 itérations (~100 ms/candidat). Le brute-force passe de ~10 minutes laptop à ~7 jours CPU = ~1 500 € de cloud — infeasible au modèle « camarade curieux ».
+- **Phase 2 (à faire)** : retirer entièrement `auth_proof` du TXT mDNS et déplacer la vérification dans une route `/peer/v1/verify` qui exige un challenge HMAC bidirectionnel rate-limité par IP source. Élimine le leak passif au lieu de le rendre coûteux.
+- **Priorité** : moyenne (le risque pratique a chuté d'un facteur 10⁵, l'exposition restante n'est plus exploitable au threat model salle de cours).
 
 ### Pas de cap de connexions concurrentes sur le peer API
 

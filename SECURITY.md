@@ -48,10 +48,10 @@ Sur un réseau local, n'importe qui peut annoncer un service mDNS et se faire pa
 
 ### La solution
 
-Chaque salle PartaGPU partage un **secret cryptographique** (encodé comme un code de 4 mots). De ce secret on dérive deux clés via HKDF-SHA256 :
+Chaque salle PartaGPU partage un **secret cryptographique** (encodé comme un code de 4 mots). De ce secret on dérive deux clés :
 
-- une **`room_key`** pour le chiffrement AES-256-GCM des bodies (cf. section 2)
-- une **`auth_key`** distincte pour les preuves d'authentification HMAC
+- une **`room_key`** pour le chiffrement AES-256-GCM des bodies, dérivée via HKDF-SHA256 (cf. section 2)
+- une **`auth_key`** distincte pour les preuves d'authentification HMAC, dérivée via **PBKDF2-HMAC-SHA256** avec 600 000 itérations (slow KDF)
 
 Pour la **vérification passive en mDNS**, chaque pair publie un `auth_proof` = `HMAC-SHA256(auth_key, current_30s_window)` tronqué à 8 caractères hex (32 bits) dans son TXT record. Les autres pairs recalculent et comparent en temps constant ; pas besoin d'aller-retour HTTP pour flipper le badge `verified`.
 
@@ -70,7 +70,7 @@ Le serveur vérifie que `|now - ts| ≤ 30 s` puis recalcule le HMAC et compare 
 - **Tolérance de clock skew** : ±1 fenêtre (`AUTH_WINDOW_SECS = 30 s`).
 - **Code d'accès** : 4 mots parmi 256 = 256^4 ≈ 4,3 milliards de combinaisons.
 - **Conversion** : la passphrase est convertie en 4 octets, puis étendue à 20 octets via SHA-1 pour former un secret de longueur stable. Format identique aux versions 1.6.x–1.8.x donc le `room.json` reste lisible (rétro-compat des fichiers de config).
-- **Dérivation** : `auth_key = HKDF-SHA256(room_secret, info = "HMAC-SHA256 auth key v1")`. Distinct de la `room_key` AES via un `info` différent.
+- **Dérivation** : `auth_key = PBKDF2-HMAC-SHA256(room_secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000, len = 32 octets)`. Slow KDF intentionnel : la dérivation prend ~100 ms sur un CPU moderne, invisible au join de salle, mais multiplie d'un facteur ~10⁵ le coût d'un brute-force offline du passphrase via les `auth_proof` mDNS divulgués (de ~10 minutes sur un laptop à ~7 jours CPU = ~1 500 € de cloud). Distincte de la `room_key` AES qui reste sur HKDF-SHA256 (la `room_key` n'est jamais broadcastée — pas le même profil de menace). **Rupture de protocole vs ≤ 1.10.0** : tous les pairs d'une salle doivent tourner une version cohérente.
 - **Persistance** : seul le secret est sauvegardé dans `~/.config/partagpu/room.json` ; la `auth_key` est dérivée à chaque chargement.
 
 ### Ce qui est bloqué

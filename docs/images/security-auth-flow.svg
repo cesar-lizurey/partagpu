@@ -23,8 +23,8 @@
 
   <!-- Shared key block -->
   <rect x="240" y="48" width="280" height="46" rx="8" fill="#222632" stroke="#6366f1" stroke-width="1.5"/>
-  <text x="380" y="68" text-anchor="middle" fill="#6366f1" font-size="12" font-weight="600">Passphrase 4 mots → HKDF-SHA256</text>
-  <text x="380" y="84" text-anchor="middle" fill="#8b8fa3" font-size="10">auth_key (32 o, RAM seulement) — partagée par toute la salle</text>
+  <text x="380" y="68" text-anchor="middle" fill="#6366f1" font-size="12" font-weight="600">Passphrase 4 mots → PBKDF2-HMAC-SHA256 (600k iters)</text>
+  <text x="380" y="84" text-anchor="middle" fill="#8b8fa3" font-size="10">auth_key (32 o, RAM seulement) — partagée par toute la salle, slow KDF anti-bruteforce</text>
 
   <line x1="320" y1="94" x2="170" y2="130" stroke="#6366f1" stroke-width="1.5" marker-end="url(#aarr)"/>
   <line x1="440" y1="94" x2="590" y2="130" stroke="#6366f1" stroke-width="1.5" marker-end="url(#aarr)"/>

@@ -24,12 +24,12 @@ From an internal threat-modeling pass ("skilled attacker on the LAN or local").
 - **Fix**: refuse any request without `Host: 127.0.0.1:7654` (or whose `Origin` is set and not the Tauri origin). Internal Tauri invocations don't send `Origin`; the Python client uses `requests` with `Host: 127.0.0.1:7654`.
 - **Priority**: high.
 
-### Offline brute-force of the passphrase via mDNS
+### Offline brute-force of the passphrase via mDNS — mitigation shipped, redesign pending
 
-- **Problem**: `crypto.rs::current_auth_proof` produces an HMAC truncated to 32 bits (8 hex chars), broadcast in clear in mDNS TXT records. A passive LAN attacker collects 2-3 consecutive windows and offline-bruteforces the 256^4 ≈ 4.3 G possible passphrases: HMAC-SHA256 + HKDF ≈ 1-3 µs/candidate → ~10 min on 16 cores to recover the full passphrase.
-- **Impact**: room code fully compromised from passive LAN eavesdropping in minutes.
-- **Fix**: drop `auth_proof` from the mDNS TXT and move verification to a `/peer/v1/verify` route requiring a bidirectional HMAC challenge; OR move to 5-6 words in the wordlist (256^5 ≈ 1.1 T → ~38 h CPU). The 1st option is better (the secret stops leaking on the network).
-- **Priority**: high.
+- **Problem**: `crypto.rs::current_auth_proof` produces an HMAC truncated to 32 bits (8 hex chars), broadcast in clear in mDNS TXT records. A passive LAN attacker collects 2-3 windows and offline-bruteforces the 256^4 ≈ 4.3 G possible passphrases.
+- **Phase 1 (shipped in 1.10.0)**: the `auth_key` derivation moved from HKDF (~1 µs/candidate) to PBKDF2-HMAC-SHA256 with 600 000 iterations (~100 ms/candidate). Brute-force now takes ~7 CPU-days = ~$1 500 of cloud instead of ~10 minutes on a laptop — infeasible for the "curious classmate" threat model.
+- **Phase 2 (pending)**: drop `auth_proof` from the mDNS TXT entirely and move verification to a `/peer/v1/verify` route with a bidirectional HMAC challenge, rate-limited per source IP. Eliminates the leak instead of just making it expensive.
+- **Priority**: medium (practical risk down by ~10⁵; remaining exposure no longer exploitable at the classroom threat model).
 
 ### No concurrent connection cap on the peer API
 
