@@ -1,7 +1,8 @@
 //! Process-tree resource sampling helpers used by the per-task monitor
-//! thread. Both functions are pure data transforms — no shared state.
+//! thread. Pure data transforms — no shared state.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 /// One-shot poll of `nvidia-smi pmon -c 1`, returning a map PID → SM utilization
 /// (0..100). On a 4-GPU host with one PID using two GPUs at 50 % each, that
@@ -36,6 +37,44 @@ pub(super) fn sample_gpu_per_pid() -> HashMap<u32, f32> {
         *out.entry(pid).or_insert(0.0) += sm;
     }
     out
+}
+
+/// Read the cgroup-accounted RSS of a sandbox task in megabytes. Reads
+/// `/proc/<root_pid>/cgroup` to find which sub-cgroup the bwrap parent
+/// lives in (`/sys/fs/cgroup/partagpu/task-<uuid>/`), then reads
+/// `memory.current` from that cgroup.
+///
+/// Why : summing `process.memory()` (RSS) across the descendant tree
+/// double-counts shared memory pages — a PyTorch worker tree with
+/// 3 processes each loading libtorch reports ~3× the real footprint.
+/// `memory.current` is the kernel's authoritative tally for that cgroup,
+/// computed without double-counting (PSS-style accounting at page level).
+///
+/// Returns `None` if the process isn't in a partagpu sub-cgroup (fallback
+/// path with no cgroup, or cgroup v1 layout — the caller falls back to
+/// the RSS sum which is at least a useful upper bound).
+pub(super) fn cgroup_memory_mb(root_pid: u32) -> Option<u64> {
+    let cgroup_file = format!("/proc/{root_pid}/cgroup");
+    let content = std::fs::read_to_string(&cgroup_file).ok()?;
+    // cgroup v2 unified hierarchy : one line per process, format `0::/<path>`.
+    // We accept any line that mentions the partagpu task hierarchy, so this
+    // also works if cgroup v1 controllers happen to be mounted alongside.
+    let rel = content.lines().find_map(|line| {
+        let (_, path) = line.split_once("::")?;
+        let path = path.trim();
+        if path.contains("/partagpu/task-") {
+            Some(path.to_string())
+        } else {
+            None
+        }
+    })?;
+    let abs = PathBuf::from("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
+    let mem_bytes: u64 = std::fs::read_to_string(abs.join("memory.current"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    Some(mem_bytes / (1024 * 1024))
 }
 
 /// Collect the BFS process tree rooted at `root`, using the parent-child

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use super::monitor::{collect_descendants, sample_gpu_per_pid};
+use super::monitor::{cgroup_memory_mb, collect_descendants, sample_gpu_per_pid};
 use super::{
     config_dir, new_task, save_atomic, task_for_persist, Task, TaskStatus, PERSIST_FLUSH_INTERVAL,
 };
@@ -229,22 +229,29 @@ impl IncomingTasks {
 
                 for (task_id, root_pid) in snapshot_pids {
                     // Walk the process tree rooted at the bwrap PID, summing
-                    // CPU% and RAM. The sandbox creates child processes
-                    // (python, etc.) that account for most of the work.
+                    // CPU%. The sandbox creates child processes (python, etc.)
+                    // that account for most of the work.
                     let tree = collect_descendants(&sys, Pid::from_u32(root_pid));
                     let mut cpu_sum: f32 = 0.0;
-                    let mut ram_sum: u64 = 0;
+                    let mut rss_sum_bytes: u64 = 0;
                     let mut gpu_sum: f32 = 0.0;
                     for pid in &tree {
                         if let Some(p) = sys.process(*pid) {
                             cpu_sum += p.cpu_usage();
-                            ram_sum += p.memory();
+                            rss_sum_bytes += p.memory();
                         }
                         if let Some(util) = gpu_per_pid.get(&(pid.as_u32())) {
                             gpu_sum += *util;
                         }
                     }
-                    let ram_mb = ram_sum / (1024 * 1024);
+                    // RAM : prefer the kernel's per-cgroup tally
+                    // (`memory.current` of the task's sub-cgroup) — it
+                    // accounts shared pages once, which the sum of
+                    // per-process RSS does not. Fall back to the RSS sum
+                    // when the process isn't in a partagpu sub-cgroup
+                    // (e.g. cgroup creation failed at sandbox start).
+                    let ram_mb =
+                        cgroup_memory_mb(root_pid).unwrap_or(rss_sum_bytes / (1024 * 1024));
                     let gpu_pct = gpu_sum.min(100.0 * tree.len().max(1) as f32);
 
                     let progress = match (
