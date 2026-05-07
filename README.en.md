@@ -93,13 +93,13 @@ The room system solves this: it generates a **shared secret** that produces an a
 
 1. At the top of the app, click **"Create a room"**
 2. Enter a name (e.g. `Room B204`)
-3. The app shows a **4-word access code**:
+3. The app shows a **4-word access code**, masked by default:
 
 ```
-apple-tiger-blue-ocean
+*****-*****-****-*****
 ```
 
-4. **Read the code aloud** to your classmates — that's it
+4. **Hold the eye icon** next to it to reveal it just long enough to read it aloud (`apple-tiger-blue-ocean`). The code re-masks the moment you let go — so it never stays visible in clear by accident.
 
 ### Join a room (everyone else)
 
@@ -196,6 +196,8 @@ This name shows up in the available-machines list for everyone else.
 
 On every resource gauge (*My sharing* → *Resources of this machine*), a **draggable red slider** marks the limit you share. Drag it with the mouse to adjust:
 
+![Share-limit sliders](docs/images/resource-sliders.svg)
+
 - **CPU**: maximum percentage of cores granted to shared tasks (5% steps)
 - **RAM**: maximum amount in MB (256 MB steps, 0 = unlimited)
 - **GPU**: maximum percentage of the GPU (visible only when an NVIDIA GPU is detected)
@@ -206,7 +208,7 @@ The slider only appears when sharing is *Active* — without sharing, there's no
 
 ## Daily usage
 
-The application has **3 tabs**:
+The application has **4 tabs**:
 
 ### "My sharing" tab
 
@@ -235,9 +237,19 @@ The application has **3 tabs**:
 - **My running tasks**: live progress of what I submitted. **Stop** button on Queued/Running tasks to cancel cleanly (SIGTERM on the peer side, propagation to sibling ranks in DDP).
 - **Desktop notifications**: when a dispatch finishes (Completed / Failed / Cancelled), a native system toast pops up, even if the app isn't focused. Handy for stepping away during a long DDP training. Permission asked once on first trigger.
 
+### "Fleet view" tab
+
+*Aggregate dashboard of every machine in the room.*
+
+Global stats up top (visible peers, usable peers, GPUs in the room, my active tasks + my total CPU/RAM/GPU usage), then one card per peer showing its offered capacity (CPU/RAM/GPU limits and GPU count) and the list of tasks **you** are currently running on it. Handy for supervising the room at a glance — a teacher, for example. The view only shows your own tasks per peer (an aggregated `/peer/v1/status` route would be needed to also see what other classmates dispatch — see TODO.md).
+
 ### "Guide" tab
 
 Built-in tutorial available at all times, with the same explanations as this README.
+
+### Bilingual FR ↔ EN
+
+A **flag** button in the header (right after the computer name) toggles the whole app between French and English. The default language is French; the choice is persisted locally (localStorage `partagpu.lang`).
 
 ---
 

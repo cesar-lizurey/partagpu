@@ -93,13 +93,13 @@ Le système de salle résout ce problème : il génère un **secret partagé** q
 
 1. En haut de l'application, cliquez sur **« Créer une salle »**
 2. Entrez un nom (ex: `Salle B204`)
-3. L'application affiche un **code d'accès de 4 mots** :
+3. L'application affiche un **code d'accès de 4 mots**, masqué par défaut :
 
 ```
-pomme-tigre-bleu-ocean
+*****-*****-****-*****
 ```
 
-4. **Dictez ce code à voix haute** à vos camarades — c'est tout
+4. **Maintenez l'icône d'œil** à côté pour le révéler le temps de le dicter à voix haute (`pomme-tigre-bleu-ocean`). Le code se re-masque dès que vous relâchez — comme ça il ne reste jamais affiché en clair par accident.
 
 ### Rejoindre une salle (tous les autres)
 
@@ -196,6 +196,8 @@ Ce nom apparaîtra dans la liste des machines disponibles pour les autres.
 
 Sur chaque jauge de ressource (*Mon partage* → *Ressources de cette machine*), un **curseur rouge draggable** indique la limite que vous partagez. Faites-le glisser à la souris pour ajuster :
 
+![Curseurs de limite de partage](docs/images/resource-sliders.svg)
+
 - **CPU** : pourcentage max des cœurs alloués aux tâches partagées (par pas de 5 %)
 - **RAM** : quantité max en Mo (par pas de 256 Mo, 0 = illimitée)
 - **GPU** : pourcentage max du GPU (visible uniquement si un GPU NVIDIA est détecté)
@@ -206,7 +208,7 @@ Le curseur n'apparaît que quand le partage est *Actif* — sans partage, il n'y
 
 ## Utilisation au quotidien
 
-L'application a **3 onglets** :
+L'application a **4 onglets** :
 
 ### Onglet « Mon partage »
 
@@ -235,9 +237,19 @@ L'application a **3 onglets** :
 - **Mes tâches en cours** : progression en temps réel de ce que j'ai soumis. Bouton **Stop** sur les tâches Queued/Running pour les annuler proprement (SIGTERM côté pair, propagation aux rangs siblings dans un DDP).
 - **Notifications desktop** : à la fin d'un dispatch (Completed / Failed / Cancelled), un toast natif système s'affiche, même si l'app n'a pas le focus. Pratique pour s'éloigner pendant un long entraînement DDP. Permission demandée une seule fois au premier déclenchement.
 
+### Onglet « Vue parc »
+
+*Tableau de bord agrégé de toutes les machines de la salle.*
+
+Stats globales en haut (pairs visibles, pairs utilisables, GPU dans la salle, mes tâches actives + ma conso CPU/RAM/GPU totale), puis une carte par pair avec sa capacité offerte (limites CPU/RAM/GPU et nombre de GPU) et la liste des tâches que **vous** y exécutez en ce moment. Utile pour superviser la salle d'un coup d'œil — un prof, par exemple. La vue ne montre que vos propres tâches par pair (une route `/peer/v1/status` agrégée serait nécessaire pour voir aussi celles des autres camarades — cf. TODO.md).
+
 ### Onglet « Guide »
 
 Tutoriel intégré accessible à tout moment, avec les mêmes explications que ce README.
+
+### Bilingue FR ↔ EN
+
+Un bouton **drapeau** dans l'en-tête (juste après le nom de l'ordinateur) bascule toute l'application entre français et anglais. La langue par défaut est le français, le choix est mémorisé localement (localStorage `partagpu.lang`).
 
 ---
 

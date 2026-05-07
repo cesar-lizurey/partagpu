@@ -36,6 +36,7 @@ PartaGPU repose sur plusieurs couches de sécurité complémentaires :
 | **Anti-spoofing mDNS** | Flood, usurpation d'identité | Rate limiting, max peers, détection de conflits |
 | **PolicyKit** | Escalade de privilèges | Helper Rust compilé, mot de passe via stdin |
 | **Validation des entrées** | Injection de commandes | Allowlist, validation stricte, pas de shell |
+| **Passphrase masquée (UX)** | Fuite visuelle du code de salle | Étoiles par défaut, révèle uniquement tant que l'œil est maintenu |
 
 ---
 
@@ -61,7 +62,7 @@ X-PartaGPU-AUTH: <unix_ts>:<HMAC-SHA256(auth_key, "PartaGPU/auth-req/v1\n" || ts
 
 Le serveur vérifie que `|now - ts| ≤ 30 s` puis recalcule le HMAC et compare en temps constant. Le HMAC **lie l'auth au corps de la requête**, donc un header capté ne peut pas être rejoué sur une requête différente même dans la fenêtre de 30 s. Un attaquant qui ne connaît pas la `auth_key` n'arrive jamais à la couche AES — l'auth gate est validée *avant* le déchiffrement.
 
-![Vérification d'auth des pairs](docs/images/security-totp-flow.svg)
+![Vérification d'auth des pairs](docs/images/security-auth-flow.svg)
 
 ### Détails techniques
 
@@ -402,6 +403,10 @@ Toutes les entrées utilisateur et réseau sont validées avant traitement :
 - Doit contenir exactement 4 mots séparés par des tirets
 - Chaque mot est vérifié contre la wordlist de 256 mots
 - Un mot inconnu produit un message d'erreur explicite
+
+### Affichage masqué de la passphrase (UX)
+
+La passphrase de salle n'est **jamais affichée en clair par défaut** dans l'interface : le composant `RevealOnHold` la rend sous la forme `*****-*****-****-*****` et exige que l'utilisateur **maintienne** un bouton œil (souris, tactile ou clavier Espace/Entrée) pour la révéler. Au relâchement (ou à la perte de focus), elle se re-masque immédiatement. Pas de toggle persistant : la passphrase ne peut pas rester affichée par accident — par exemple, si quelqu'un quitte temporairement son poste pendant la dictée du code aux camarades.
 
 ---
 

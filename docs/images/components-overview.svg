@@ -93,5 +93,5 @@
   <text x="530" y="162" text-anchor="middle" fill="#a78bfa" font-size="9" font-weight="600">LAN</text>
 
   <!-- Caption -->
-  <text x="410" y="436" text-anchor="middle" fill="#8b8fa3" font-size="10">peer ↔ peer : HTTP + AES-256-GCM (clé X25519 ECDH éphémère par requête, TOTP signature)</text>
+  <text x="410" y="436" text-anchor="middle" fill="#8b8fa3" font-size="10">peer ↔ peer : HTTP + AES-256-GCM (clé X25519 ECDH éphémère par requête, signature HMAC-SHA256)</text>
 </svg>

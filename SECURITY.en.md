@@ -36,6 +36,7 @@ PartaGPU layers several complementary defenses:
 | **Anti mDNS spoofing** | Flooding, identity spoofing | Rate limiting, max peers, conflict detection |
 | **PolicyKit** | Privilege escalation | Compiled Rust helper, password via stdin |
 | **Input validation** | Command injection | Allowlist, strict validation, no shell |
+| **Masked passphrase (UX)** | Shoulder-surfing the room code | Stars by default, only revealed while the eye button is held |
 
 ---
 
@@ -61,7 +62,7 @@ X-PartaGPU-AUTH: <unix_ts>:<HMAC-SHA256(auth_key, "PartaGPU/auth-req/v1\n" || ts
 
 The server checks `|now - ts| ≤ 30 s`, then recomputes the HMAC and constant-time compares. The HMAC **binds the auth to the request body**, so a captured header cannot be replayed on a different request even within the 30 s window. An attacker who doesn't know the `auth_key` never reaches the AES layer — auth is gated *before* decryption.
 
-![Peer auth verification](images/security-totp-flow.svg)
+![Peer auth verification](docs/images/security-auth-flow.svg)
 
 ### Technical details
 
@@ -182,7 +183,7 @@ Compute tasks are arbitrary commands executed on the machine. Even with a verifi
 
 Every task runs inside a **bubblewrap sandbox** with strict restrictions.
 
-![Execution sandbox](images/security-sandbox.svg)
+![Execution sandbox](docs/images/security-sandbox.svg)
 
 ### Restrictions applied
 
@@ -226,7 +227,7 @@ The `partagpu` account is a real user account with a password (necessary to log 
 
 The account is locked down by 5 complementary mechanisms.
 
-![Account hardening](images/security-account.svg)
+![Account hardening](docs/images/security-account.svg)
 
 ### Detail of each protection
 
@@ -272,7 +273,7 @@ The PartaGPU listening port (TCP 7654) should only be open when sharing is actua
 
 The helper opens and closes the port automatically based on the sharing state.
 
-![Firewall management](images/security-firewall.svg)
+![Firewall management](docs/images/security-firewall.svg)
 
 ### Rules applied
 
@@ -307,7 +308,7 @@ mDNS is a multicast-based protocol with no native authentication. A LAN attacker
 
 Three complementary protections in the discovery module.
 
-![mDNS protection](images/security-mdns-protection.svg)
+![mDNS protection](docs/images/security-mdns-protection.svg)
 
 ### Detail of each protection
 
@@ -402,6 +403,10 @@ Every user and network input is validated before processing:
 - Must contain exactly 4 words separated by hyphens
 - Each word is checked against the 256-word list
 - An unknown word produces an explicit error message
+
+### Masked passphrase display (UX)
+
+The room passphrase is **never displayed in clear by default** in the UI: the `RevealOnHold` component renders it as `*****-*****-****-*****` and requires the user to **hold** an eye button (mouse, touch, or keyboard Space/Enter) to reveal it. On release (or focus loss), it re-masks instantly. No persistent toggle: the passphrase cannot stay visible by accident — for example, if someone briefly leaves the seat while reading the code to classmates.
 
 ---
 

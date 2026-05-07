@@ -40,7 +40,7 @@ PartaGPU is a Tauri application (Rust backend + React frontend) that turns a PC 
 
 ![Component overview](images/components-overview.en.svg)
 
-- **Frontend** (React + TypeScript, Vite): 3 tabs *My sharing* / *My usage* / *Guide*. Talks to the backend via Tauri `invoke`.
+- **Frontend** (React + TypeScript, Vite): 4 tabs *My sharing* / *My usage* / *Fleet view* / *Guide*. Talks to the backend via Tauri `invoke`. Bilingual FR/EN, switchable via a flag in the header.
 - **Rust backend** (`src-tauri/src/`): modules for auth, discovery, sandbox, sharing, monitoring, two HTTP servers, security log.
 - **Privileged Rust helper** (`src-tauri/helper/`, separate binary): operations that need root (user creation, cgroups, firewall). Launched via `pkexec` with a dedicated PolicyKit rule.
 - **Python package** (`python/src/partagpu/`): minimal client (`requests` only) that talks to the local API on `127.0.0.1:7654` to discover GPUs and dispatch tasks.
