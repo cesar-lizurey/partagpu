@@ -31,35 +31,28 @@ Issus d'un audit interne (threat-modeling « attaquant chevronné sur le LAN ou 
 - **Phase 2 (à faire)** : retirer entièrement `auth_proof` du TXT mDNS et déplacer la vérification dans une route `/peer/v1/verify` qui exige un challenge HMAC bidirectionnel rate-limité par IP source. Élimine le leak passif au lieu de le rendre coûteux.
 - **Priorité** : moyenne (le risque pratique a chuté d'un facteur 10⁵, l'exposition restante n'est plus exploitable au threat model salle de cours).
 
-### Pas de cap de connexions concurrentes sur le peer API
+<!-- Items réglés depuis l'audit — gardés ici comme historique court avant
+nettoyage final. Les détails techniques vivent dans les commits / SECURITY.md. -->
 
-- **Problème** : `peer_api.rs` accepte des connexions sans limite avec `MAX_REQUEST_BYTES = 32 MB` chacune. N connexions simultanées → OOM trivial.
-- **Fix** : `tokio::sync::Semaphore` avec ~64 permits, `acquire().await` avant le `tokio::spawn`.
-- **Priorité** : moyenne.
+### ✅ Cap de connexions concurrentes sur peer API
 
-### Pas de `pids.max` sur le cgroup
+Réglé en 1.10.0 : `tokio::sync::Semaphore` de 64 permits acquis avant `accept()`. Au-delà, le surplus est absorbé par le TCP backlog du kernel.
 
-- **Problème** : `helper/src/main.rs::cmd_setup_cgroup` configure `cpu.max` et `memory.max` mais pas `pids.max`. Un fork bomb dans le sandbox peut épuiser le `pid_max` système.
-- **Fix** : `write_file(&format!("{CGROUP_PATH}/pids.max"), "256")` (ou un nombre plus généreux pour DDP).
-- **Priorité** : moyenne.
+### ✅ `pids.max` sur cgroup
 
-### Anti-replay au-delà de la fenêtre de timestamp
+Réglé en 1.10.0 : contrôleur `pids` activé dans `subtree_control` + `pids.max=1024` sur le cgroup parent (héritage automatique aux sub-cgroups par tâche).
 
-- **Problème** : la signature HMAC lie l'auth au corps mais `task_runner::incoming::create_and_run` ne dédupe pas les `(ts, body_hash)` vus. Dans la fenêtre de 30 s, un MITM peut rejouer une requête capturée → tâche dupliquée.
-- **Fix** : bloom filter (ou `HashSet` borné) de `(ts, sha256(body))` sur 60 s côté receveur, rejeter les doublons.
-- **Priorité** : moyenne.
+### ✅ Anti-replay au-delà de la fenêtre de timestamp
 
-### CSP désactivé dans Tauri
+Réglé en 1.10.0 : `ReplayCache` en mémoire dans `peer_api.rs`. Après auth réussie, le header `X-PartaGPU-AUTH` est inséré dans la cache (rétention 60 s, cap 4096 entrées, clear si débordement). Replay byte-identique → 401.
 
-- **Problème** : `tauri.conf.json` a `"csp": null`. React échappe par défaut, mais defense-in-depth perdue si jamais un sink HTML s'introduit.
-- **Fix** : `"csp": "default-src 'self'; img-src 'self' data: https://raw.githubusercontent.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:;"` (ajuster pour les fonts/styles inline existants).
-- **Priorité** : basse mais facile.
+### ✅ CSP stricte dans Tauri
 
-### Allowlist par défaut très permissive (à documenter)
+Réglé en 1.10.0 : `tauri.conf.json` passe de `"csp": null` à une politique stricte (`default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: …; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`).
 
-- **État** : `bash`, `sh`, `gcc`, `g++`, `make`, `cmake`, `cargo`, `rustc` sont autorisés. C'est par design (tâches ML), mais ça veut dire qu'**un pair compromis = exécution de code arbitraire dans bwrap**. La défense devient le sandbox + le compte partagpu durci.
-- **Fix** : pas de fix code — clarifier la trust boundary dans `SECURITY.md` (« un pair vérifié peut exécuter du code arbitraire dans le sandbox cible, c'est attendu ; les défenses sont l'isolation, pas le filtrage de commandes »).
-- **Priorité** : basse (doc only).
+### ✅ Trust boundary documentée
+
+Réglé en 1.10.0 : section dédiée dans `SECURITY.md` / `SECURITY.en.md` qui explicite « un pair vérifié peut exécuter du code arbitraire dans le sandbox cible, c'est attendu ; les défenses sont l'isolation (sandbox + compte durci + cgroup), pas le filtrage de commandes ».
 
 ---
 

@@ -209,6 +209,19 @@ L'allowlist est configurable via l'API (`addToAllowlist` / `removeFromAllowlist`
 
 Si une commande n'est pas dans la liste, la tâche est **refusée avant même de lancer le sandbox** — pas de tentative d'exécution.
 
+### Trust boundary explicite : un pair vérifié = exécution arbitraire dans le sandbox
+
+L'allowlist par défaut inclut volontairement `bash`, `sh`, `gcc`, `g++`, `make`, `cmake`, `cargo`, `rustc` parce que ce sont les outils standard d'une session ML/data science (tâches `python3 train.py` qui appellent `gcc` pour compiler une extension C, projets Cargo, scripts shell, etc.). **Un pair authentifié peut donc exécuter du code arbitraire dans le sandbox cible.** C'est attendu — l'allowlist filtre les *erreurs de frappe* et les binaires inattendus, pas un attaquant déterminé en possession de la passphrase.
+
+Les défenses qui restent face à un pair compromis ou malveillant **dans la salle** :
+
+- **Le sandbox bubblewrap** : filesystem read-only, network unshare, cgroup CPU/RAM/PIDs, UID `partagpu` (jamais root, ni l'UID de l'utilisateur normal). Une tâche malveillante voit `/usr` et `/etc` en lecture seule, ne peut pas toucher au home de l'utilisateur, ni au reste du système hors de `/workspace` et `/tmp` (eux-mêmes éphémères).
+- **Le compte `partagpu` durci** : SSH bloqué, sudo bloqué, shell restreint qui ne fait que lancer PartaGPU.
+- **Le passthrough `/dev/nvidia*`** est read-write et reste un vecteur de privilege escalation si le driver NVIDIA a un CVE non corrigé. Garder le driver à jour est partie intégrante du modèle.
+- **Le cap PIDs** (1024 par cgroup) coupe les fork bombs ; les caps CPU/RAM bornent l'utilisation des ressources.
+
+Ce que ça veut dire concrètement : si la passphrase de salle fuite (capture, indiscrétion), un attaquant qui rejoint la salle peut exécuter du code dans le sandbox de chaque pair vérifié. La défense est l'isolation, pas le filtrage de commandes. **La sécurité de la passphrase est donc l'invariant à maintenir** — voir l'affichage masqué de la passphrase (RevealOnHold) et le `chmod 600` sur `room.json`.
+
 ### Fichiers concernés
 
 - `src-tauri/src/sandbox.rs` — construction de la commande bwrap, allowlist, exécution

@@ -209,6 +209,19 @@ The allowlist is configurable via the API (`addToAllowlist` / `removeFromAllowli
 
 If a command isn't on the list, the task is **refused before the sandbox even starts** — no execution attempt.
 
+### Explicit trust boundary: a verified peer = arbitrary code execution in the sandbox
+
+The default allowlist intentionally includes `bash`, `sh`, `gcc`, `g++`, `make`, `cmake`, `cargo`, `rustc` because these are the standard tools of an ML / data-science session (`python3 train.py` calling `gcc` to compile a C extension, Cargo projects, shell scripts, etc.). **An authenticated peer can therefore run arbitrary code inside the target sandbox.** That's expected — the allowlist filters typos and unexpected binaries, not a determined attacker holding the passphrase.
+
+The defenses that remain in front of a compromised or malicious peer **inside the room**:
+
+- **The bubblewrap sandbox**: read-only filesystem, network unshare, cgroup CPU/RAM/PIDs, `partagpu` UID (never root, never the regular user's UID). A malicious task sees `/usr` and `/etc` read-only, can't touch the user's home or anything outside `/workspace` and `/tmp` (themselves ephemeral).
+- **The hardened `partagpu` account**: SSH blocked, sudo blocked, restricted shell that only launches PartaGPU.
+- **The `/dev/nvidia*` passthrough** is read-write and remains a privilege-escalation vector if the NVIDIA driver has an unpatched CVE. Keeping the driver up to date is part of the model.
+- **The PIDs cap** (1024 per cgroup) kills fork bombs ; the CPU/RAM caps bound resource usage.
+
+Concretely: if the room passphrase leaks (capture, indiscretion), an attacker who joins the room can run code in every verified peer's sandbox. The defense is isolation, not command filtering. **The passphrase's secrecy is therefore the invariant to maintain** — see the masked passphrase display (RevealOnHold) and `chmod 600` on `room.json`.
+
 ### Files involved
 
 - `src-tauri/src/sandbox.rs` — bwrap command construction, allowlist, execution

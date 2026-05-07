@@ -431,7 +431,10 @@ fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
     // Enable controllers (cpu, memory, pids). The pids controller is what
     // makes pids.max actually enforce — without it, the file exists but
     // writing to it is a no-op.
-    let _ = fs::write("/sys/fs/cgroup/cgroup.subtree_control", "+cpu +memory +pids");
+    let _ = fs::write(
+        "/sys/fs/cgroup/cgroup.subtree_control",
+        "+cpu +memory +pids",
+    );
 
     // CPU limit
     if cpu_percent > 0 && cpu_percent <= 100 {
