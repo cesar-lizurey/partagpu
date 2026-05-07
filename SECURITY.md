@@ -17,7 +17,6 @@ Ce document détaille les mesures de sécurité implémentées dans PartaGPU. L'
 - [6. Protection contre le mDNS spoofing / flood](#6-protection-contre-le-mdns-spoofing--flood)
 - [7. Élévation de privilèges sécurisée (PolicyKit)](#7-élévation-de-privilèges-sécurisée-policykit)
 - [8. Validation des entrées](#8-validation-des-entrées)
-- [Mesures restantes à implémenter](#mesures-restantes-à-implémenter)
 - [Signaler une vulnérabilité](#signaler-une-vulnérabilité)
 
 ---
@@ -28,12 +27,17 @@ PartaGPU repose sur plusieurs couches de sécurité complémentaires :
 
 | Couche | Protège contre | Implémentation |
 |--------|---------------|----------------|
-| **Authentification HMAC** | Pairs non autorisés, imposteurs | Code temporaire dérivé d'un secret partagé |
-| **Chiffrement AES-256-GCM** | Écoute réseau passive | Clé HKDF du secret de salle, mandatory sur /peer/v1/tasks* |
-| **Sandbox bubblewrap** | Exécution de code malveillant | Filesystem read-only, pas de réseau, PID isolé |
+| **Authentification HMAC** | Pairs non autorisés, imposteurs | `auth_key` dérivée via PBKDF2 600 k iters (slow KDF), challenge actif `/peer/v1/verify` côté discovery, header `X-PartaGPU-AUTH` lié au corps des requêtes |
+| **Anti-rejeu** | Replay d'une requête capturée dans la fenêtre 30 s | `ReplayCache` en mémoire qui dédupe les `X-PartaGPU-AUTH` vus |
+| **Chiffrement AES-256-GCM** | Écoute réseau passive | Clé HKDF du secret de salle + ECDH X25519 forward-secret, mandatory sur /peer/v1/tasks* |
+| **Sandbox bubblewrap** | Exécution de code malveillant | Filesystem read-only, pas de réseau, PID isolé, cgroup CPU/RAM/`pids.max=1024` (anti fork bomb) |
 | **Compte durci** | Abus du compte partagpu | Shell restreint, SSH bloqué, sudo bloqué |
+| **Secret de salle au repos** | Lecture du secret par un autre user local | `~/.config/partagpu/room.json` en `chmod 600` |
 | **Pare-feu automatique** | Exposition réseau inutile | Port ouvert uniquement quand le partage est actif |
 | **Anti-spoofing mDNS** | Flood, usurpation d'identité | Rate limiting, max peers, détection de conflits |
+| **Cap connexions peer-API** | OOM par flood TCP sur le port 7655 | `Semaphore(64)` acquis avant `accept()` |
+| **Anti-CSRF API locale** | Page web hostile pivotant sur `127.0.0.1:7654` | Refus si `Host` ≠ `127.0.0.1:7654` ou `Origin` présent (bloque DNS rebinding) |
+| **CSP webview** | XSS / injection HTML dans la webview Tauri | `default-src 'self'` + `frame-ancestors 'none'` + `object-src 'none'` |
 | **PolicyKit** | Escalade de privilèges | Helper Rust compilé, mot de passe via stdin |
 | **Validation des entrées** | Injection de commandes | Allowlist, validation stricte, pas de shell |
 | **Passphrase masquée (UX)** | Fuite visuelle du code de salle | Étoiles par défaut, révèle uniquement tant que l'œil est maintenu |

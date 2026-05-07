@@ -59,13 +59,16 @@ Check, in order:
 
 ### Peer shows up but marked "unverified"
 
-The HMAC auth proof doesn't match. Causes:
-- **Not in the same room**: different passphrases. *Leave the room* on one side and rejoin with the right code.
-- **Clock skew > 30 s between machines**: HMAC proofs are valid within ±30 s only (`AUTH_WINDOW_SECS`). Enable NTP everywhere:
-  ```bash
-  sudo timedatectl set-ntp true
-  timedatectl status      # check System clock synchronized: yes
-  ```
+The active HMAC challenge on `/peer/v1/verify` didn't return a matching response. Causes:
+- **Not in the same room**: different passphrases → different `auth_key` → verify HMAC mismatch. *Leave the room* on one side and rejoin with the right code.
+- **Peer on too old a version**: `< 1.10.0` doesn't expose `/peer/v1/verify` (auth was via mDNS `auth_proof` through 1.9.x) — every peer must run 1.10.0+.
+- **Probe timeout (3 s)**: firewall blocking port 7655, peer far on the LAN, or the peer's app is still starting up. Re-verification runs every 60 s, wait a minute.
+
+Clock skew doesn't affect `/verify` (nonce-based, not time-windowed), but it does block dispatches (HTTP `X-PartaGPU-AUTH` is ±30 s anti-replay). Enabling NTP everywhere is still recommended:
+```bash
+sudo timedatectl set-ntp true
+timedatectl status      # check System clock synchronized: yes
+```
 
 ### Multiple peers with the same hostname (badge "Conflict")
 

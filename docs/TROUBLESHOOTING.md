@@ -59,13 +59,16 @@ Vérifier dans l'ordre :
 
 ### Le pair apparaît mais marqué `non vérifié`
 
-La preuve d'auth HMAC ne match pas. Causes :
-- **Pas dans la même salle** : différentes passphrases. *Quitter la salle* sur l'un, la rejoindre avec le bon code.
-- **Décalage d'horloge > 30 s entre les machines** : les preuves HMAC sont valides ±30 s seulement (fenêtre `AUTH_WINDOW_SECS`). Activer NTP partout :
-  ```bash
-  sudo timedatectl set-ntp true
-  timedatectl status      # verifier System clock synchronized: yes
-  ```
+Le challenge HMAC actif sur `/peer/v1/verify` n'a pas répondu correctement. Causes :
+- **Pas dans la même salle** : différentes passphrases → `auth_key` différentes → HMAC du verify ne match pas. *Quitter la salle* sur l'un, la rejoindre avec le bon code.
+- **Pair sur une version trop ancienne** : `< 1.10.0` n'expose pas `/peer/v1/verify` (auth via mDNS `auth_proof` jusqu'à 1.9.x) — tous les pairs doivent tourner 1.10.0+.
+- **Probe timeout (3 s)** : pare-feu qui bloque le port 7655, peer trop loin sur le LAN, ou app du peer en train de démarrer. La re-vérification automatique a lieu toutes les 60 s, attendre une minute.
+
+Pour le décalage d'horloge : il n'affecte pas la vérification `/verify` (qui se base sur un nonce, pas une fenêtre de temps), mais il bloque les dispatchs (HTTP `X-PartaGPU-AUTH` = ±30 s anti-replay). Activer NTP partout reste recommandé :
+```bash
+sudo timedatectl set-ntp true
+timedatectl status      # verifier System clock synchronized: yes
+```
 
 ### Plusieurs pairs avec le même hostname (badge "Conflit")
 

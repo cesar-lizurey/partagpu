@@ -115,10 +115,11 @@ Le système de salle résout ce problème : il génère un **secret partagé** q
 ### Comment ça marche en arrière-plan
 
 - Le code de 4 mots encode un secret cryptographique (chaque mot = 1 octet parmi 256 possibilités, soit 4 milliards de combinaisons)
-- Ce secret est dérivé via HKDF-SHA256 en une `auth_key` de 32 octets
-- Chaque poste annonce une **preuve HMAC à 8 caractères hex** dans son TXT record mDNS, valide pour la fenêtre de 30 s courante
-- Les autres postes vérifient ce code — s'il correspond, le pair est marqué **OK** (vérifié)
-- Un poste qui ne connaît pas le secret ne peut pas produire le bon code et apparaît comme **non vérifié**
+- Ce secret est dérivé via PBKDF2-HMAC-SHA256 (600 000 itérations, ~100 ms) en une `auth_key` de 32 octets — slow KDF anti-bruteforce
+- Quand votre app découvre un autre poste sur le réseau, elle le **sonde activement** sur `/peer/v1/verify?nonce=<aléatoire>` ; le pair répond avec `HMAC(auth_key, nonce)` complet
+- Si la réponse correspond à ce que vous calculez avec votre propre `auth_key`, le pair est marqué **OK** (vérifié)
+- Un poste qui ne connaît pas le secret ne peut pas produire le bon HMAC et apparaît comme **non vérifié**
+- Aucune preuve statique n'est broadcastée en mDNS — un attaquant passif sur le LAN ne peut pas collecter de tags HMAC
 
 ### Pairs vérifiés, non vérifiés et inconnus
 
@@ -126,12 +127,13 @@ PartaGPU distingue trois catégories de machines :
 
 #### Pair vérifié
 
-Machine visible sur le réseau via mDNS **et** dont la preuve d'auth HMAC correspond à la vôtre (même salle, même code d'accès).
+Machine visible sur le réseau via mDNS **et** qui a répondu correctement au challenge HMAC sur `/peer/v1/verify` (même salle, même code d'accès).
 
-- Chaque poste dans la salle possède le même secret (dérivé du code de 4 mots)
-- À partir de ce secret, chaque poste calcule un **HMAC-SHA256 tronqué** sur la fenêtre de 30 s courante (8 caractères hex). Même principe qu'un code temporaire mais sans la machinerie TOTP / RFC 6238.
-- Cette preuve est annoncée automatiquement aux autres postes via le réseau local
-- Les autres postes vérifient : s'ils recalculent la même preuve avec leur propre secret, le pair est **vérifié**
+- Chaque poste dans la salle possède le même secret (dérivé du code de 4 mots via PBKDF2)
+- Quand vous découvrez un autre poste, vous lui envoyez un nonce aléatoire de 16 octets
+- Il répond avec `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce)` complet (256 bits)
+- Vous recalculez la même valeur avec votre `auth_key` ; si match → pair **vérifié**, sinon → non vérifié
+- Cette vérification est ré-effectuée toutes les 60 s pour détecter un pair qui aurait quitté la salle
 
 #### Pair non vérifié
 

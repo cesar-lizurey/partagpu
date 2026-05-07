@@ -115,10 +115,11 @@ The room system solves this: it generates a **shared secret** that produces an a
 ### How it works under the hood
 
 - The 4-word code encodes a cryptographic secret (each word = 1 byte from 256 options, so 4 billion combinations)
-- This secret is HKDF-SHA256-expanded into a 32-byte `auth_key`
-- Each station broadcasts an **8-hex-char HMAC proof** in its mDNS TXT record, valid for the current 30-s window
-- Other stations check that code — if it matches, the peer is marked **OK** (verified)
-- A station that doesn't know the secret can't produce the right code and shows up as **unverified**
+- This secret is derived via PBKDF2-HMAC-SHA256 (600 000 iterations, ~100 ms) into a 32-byte `auth_key` — slow KDF for brute-force resistance
+- When your app discovers another station on the network, it **actively probes** it on `/peer/v1/verify?nonce=<random>` ; the peer responds with full `HMAC(auth_key, nonce)`
+- If the response matches what you compute with your own `auth_key`, the peer is marked **OK** (verified)
+- A station that doesn't know the secret can't produce the right HMAC and shows up as **unverified**
+- No static proof is broadcast in mDNS — a passive LAN listener can't collect HMAC tags
 
 ### Verified, unverified, and unknown peers
 
@@ -126,12 +127,13 @@ PartaGPU distinguishes three categories:
 
 #### Verified peer
 
-A machine visible on the network via mDNS **and** whose HMAC auth proof matches yours (same room, same access code).
+A machine visible on the network via mDNS **and** that answered the HMAC challenge on `/peer/v1/verify` correctly (same room, same access code).
 
-- Each station in the room has the same secret (derived from the 4-word code)
-- From this secret, every station computes a **truncated HMAC-SHA256** over the current 30-s window (8 hex chars). Same idea as a time-based code but without the TOTP / RFC 6238 machinery.
-- The proof is broadcast automatically to other stations over the LAN
-- Other stations verify: if they recompute the same proof with their own secret, the peer is **verified**
+- Each station in the room has the same secret (derived from the 4-word code via PBKDF2)
+- When you discover another station, you send it a random 16-byte nonce
+- It responds with `HMAC-SHA256(auth_key, "PartaGPU/verify-resp/v1\n" || nonce)` in full (256 bits)
+- You recompute the same value with your `auth_key` ; on match → **verified**, otherwise → unverified
+- This check is re-run every 60 s to detect a peer that left the room
 
 #### Unverified peer
 

@@ -17,7 +17,6 @@ This document details the security measures implemented in PartaGPU. The applica
 - [6. Protection against mDNS spoofing / flooding](#6-protection-against-mdns-spoofing--flooding)
 - [7. Secure privilege elevation (PolicyKit)](#7-secure-privilege-elevation-policykit)
 - [8. Input validation](#8-input-validation)
-- [Remaining measures](#remaining-measures)
 - [Reporting a vulnerability](#reporting-a-vulnerability)
 
 ---
@@ -28,12 +27,17 @@ PartaGPU layers several complementary defenses:
 
 | Layer | Protects against | Implementation |
 |--------|---------------|----------------|
-| **HMAC authentication** | Unauthorized peers, impostors | Time-based code derived from a shared secret |
-| **AES-256-GCM encryption** | Passive network eavesdropping | HKDF-derived key from the room secret, mandatory on `/peer/v1/tasks*` |
-| **bubblewrap sandbox** | Malicious code execution | Read-only filesystem, no network, isolated PID namespace |
+| **HMAC authentication** | Unauthorized peers, impostors | `auth_key` derived via PBKDF2, 600 k iters (slow KDF) ; active discovery probe on `/peer/v1/verify` ; `X-PartaGPU-AUTH` header bound to the request body |
+| **Anti-replay** | Replaying a captured request within the 30-s window | In-memory `ReplayCache` that dedupes seen `X-PartaGPU-AUTH` headers |
+| **AES-256-GCM encryption** | Passive network eavesdropping | HKDF-derived key from the room secret + per-request X25519 ECDH forward secrecy, mandatory on `/peer/v1/tasks*` |
+| **bubblewrap sandbox** | Malicious code execution | Read-only filesystem, no network, isolated PID namespace, cgroup CPU/RAM/`pids.max=1024` (anti fork bomb) |
 | **Hardened account** | `partagpu` account abuse | Restricted shell, SSH blocked, sudo blocked |
+| **Room secret at rest** | Other local user reading the secret | `~/.config/partagpu/room.json` is `chmod 600` |
 | **Automatic firewall** | Unnecessary network exposure | Port open only when sharing is active |
 | **Anti mDNS spoofing** | Flooding, identity spoofing | Rate limiting, max peers, conflict detection |
+| **Peer-API connection cap** | OOM via TCP flood on port 7655 | `Semaphore(64)` acquired before `accept()` |
+| **Local-API anti-CSRF** | Hostile web page pivoting onto `127.0.0.1:7654` | Reject when `Host` ≠ `127.0.0.1:7654` or `Origin` is set (blocks DNS rebinding) |
+| **Webview CSP** | XSS / HTML injection in the Tauri webview | `default-src 'self'` + `frame-ancestors 'none'` + `object-src 'none'` |
 | **PolicyKit** | Privilege escalation | Compiled Rust helper, password via stdin |
 | **Input validation** | Command injection | Allowlist, strict validation, no shell |
 | **Masked passphrase (UX)** | Shoulder-surfing the room code | Stars by default, only revealed while the eye button is held |
