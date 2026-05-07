@@ -233,6 +233,7 @@ The application has **3 tabs**:
 - **Run a command on a peer**: form to dispatch a command on a peer without going through Python (peer selection, command with shell-style parsing or uploaded file, timeout, opt-in network access, **workspace file upload** through a file picker, result panel with stdout/stderr **streaming live** during execution).
 - **Multi-machine DDP training**: dedicated panel to launch a PyTorch DDP script without Python — tick the target peers (with a field for how many GPUs to use on each), upload the script + companion files, pick the backend (NCCL/Gloo) and master port. Live progress table per rank, **Cancel all** button that propagates the stop to every rank when something fails.
 - **My running tasks**: live progress of what I submitted. **Stop** button on Queued/Running tasks to cancel cleanly (SIGTERM on the peer side, propagation to sibling ranks in DDP).
+- **Desktop notifications**: when a dispatch finishes (Completed / Failed / Cancelled), a native system toast pops up, even if the app isn't focused. Handy for stepping away during a long DDP training. Permission asked once on first trigger.
 
 ### "Guide" tab
 

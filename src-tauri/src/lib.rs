@@ -132,6 +132,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             // Hand the AppHandle to the task stores so they can push live
             // "{incoming,outgoing}-tasks-changed" events whenever state

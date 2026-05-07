@@ -233,6 +233,7 @@ L'application a **3 onglets** :
 - **Lancer une commande sur un pair** : formulaire pour dispatcher une commande sur un pair sans passer par Python (sélection du pair, commande avec parsing shell ou fichier uploadé, timeout, accès réseau opt-in, **upload de fichiers du workspace** par file picker, panneau résultat avec stdout/stderr **qui défile en direct** pendant l'exécution).
 - **Entraînement DDP multi-machines** : panneau dédié pour lancer un script PyTorch DDP sans Python — coche les pairs cibles (avec un champ pour combien de GPU utiliser sur chacun), upload le script + fichiers compagnons, choisis le backend (NCCL/Gloo) et le port maître. Tableau de progression par rang en live, bouton **Tout annuler** qui propage l'arrêt à tous les rangs en cas de plantage.
 - **Mes tâches en cours** : progression en temps réel de ce que j'ai soumis. Bouton **Stop** sur les tâches Queued/Running pour les annuler proprement (SIGTERM côté pair, propagation aux rangs siblings dans un DDP).
+- **Notifications desktop** : à la fin d'un dispatch (Completed / Failed / Cancelled), un toast natif système s'affiche, même si l'app n'a pas le focus. Pratique pour s'éloigner pendant un long entraînement DDP. Permission demandée une seule fois au premier déclenchement.
 
 ### Onglet « Guide »
 

@@ -5,12 +5,17 @@ import { TaskList } from "../components/TaskList";
 import { TaskDispatcher } from "../components/TaskDispatcher";
 import { DDPDispatcher } from "../components/DDPDispatcher";
 import { getPeers, getOutgoingTasks } from "../lib/api";
+import { useTaskCompletionNotifications } from "../lib/notifications";
 import type { Peer, Task } from "../lib/api";
 
 export function MyUsage() {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // Desktop toast whenever an outgoing task hits Completed/Failed/Cancelled.
+  // Lets the user step away during a long DDP run and still get notified.
+  useTaskCompletionNotifications(tasks);
 
   const refresh = useCallback(async () => {
     try {
