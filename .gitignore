@@ -46,6 +46,9 @@ examples/venv/
 examples/.ipynb_checkpoints/
 examples/__pycache__/
 
+# Genere par Jupyter %%writefile dans examples/decouverte_gpu.ipynb (§6.3)
+examples/colorization_train.py
+
 # Python build artifacts
 *.egg-info/
 __pycache__/

@@ -3,7 +3,7 @@ members = [".", "helper"]
 
 [package]
 name = "partagpu"
-version = "1.10.2"
+version = "1.10.3"
 description = "Partage de ressources de calcul sur réseau local"
 authors = ["César Lizurey"]
 homepage = "https://cesar.lizurey.fr"

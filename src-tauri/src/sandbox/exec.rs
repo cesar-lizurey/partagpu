@@ -255,6 +255,19 @@ impl Sandbox {
 
         if !opts.network_enabled {
             cmd.arg("--unshare-net");
+        } else {
+            // DNS : sur Ubuntu/Debian moderne, `/etc/resolv.conf` est un symlink
+            // vers `/run/systemd/resolve/stub-resolv.conf`. On a deja bind-mount
+            // `/etc` mais le symlink pointerait dans le vide sans ce bind ; sans
+            // `getaddrinfo` echoue avec « Temporary failure in name resolution »
+            // et les taches qui telechargent un dataset (CIFAR, etc.) plantent.
+            if Path::new("/run/systemd/resolve").is_dir() {
+                cmd.args([
+                    "--ro-bind",
+                    "/run/systemd/resolve",
+                    "/run/systemd/resolve",
+                ]);
+            }
         }
         cmd.arg("--unshare-pid");
         cmd.arg("--die-with-parent");
