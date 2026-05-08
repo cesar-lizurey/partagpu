@@ -134,6 +134,7 @@ def distribute(
     user: str | None = None,
     api_base: str = API_BASE,
     live: bool = False,
+    outputs: Sequence[str] = (),
 ) -> list[TaskResult]:
     """Run ``script`` as a DDP training across ``gpus``.
 
@@ -156,6 +157,11 @@ def distribute(
         live: If True, print stdout/stderr from each rank as it arrives,
             prefixed with ``[rankN] `` so concurrent output remains readable.
             The full text is still returned in each :class:`TaskResult`.
+        outputs: Relative paths inside each rank's ``/workspace`` to retrieve
+            after the task exits. By DDP convention only rank 0 typically
+            saves a checkpoint, so other ranks return an empty
+            :attr:`TaskResult.artifacts`. Total payload per rank capped at
+            256 MiB.
 
     Returns:
         A list of :class:`partagpu.TaskResult`, one per rank, in rank order.
@@ -240,6 +246,7 @@ def distribute(
             workspace=workspace,
             api_base=api_base,
             local_id=local_ids[rank],
+            outputs=outputs,
             live=live,
             live_prefix=f"[rank{rank}] " if live else "",
             live_lock=print_lock,

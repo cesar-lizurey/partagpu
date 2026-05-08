@@ -356,6 +356,14 @@ impl Sandbox {
             let _ = h.join();
         }
 
+        // Avant de drop le workspace (qui le wipe), on rapatrie les artefacts
+        // demandes via `SandboxOptions::outputs`. C'est la seule fenetre ou
+        // les fichiers produits par la tache existent encore sur disque.
+        // Done meme en cas d'echec : un training qui sauve un checkpoint puis
+        // crash plus tard reste utile a recuperer.
+        let artifacts =
+            collect_artifacts(workspace_host.path.as_path(), &opts.outputs, &stderr_buf);
+
         let res = match wait_result {
             Ok(status) => {
                 let stdout = stdout_buf.lock().map(|s| s.clone()).unwrap_or_default();
@@ -364,6 +372,7 @@ impl Sandbox {
                     exit_code: status,
                     stdout,
                     stderr,
+                    artifacts,
                 })
             }
             Err(e) => {
@@ -384,4 +393,74 @@ impl Sandbox {
         drop(workspace_host);
         res
     }
+}
+
+/// Lit chaque fichier demande dans `outputs` depuis le workspace host et
+/// retourne la liste d'artefacts (path + contenu base64). Les chemins
+/// suspects (path traversal, absolute, symlinks pointant hors du workspace)
+/// sont rejetes sans bruit. Plafonne le total a `MAX_ARTIFACT_TOTAL_BYTES`
+/// pour eviter qu'une tache qui ecrit un fichier geant n'epuise la RAM.
+fn collect_artifacts(
+    workspace_root: &Path,
+    outputs: &[String],
+    stderr_buf: &Arc<Mutex<String>>,
+) -> Vec<crate::sandbox::Artifact> {
+    use std::io::Read;
+
+    if outputs.is_empty() {
+        return Vec::new();
+    }
+    let canon_root = match workspace_root.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out = Vec::new();
+    let mut total_bytes: u64 = 0;
+    for rel in outputs {
+        // On rejette tout chemin absolu ou contenant `..` apres
+        // canonicalize(), pour s'assurer qu'on ne lit que ce qui est dans
+        // /workspace. Ca couvre aussi les symlinks fabriques par la tache
+        // pour pointer hors-sandbox.
+        let candidate = canon_root.join(rel);
+        let canon = match candidate.canonicalize() {
+            Ok(p) => p,
+            Err(_) => continue, // fichier absent → skip silencieusement
+        };
+        if !canon.starts_with(&canon_root) {
+            continue;
+        }
+        if !canon.is_file() {
+            continue;
+        }
+        let metadata = match std::fs::metadata(&canon) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let size = metadata.len();
+        if total_bytes.saturating_add(size) > crate::sandbox::MAX_ARTIFACT_TOTAL_BYTES {
+            if let Ok(mut buf) = stderr_buf.lock() {
+                buf.push_str(&format!(
+                    "\n[partagpu] Artefact « {rel} » ({size} octets) ignore : depasserait le plafond de {} octets.\n",
+                    crate::sandbox::MAX_ARTIFACT_TOTAL_BYTES
+                ));
+            }
+            continue;
+        }
+        let mut bytes = Vec::with_capacity(size as usize);
+        if let Ok(mut f) = std::fs::File::open(&canon) {
+            if f.read_to_end(&mut bytes).is_err() {
+                continue;
+            }
+        } else {
+            continue;
+        }
+        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        let content_b64 = data_encoding::BASE64.encode(&bytes);
+        out.push(crate::sandbox::Artifact {
+            path: rel.clone(),
+            content_b64,
+        });
+    }
+    out
 }

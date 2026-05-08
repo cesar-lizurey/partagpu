@@ -98,6 +98,11 @@ struct SubmitBody {
     /// Files to materialize in /workspace before exec.
     #[serde(default)]
     workspace: Vec<WorkspaceFile>,
+    /// Chemins relatifs (depuis /workspace) que le client veut recuperer
+    /// apres exit. Le champ est attache aux SandboxOptions ; les fichiers
+    /// produits sont rapatries en base64 dans `Task.artifacts`.
+    #[serde(default)]
+    outputs: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -647,6 +652,7 @@ fn handle_submit(
         network_enabled: body.network_enabled,
         workspace: body.workspace,
         gpu_limit_percent: gpu_limit,
+        outputs: body.outputs,
     };
 
     match incoming.create_and_run(

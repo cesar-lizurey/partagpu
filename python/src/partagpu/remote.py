@@ -56,6 +56,7 @@ class TaskResult:
     exit_code: int | None
     stdout: str
     stderr: str
+    artifacts: dict[str, bytes]
 
     @property
     def ok(self) -> bool:
@@ -74,10 +75,13 @@ class TaskResult:
     def __repr__(self) -> str:
         head = (self.stdout or self.stderr).splitlines()[:1]
         preview = head[0][:60] if head else ""
+        artifacts_summary = (
+            f", artifacts={list(self.artifacts.keys())}" if self.artifacts else ""
+        )
         return (
             f"TaskResult(target={self.target_machine!r}, "
             f"status={self.status!r}, exit_code={self.exit_code}, "
-            f"output={preview!r}{'…' if preview else ''})"
+            f"output={preview!r}{'…' if preview else ''}{artifacts_summary})"
         )
 
 
@@ -255,6 +259,7 @@ def run_remote(
     workspace: WorkspaceArg | None = None,
     api_base: str = API_BASE,
     local_id: str | None = None,
+    outputs: Sequence[str] = (),
     live: bool = False,
     live_prefix: str = "",
     live_stdout: Optional[IO[str]] = None,
@@ -279,6 +284,12 @@ def run_remote(
             (basename used as the workspace path). Total payload capped at
             ~16 MB on the peer side.
         api_base: Override the local app URL (default ``http://127.0.0.1:7654``).
+        outputs: Relative paths inside the peer's ``/workspace`` to retrieve
+            after the task exits. Returned as raw bytes in
+            :attr:`TaskResult.artifacts` (keyed by the same relative path).
+            Files that don't exist are silently skipped. Total payload
+            capped at 256 MiB ; oversized files are skipped with a note in
+            the task's stderr.
         live: If True, poll the local app every ~250 ms and print stdout/stderr
             chunks as they arrive (instead of returning everything at the end).
             ``live_prefix`` is prepended to each line ; useful when several
@@ -325,6 +336,7 @@ def run_remote(
         "network": bool(network),
         "workspace": _build_workspace(workspace),
         "local_id": local_id,
+        "outputs": list(outputs),
     }
     if user is not None:
         payload["user"] = user
@@ -374,6 +386,18 @@ def run_remote(
         )
 
     data = resp.json()
+    artifacts: dict[str, bytes] = {}
+    for entry in data.get("artifacts") or []:
+        path = entry.get("path") or ""
+        b64 = entry.get("content_b64") or ""
+        if not path or not b64:
+            continue
+        try:
+            artifacts[path] = base64.b64decode(b64)
+        except (ValueError, base64.binascii.Error):
+            # Si le pair envoie un base64 invalide on ignore plutot que de
+            # casser tout le TaskResult (on a deja stdout/stderr utiles).
+            continue
     return TaskResult(
         id=data.get("id", ""),
         target_machine=data.get("target_machine", peer_ip),
@@ -381,6 +405,7 @@ def run_remote(
         exit_code=data.get("exit_code"),
         stdout=data.get("output", ""),
         stderr=data.get("error_output", ""),
+        artifacts=artifacts,
     )
 
 

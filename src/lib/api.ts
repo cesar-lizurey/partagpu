@@ -68,6 +68,13 @@ export interface WorkspaceFile {
   content_b64: string;
 }
 
+export interface Artifact {
+  /** Relative path inside the task's `/workspace` (as requested via `outputs`). */
+  path: string;
+  /** Standard base64 encoding of the file contents. */
+  content_b64: string;
+}
+
 export interface Task {
   id: string;
   command: string;
@@ -86,6 +93,10 @@ export interface Task {
   created_at: number;
   /** True when the sandbox kept host network access (DDP rendezvous). */
   network_enabled?: boolean;
+  /** Files retrieved from `/workspace` after the task completed (when the
+   *  caller asked for them via `outputs=[...]`). Not persisted across app
+   *  restarts. */
+  artifacts?: Artifact[];
 }
 
 export interface MachineInfo {

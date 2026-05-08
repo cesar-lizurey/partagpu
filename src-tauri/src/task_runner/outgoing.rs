@@ -244,6 +244,9 @@ impl OutgoingTasks {
                 task.cpu_usage = peer.cpu_usage;
                 task.ram_usage_mb = peer.ram_usage_mb;
                 task.gpu_usage = peer.gpu_usage;
+                if !peer.artifacts.is_empty() {
+                    task.artifacts = peer.artifacts.clone();
+                }
             }
         }
         self.notify();

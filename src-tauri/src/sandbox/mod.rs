@@ -60,7 +60,28 @@ pub struct SandboxOptions {
     /// effect on hosts without an NVIDIA GPU.
     #[serde(default)]
     pub gpu_limit_percent: Option<u32>,
+    /// Chemins relatifs (depuis /workspace) à rapatrier après exit. Permet
+    /// au client SDK de récupérer des artefacts produits par la tâche
+    /// (typiquement `model.pt` après un entraînement) avant que le sandbox
+    /// ne soit détruit. Les fichiers absents sont silencieusement ignorés.
+    /// Limite agrégée : `MAX_ARTIFACT_TOTAL_BYTES`.
+    #[serde(default)]
+    pub outputs: Vec<String>,
 }
+
+/// Un artefact rapatrie d'une tache : chemin relatif dans /workspace +
+/// contenu brut binaire (transcode en base64 sur le wire).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Artifact {
+    /// Chemin relatif (tel que demandé via `SandboxOptions::outputs`).
+    pub path: String,
+    /// Contenu binaire encodé en base64 standard.
+    pub content_b64: String,
+}
+
+/// Plafond agrégé sur les artefacts retournés par tâche. 256 MiB binaire
+/// → ~340 MiB en base64 ; au-delà on tronque la liste avec un avertissement.
+pub const MAX_ARTIFACT_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Result of a sandboxed task execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +89,11 @@ pub struct SandboxResult {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
+    /// Artefacts rapatries depuis /workspace avant le cleanup. Les fichiers
+    /// absents/inaccessibles sont silencieusement skippes (le client peut
+    /// detecter via `path not in result.artifacts`).
+    #[serde(default)]
+    pub artifacts: Vec<Artifact>,
 }
 
 /// Shared buffers the sandbox progressively fills with stdout / stderr as the

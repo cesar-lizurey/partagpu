@@ -196,6 +196,7 @@ pub fn submit_task(
     timeout_secs: Option<u64>,
     network_enabled: Option<bool>,
     workspace: Option<Vec<crate::sandbox::WorkspaceFile>>,
+    outputs: Option<Vec<String>>,
 ) -> Result<Task, String> {
     if args.is_empty() {
         return Err("La commande ne peut pas être vide.".into());
@@ -282,6 +283,7 @@ pub fn submit_task(
         network_enabled: network_enabled.unwrap_or(false),
         workspace: workspace.unwrap_or_default(),
         gpu_limit_percent: gpu_limit,
+        outputs: outputs.unwrap_or_default(),
     };
 
     tasks.create_and_run(
@@ -421,8 +423,17 @@ pub async fn dispatch_task(
 
     tokio::task::spawn_blocking(move || {
         crate::http_api::dispatch_task_blocking(
-            &auth, &discovery, &outgoing, &peer_ip, args, user, timeout, network, workspace,
+            &auth,
+            &discovery,
+            &outgoing,
+            &peer_ip,
+            args,
+            user,
+            timeout,
+            network,
+            workspace,
             local_id,
+            Vec::new(),
         )
     })
     .await

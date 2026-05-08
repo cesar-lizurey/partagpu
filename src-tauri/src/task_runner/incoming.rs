@@ -446,10 +446,12 @@ impl IncomingTasks {
                             exit_code,
                             stdout,
                             stderr,
+                            artifacts,
                         }) => {
                             task.output = stdout;
                             task.error_output = stderr;
                             task.exit_code = Some(exit_code);
+                            task.artifacts = artifacts;
                             if !already_cancelled {
                                 task.progress = 100.0;
                                 task.status = if exit_code == 0 {

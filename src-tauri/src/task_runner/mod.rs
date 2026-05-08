@@ -50,6 +50,11 @@ pub(crate) fn save_atomic<T: Serialize>(path: &std::path::Path, value: &T) -> st
 /// Truncate output fields before persisting so a chatty task doesn't blow
 /// up the saved file. Never modifies the in-memory Task — only the saved
 /// copy.
+///
+/// Artefacts ne sont jamais persistes : ils peuvent atteindre des centaines
+/// de Mo et n'ont d'utilite que tant que le client est connecte pour les
+/// recuperer. Apres un restart, on garde le statut/exit_code/output mais on
+/// drop les blobs.
 pub(crate) fn task_for_persist(task: &Task) -> Task {
     let mut t = task.clone();
     if t.output.len() > PERSIST_OUTPUT_CAP {
@@ -60,6 +65,7 @@ pub(crate) fn task_for_persist(task: &Task) -> Task {
         t.error_output.truncate(PERSIST_OUTPUT_CAP);
         t.error_output.push_str("\n[…tronqué pour persistance]");
     }
+    t.artifacts.clear();
     t
 }
 
@@ -93,6 +99,12 @@ pub struct Task {
     /// Surfaced to the UI as a "network" indicator.
     #[serde(default)]
     pub network_enabled: bool,
+    /// Artefacts rapatries depuis /workspace en fin de tache (par ex. un
+    /// `model.pt` save par le rang 0). Vide tant que la tache n'a pas
+    /// termine ; jamais persiste sur disque (truncate dans
+    /// `task_for_persist`) — les blobs ne survivent pas a un restart.
+    #[serde(default)]
+    pub artifacts: Vec<crate::sandbox::Artifact>,
 }
 
 fn now_secs() -> u64 {
@@ -127,5 +139,6 @@ pub fn new_task(
         exit_code: None,
         created_at: now_secs(),
         network_enabled: false,
+        artifacts: Vec::new(),
     }
 }

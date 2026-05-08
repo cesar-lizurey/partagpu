@@ -62,6 +62,11 @@ struct DispatchBody {
     /// KeyboardInterrupt). If absent, the app generates a UUID.
     #[serde(default)]
     local_id: Option<String>,
+    /// Chemins relatifs (depuis /workspace) que le client veut recuperer
+    /// apres exit. Propage tel quel au peer ; les fichiers produits sont
+    /// retournes en base64 dans `Task.artifacts`.
+    #[serde(default)]
+    outputs: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -238,6 +243,7 @@ async fn handle_dispatch(req: &Request, state: &ApiState) -> (&'static str, Stri
             body.network.unwrap_or(false),
             body.workspace.unwrap_or_default(),
             body.local_id,
+            body.outputs.unwrap_or_default(),
         )
     })
     .await;
@@ -275,6 +281,7 @@ pub fn dispatch_task_blocking(
     network: bool,
     mut workspace: Vec<WorkspaceFile>,
     local_id_override: Option<String>,
+    outputs: Vec<String>,
 ) -> Result<Task, String> {
     // Compress the workspace before encryption (gzip is much faster on the
     // pre-encrypted plaintext than after — and ciphertext is incompressible).
@@ -371,6 +378,7 @@ pub fn dispatch_task_blocking(
         workspace,
         outgoing.clone(),
         &local_id,
+        outputs,
     );
 
     match result {
@@ -382,6 +390,7 @@ pub fn dispatch_task_blocking(
             local_task.output = task.output.clone();
             local_task.error_output = task.error_output.clone();
             local_task.exit_code = task.exit_code;
+            local_task.artifacts = task.artifacts.clone();
             outgoing.replace(local_task.clone());
             outgoing.clear_remote_ref(&local_id);
             Ok(local_task)
@@ -573,6 +582,7 @@ fn run_remote_blocking(
     workspace: Vec<WorkspaceFile>,
     outgoing: OutgoingTasks,
     local_id: &str,
+    outputs: Vec<String>,
 ) -> Result<Task, String> {
     /// Compute the auth header for an outgoing request, bound to the
     /// (method, path, body) triple. Bubbles up "no room" as an error.
@@ -617,6 +627,7 @@ fn run_remote_blocking(
         "timeout_secs": timeout_secs,
         "network_enabled": network_enabled,
         "workspace": workspace,
+        "outputs": outputs,
     });
     let body_str = serde_json::to_string(&body).map_err(|e| format!("JSON sérialisation : {e}"))?;
     let (body_env, submit_session_key) = encrypt_for(key, peer_eph_pk, &body_str)?;
