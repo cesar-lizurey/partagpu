@@ -27,6 +27,20 @@ const MANAGED_VENV_SANDBOX: &str = "/opt/partagpu-venv";
 /// (running as the partagpu UID) can connect to the daemon's Unix socket.
 const MPS_PIPE_DIR: &str = "/var/lib/partagpu/mps";
 
+/// Verifie si un daemon CUDA MPS tourne sur l'hote en pgrep-ant le binaire.
+/// Utilise au moment ou la sandbox decide d'injecter `CUDA_MPS_PIPE_DIRECTORY`
+/// dans l'env de la tache : sans ce check, on injecterait l'env meme si le
+/// daemon est mort, ce qui pousserait CUDA a echouer avec l'erreur 805.
+fn is_mps_daemon_alive() -> bool {
+    Command::new("pgrep")
+        .args(["-x", "nvidia-cuda-mps-control"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Manages the allowlist and runs sandboxed commands.
 #[derive(Clone)]
 pub struct Sandbox {
@@ -237,13 +251,19 @@ impl Sandbox {
         // having to remember `flush=True`. Doesn't affect non-Python tasks.
         cmd.env("PYTHONUNBUFFERED", "1");
 
-        // CUDA MPS integration : if the MPS daemon is up (the pipe directory
-        // exists), bind-mount it into the sandbox and tell CUDA where to
-        // find the socket. When `gpu_limit_percent` is set, also cap the
-        // task's GPU SM share via `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE` —
-        // this is the actual enforcement that turns the GPU slider from
-        // advisory into a real limit.
-        let mps_active = Path::new(MPS_PIPE_DIR).is_dir();
+        // CUDA MPS integration : si le daemon MPS est actif, bind-mount le
+        // pipe dir et exporte les env vars pour que la sandbox puisse parler
+        // au control socket. `gpu_limit_percent` cape la part de SM via
+        // `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE` (l'enforcement reel du slider).
+        //
+        // Important : on verifie a la fois que le repertoire existe ET que
+        // le daemon est vivant. Sans cette verification, si le daemon a
+        // crash apres un setup-mps reussi, la sandbox injecterait quand
+        // meme les env vars et chaque tache CUDA echouerait avec l'erreur
+        // 805 (« MPS client failed to connect to the MPS control daemon »).
+        // En l'absence de daemon vivant on retombe en mode CUDA direct
+        // (advisory only, comme avant v1.10.2).
+        let mps_active = Path::new(MPS_PIPE_DIR).is_dir() && is_mps_daemon_alive();
         if mps_active {
             cmd.args(["--bind", MPS_PIPE_DIR, MPS_PIPE_DIR]);
             cmd.env("CUDA_MPS_PIPE_DIRECTORY", MPS_PIPE_DIR);
