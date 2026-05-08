@@ -622,12 +622,30 @@ fn run_remote_blocking(
     let (body_env, submit_session_key) = encrypt_for(key, peer_eph_pk, &body_str)?;
     let submit_auth = auth_header(auth, "POST", submit_path, body_env.as_bytes())?;
 
-    let resp = ureq::post(&url_submit)
+    // ureq considere 4xx/5xx comme une Erreur::Status, pas comme un Ok ; on
+    // distingue les deux pour ne pas masquer les messages utiles du pair
+    // (« Le partage n'est pas activé », etc.) sous un generique « status
+    // code 403 ». Le client Python recoit alors le vrai diagnostic.
+    let resp = match ureq::post(&url_submit)
         .set("X-PartaGPU-AUTH", &submit_auth)
         .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
         .timeout(Duration::from_secs(15))
         .send_string(&body_env)
-        .map_err(|e| format!("connexion au pair {peer_ip} échouée : {e}"))?;
+    {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, r)) => {
+            let text = r.into_string().unwrap_or_default();
+            let trimmed = text.trim();
+            return Err(if trimmed.is_empty() {
+                format!("Le pair {peer_ip} a refusé la tâche (HTTP {code})")
+            } else {
+                format!("Le pair {peer_ip} a refusé la tâche (HTTP {code}) : {trimmed}")
+            });
+        }
+        Err(e) => {
+            return Err(format!("connexion au pair {peer_ip} échouée : {e}"));
+        }
+    };
 
     if resp.status() < 200 || resp.status() >= 300 {
         let status = resp.status();
