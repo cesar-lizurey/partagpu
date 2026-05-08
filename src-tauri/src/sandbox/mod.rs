@@ -54,6 +54,12 @@ pub struct SandboxOptions {
     /// Files to materialize in /workspace before exec (for scripts, configs).
     #[serde(default)]
     pub workspace: Vec<WorkspaceFile>,
+    /// GPU SM% cap (1-100) honored by the CUDA driver via
+    /// `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE` when the MPS daemon is running
+    /// on the host. `None` → no cap injected (advisory mode). Has no
+    /// effect on hosts without an NVIDIA GPU.
+    #[serde(default)]
+    pub gpu_limit_percent: Option<u32>,
 }
 
 /// Result of a sandboxed task execution.

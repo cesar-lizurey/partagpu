@@ -415,7 +415,7 @@ async fn handle_connection(
                 handle_verify(&req.path, &auth)
             }
             ("POST", "/peer/v1/tasks") => {
-                handle_submit(&req, &addr, &incoming, &discovery, &sec_log)
+                handle_submit(&req, &addr, &incoming, &discovery, &sharing, &sec_log)
             }
             ("GET", path) if path.starts_with("/peer/v1/tasks/") => {
                 let id = &path["/peer/v1/tasks/".len()..];
@@ -556,6 +556,7 @@ fn handle_submit(
     addr: &SocketAddr,
     incoming: &IncomingTasks,
     discovery: &Discovery,
+    sharing: &SharingController,
     sec_log: &SecurityLog,
 ) -> (&'static str, String) {
     // Auth is already validated by handle_connection upstream — handlers
@@ -630,9 +631,22 @@ fn handle_submit(
         Some(&source_machine),
     );
 
+    // Snapshot the local GPU limit so the sandbox can cap the task's GPU
+    // SM share via CUDA MPS (set as an env var read by the CUDA driver).
+    // Read here (not at task spawn) so the value reflects what the user
+    // had configured at task-acceptance time.
+    let gpu_limit = {
+        let cfg = sharing.get_config();
+        if cfg.gpu_limit_percent > 0 && cfg.gpu_limit_percent < 100 {
+            Some(cfg.gpu_limit_percent)
+        } else {
+            None
+        }
+    };
     let options = SandboxOptions {
         network_enabled: body.network_enabled,
         workspace: body.workspace,
+        gpu_limit_percent: gpu_limit,
     };
 
     match incoming.create_and_run(

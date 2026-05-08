@@ -67,6 +67,11 @@ impl SharingController {
         // Open firewall — may silently fail if already open or no privileges
         let _ = crate::user_manager::UserManager::open_port();
 
+        // Start the CUDA MPS daemon so per-task `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE`
+        // env vars are honoured. Best-effort : a host without nvidia-cuda-mps-control
+        // (no CUDA toolkit, or no NVIDIA GPU) silently degrades to advisory-only.
+        let _ = crate::user_manager::UserManager::setup_mps();
+
         config.status = SharingStatus::Active;
         Ok(config.clone())
     }
@@ -78,6 +83,9 @@ impl SharingController {
     /// pause keeps everything in place for fast resume.
     pub fn disable(&self) -> Result<SharingConfig, String> {
         let mut config = self.config.lock().unwrap();
+
+        // Stop MPS first so its socket is gone before we wipe the user.
+        let _ = crate::user_manager::UserManager::teardown_mps();
 
         // Full cleanup via the helper (pkexec password prompt). Kills all
         // running tasks (pkill -u partagpu), removes the user (userdel

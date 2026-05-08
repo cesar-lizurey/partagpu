@@ -22,6 +22,10 @@ const MAX_STDERR_BYTES: usize = 256 * 1024; // 256 KB
 /// pre-installed) instead of the bare system python.
 const MANAGED_VENV_HOST: &str = "/var/lib/partagpu/venv";
 const MANAGED_VENV_SANDBOX: &str = "/opt/partagpu-venv";
+/// CUDA MPS pipe directory, set up by the helper at sharing-enable time.
+/// Bind-mounted rw into the sandbox at the same path so client processes
+/// (running as the partagpu UID) can connect to the daemon's Unix socket.
+const MPS_PIPE_DIR: &str = "/var/lib/partagpu/mps";
 
 /// Manages the allowlist and runs sandboxed commands.
 #[derive(Clone)]
@@ -232,6 +236,22 @@ impl Sandbox {
         // Force unbuffered Python so users see prints in the live UI without
         // having to remember `flush=True`. Doesn't affect non-Python tasks.
         cmd.env("PYTHONUNBUFFERED", "1");
+
+        // CUDA MPS integration : if the MPS daemon is up (the pipe directory
+        // exists), bind-mount it into the sandbox and tell CUDA where to
+        // find the socket. When `gpu_limit_percent` is set, also cap the
+        // task's GPU SM share via `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE` —
+        // this is the actual enforcement that turns the GPU slider from
+        // advisory into a real limit.
+        let mps_active = Path::new(MPS_PIPE_DIR).is_dir();
+        if mps_active {
+            cmd.args(["--bind", MPS_PIPE_DIR, MPS_PIPE_DIR]);
+            cmd.env("CUDA_MPS_PIPE_DIRECTORY", MPS_PIPE_DIR);
+            if let Some(pct) = opts.gpu_limit_percent {
+                let clamped = pct.clamp(1, 100);
+                cmd.env("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", clamped.to_string());
+            }
+        }
 
         if !opts.network_enabled {
             cmd.arg("--unshare-net");

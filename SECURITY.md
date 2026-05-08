@@ -30,7 +30,7 @@ PartaGPU repose sur plusieurs couches de sécurité complémentaires :
 | **Authentification HMAC** | Pairs non autorisés, imposteurs | `auth_key` dérivée via PBKDF2 600 k iters (slow KDF), challenge actif `/peer/v1/verify` côté discovery, header `X-PartaGPU-AUTH` lié au corps des requêtes |
 | **Anti-rejeu** | Replay d'une requête capturée dans la fenêtre 30 s | `ReplayCache` en mémoire qui dédupe les `X-PartaGPU-AUTH` vus |
 | **Chiffrement AES-256-GCM** | Écoute réseau passive | Clé HKDF du secret de salle + ECDH X25519 forward-secret, mandatory sur /peer/v1/tasks* |
-| **Sandbox bubblewrap** | Exécution de code malveillant | Filesystem read-only, pas de réseau, PID isolé, cgroup CPU/RAM/`pids.max=1024` (anti fork bomb) |
+| **Sandbox bubblewrap** | Exécution de code malveillant | Filesystem read-only, pas de réseau, PID isolé, cgroup CPU/RAM/`pids.max=1024` (anti fork bomb), cap GPU SM via CUDA MPS si dispo |
 | **Compte durci** | Abus du compte partagpu | Shell restreint, SSH bloqué, sudo bloqué |
 | **Secret de salle au repos** | Lecture du secret par un autre user local | `~/.config/partagpu/room.json` en `chmod 600` |
 | **Pare-feu automatique** | Exposition réseau inutile | Port ouvert uniquement quand le partage est actif |
@@ -199,7 +199,8 @@ Chaque tâche s'exécute dans un **sandbox bubblewrap** avec des restrictions st
 | **Réseau** | `--unshare-net` — aucune connexion réseau possible (pas d'exfiltration, pas de reverse shell). |
 | **Processus** | `--unshare-pid` — la tâche ne voit que ses propres processus, pas ceux de l'hôte. |
 | **Utilisateur** | Exécution sous l'UID/GID du compte `partagpu`. |
-| **Cgroup** | La tâche est placée dans `/sys/fs/cgroup/partagpu/` avec les limites CPU/RAM définies par les sliders. |
+| **Cgroup** | La tâche est placée dans `/sys/fs/cgroup/partagpu/` avec les limites CPU/RAM/PIDs définies par les sliders. |
+| **GPU (CUDA MPS)** | Si NVIDIA MPS est installé, le daemon `nvidia-cuda-mps-control` tourne sous l'UID `partagpu` et la tâche reçoit `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=<gpu_limit>` — cap réel sur les SM threads. Sans MPS, le slider GPU est advisory uniquement (limitation NVIDIA grand public, pas un choix PartaGPU). |
 | **Timeout** | Chaque tâche a un délai maximum (défaut : 1 heure). Si dépassé, le processus est tué. |
 | **Sortie** | stdout limité à 1 Mo, stderr à 256 Ko — empêche un remplissage mémoire par sortie infinie. |
 | **Pas de shell** | Les commandes sont passées en `argv` direct (pas de `sh -c`). L'injection de commandes est structurellement impossible. |

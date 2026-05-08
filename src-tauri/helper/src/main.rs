@@ -36,6 +36,15 @@ const RENDEZVOUS_RANGE: &str = "29500:29510";
 /// sandbox at `/opt/partagpu-venv`.
 const MANAGED_VENV: &str = "/var/lib/partagpu/venv";
 
+/// CUDA MPS pipe directory : the Unix socket NVIDIA's MPS daemon listens
+/// on, plus the directory client processes use to connect. Lives under
+/// `/var/lib/partagpu` (owned by partagpu) so daemon and sandbox clients
+/// (both running as partagpu UID) can share it. Bind-mounted into bwrap.
+const MPS_PIPE_DIR: &str = "/var/lib/partagpu/mps";
+/// MPS daemon log directory. Useful for diagnostics if MPS misbehaves —
+/// `tail /var/lib/partagpu/mps-log/control.log` from a privileged shell.
+const MPS_LOG_DIR: &str = "/var/lib/partagpu/mps-log";
+
 // ── Helpers ────────────────────────────────────────────────
 
 fn die(msg: &str) -> ! {
@@ -789,6 +798,102 @@ fn which(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+// ── CUDA MPS lifecycle ─────────────────────────────────────
+
+/// Whether an MPS daemon is currently running as the partagpu user.
+fn is_mps_running() -> bool {
+    Command::new("pgrep")
+        .args(["-u", PARTAGPU_USER, "-f", "nvidia-cuda-mps-control"])
+        .stdout(process::Stdio::null())
+        .stderr(process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Start the CUDA MPS daemon as the partagpu user. Idempotent : no-op if
+/// already running. Best-effort : if `nvidia-cuda-mps-control` is missing
+/// or the daemon fails to start, the function returns successfully and
+/// just logs a warning — the GPU limit will degrade to advisory-only,
+/// but everything else (cgroup, sandbox, dispatch) keeps working.
+///
+/// MPS allows tasks running as the partagpu UID to be capped to a
+/// fraction of GPU SM threads via the `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE`
+/// env var (set by the sandbox per-task). Without MPS, that env var is
+/// ignored by the CUDA driver.
+fn cmd_setup_mps() {
+    if !which("nvidia-cuda-mps-control") {
+        println!(
+            "MPS unavailable (nvidia-cuda-mps-control missing) — GPU limit will be advisory-only."
+        );
+        return;
+    }
+    if !user_exists() {
+        die(&format!(
+            "user {PARTAGPU_USER} does not exist; create it before MPS setup"
+        ));
+    }
+
+    // Pipe + log dirs owned by partagpu so the daemon (also running as
+    // partagpu) can write its socket / logs there.
+    mkdir_p(MPS_PIPE_DIR);
+    mkdir_p(MPS_LOG_DIR);
+    chown_to_user(MPS_PIPE_DIR, PARTAGPU_USER);
+    chown_to_user(MPS_LOG_DIR, PARTAGPU_USER);
+    set_permissions(MPS_PIPE_DIR, 0o711);
+    set_permissions(MPS_LOG_DIR, 0o755);
+
+    if is_mps_running() {
+        println!("MPS daemon already running");
+        return;
+    }
+
+    // Start as partagpu via runuser (bypasses the restricted login shell).
+    // The `-d` flag makes the daemon detach and the foreground process
+    // exit immediately, so this returns quickly.
+    let cmd = format!(
+        "CUDA_MPS_PIPE_DIRECTORY={MPS_PIPE_DIR} CUDA_MPS_LOG_DIRECTORY={MPS_LOG_DIR} \
+         nvidia-cuda-mps-control -d"
+    );
+    let ok = run(
+        "runuser",
+        &["-u", PARTAGPU_USER, "--", "sh", "-c", cmd.as_str()],
+    );
+    if !ok {
+        eprintln!(
+            "Warning: failed to start MPS daemon. GPU limit will be advisory-only \
+             until the next sharing toggle. Check {MPS_LOG_DIR} for details."
+        );
+    } else {
+        println!("MPS daemon started (pipe: {MPS_PIPE_DIR})");
+    }
+}
+
+/// Stop the CUDA MPS daemon. Best-effort + idempotent. Called when
+/// sharing is being disabled (along with cgroup teardown, account
+/// removal etc.).
+fn cmd_teardown_mps() {
+    if !which("nvidia-cuda-mps-control") {
+        return;
+    }
+    if !is_mps_running() {
+        println!("MPS daemon not running");
+        return;
+    }
+    let cmd = format!("echo quit | CUDA_MPS_PIPE_DIRECTORY={MPS_PIPE_DIR} nvidia-cuda-mps-control");
+    let _ = run(
+        "runuser",
+        &["-u", PARTAGPU_USER, "--", "sh", "-c", cmd.as_str()],
+    );
+    // Belt-and-suspenders : a misbehaving daemon may not respond to `quit`.
+    // pkill catches the leftover.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    if is_mps_running() {
+        let _ = run_silent("pkill", &["-u", PARTAGPU_USER, "-f", "nvidia-cuda-mps"]);
+    }
+    println!("MPS daemon stopped");
+}
+
 // ── Main ───────────────────────────────────────────────────
 
 fn usage() -> ! {
@@ -804,6 +909,10 @@ fn usage() -> ! {
     eprintln!("  close-port               Close firewall for PartaGPU");
     eprintln!("  setup-venv               Create /var/lib/partagpu/venv with torch + numpy");
     eprintln!("  remove-venv              Remove the managed venv");
+    eprintln!(
+        "  setup-mps                Start the CUDA MPS daemon (so the sandbox can cap GPU SM%)"
+    );
+    eprintln!("  teardown-mps             Stop the CUDA MPS daemon");
     process::exit(1);
 }
 
@@ -828,6 +937,8 @@ fn main() {
         "close-port" => cmd_close_port(),
         "setup-venv" => cmd_setup_venv(),
         "remove-venv" => cmd_remove_venv(),
+        "setup-mps" => cmd_setup_mps(),
+        "teardown-mps" => cmd_teardown_mps(),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             usage();

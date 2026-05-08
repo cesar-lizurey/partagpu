@@ -188,6 +188,7 @@ pub fn submit_task(
     tasks: State<'_, IncomingTasks>,
     auth: State<'_, AuthManager>,
     discovery: State<'_, Discovery>,
+    sharing: State<'_, SharingController>,
     sec_log: State<'_, SecurityLog>,
     args: Vec<String>,
     source_machine: String,
@@ -264,9 +265,23 @@ pub fn submit_task(
         .map(|h: std::ffi::OsString| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "local".into());
 
+    // Local /api/dispatch is the loopback path used when the user runs
+    // `partagpu.run_remote(local, ...)` against their own machine. The
+    // local sharing config gates whether the task even runs ; we read the
+    // GPU cap from there so the same MPS env var is set as for an
+    // incoming dispatch from a remote peer.
+    let gpu_limit = {
+        let cfg = sharing.get_config();
+        if cfg.gpu_limit_percent > 0 && cfg.gpu_limit_percent < 100 {
+            Some(cfg.gpu_limit_percent)
+        } else {
+            None
+        }
+    };
     let options = crate::sandbox::SandboxOptions {
         network_enabled: network_enabled.unwrap_or(false),
         workspace: workspace.unwrap_or_default(),
+        gpu_limit_percent: gpu_limit,
     };
 
     tasks.create_and_run(

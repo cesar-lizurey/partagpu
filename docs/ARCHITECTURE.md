@@ -299,7 +299,8 @@ bwrap \
 - **Pas de network par défaut** (`--unshare-net`). Levée seulement si `network_enabled=true` dans la requête (requis pour DDP).
 - **PID namespace isolé** : la tâche ne peut pas voir / signaler les processus de l'hôte
 - **Run as `partagpu` UID** : compte dédié sans accès aux home directories des autres
-- **Cgroup partagpu** : limite CPU/RAM imposée par les sliders de l'UI
+- **Cgroup partagpu** : limite CPU/RAM/PIDs imposée par les sliders de l'UI
+- **GPU SM via CUDA MPS** : si `nvidia-cuda-mps-control` est installé sur l'hôte, un daemon MPS est lancé sous l'UID `partagpu` au passage en *Actif*. Le sandbox bind-monte `/var/lib/partagpu/mps` et exporte `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=<gpu_limit>` à chaque tâche — le driver CUDA cap réellement la part de SM threads que la tâche peut utiliser. Sans MPS (cuda-toolkit absent ou pas de GPU NVIDIA), le slider GPU reste advisory : pas de moyen kernel/driver de partitionner un GPU grand public sans MIG.
 - **Pas de `$HOME` utilisateur** : le sandbox ne voit rien de votre home
 
 ### Workspace : transfert de fichiers

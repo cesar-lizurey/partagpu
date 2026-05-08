@@ -241,6 +241,23 @@ impl UserManager {
         CGROUP_PATH
     }
 
+    /// Start the CUDA MPS daemon so the sandbox can enforce per-task GPU
+    /// SM caps via `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE`. Best-effort : if
+    /// MPS isn't installed (no `nvidia-cuda-mps-control` binary) or the
+    /// daemon fails to start, the helper logs a warning and exits 0 ; the
+    /// GPU limit then falls back to advisory-only and everything else
+    /// (cgroup, sandbox, dispatch) keeps working.
+    pub fn setup_mps() -> Result<(), String> {
+        Self::run_helper(&["setup-mps"])?;
+        Ok(())
+    }
+
+    /// Stop the CUDA MPS daemon. Best-effort + idempotent.
+    pub fn teardown_mps() -> Result<(), String> {
+        Self::run_helper(&["teardown-mps"])?;
+        Ok(())
+    }
+
     /// Open the firewall for PartaGPU (TCP 7654 + mDNS).
     pub fn open_port() -> Result<(), String> {
         Self::run_helper(&["open-port"])?;

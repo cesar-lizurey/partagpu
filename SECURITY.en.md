@@ -30,7 +30,7 @@ PartaGPU layers several complementary defenses:
 | **HMAC authentication** | Unauthorized peers, impostors | `auth_key` derived via PBKDF2, 600 k iters (slow KDF) ; active discovery probe on `/peer/v1/verify` ; `X-PartaGPU-AUTH` header bound to the request body |
 | **Anti-replay** | Replaying a captured request within the 30-s window | In-memory `ReplayCache` that dedupes seen `X-PartaGPU-AUTH` headers |
 | **AES-256-GCM encryption** | Passive network eavesdropping | HKDF-derived key from the room secret + per-request X25519 ECDH forward secrecy, mandatory on `/peer/v1/tasks*` |
-| **bubblewrap sandbox** | Malicious code execution | Read-only filesystem, no network, isolated PID namespace, cgroup CPU/RAM/`pids.max=1024` (anti fork bomb) |
+| **bubblewrap sandbox** | Malicious code execution | Read-only filesystem, no network, isolated PID namespace, cgroup CPU/RAM/`pids.max=1024` (anti fork bomb), GPU SM cap via CUDA MPS when available |
 | **Hardened account** | `partagpu` account abuse | Restricted shell, SSH blocked, sudo blocked |
 | **Room secret at rest** | Other local user reading the secret | `~/.config/partagpu/room.json` is `chmod 600` |
 | **Automatic firewall** | Unnecessary network exposure | Port open only when sharing is active |
@@ -199,7 +199,8 @@ Every task runs inside a **bubblewrap sandbox** with strict restrictions.
 | **Network** | `--unshare-net` — no network connection possible (no exfiltration, no reverse shell). |
 | **Processes** | `--unshare-pid` — the task only sees its own processes, not the host's. |
 | **User** | Runs under the `partagpu` UID/GID. |
-| **Cgroup** | Each task is placed under `/sys/fs/cgroup/partagpu/task-<uuid>/` with the CPU/RAM limits from the sliders. |
+| **Cgroup** | Each task is placed under `/sys/fs/cgroup/partagpu/task-<uuid>/` with the CPU/RAM/PIDs limits from the sliders. |
+| **GPU (CUDA MPS)** | When NVIDIA MPS is installed, the `nvidia-cuda-mps-control` daemon runs as the `partagpu` UID and each task receives `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=<gpu_limit>` — real SM-thread cap. Without MPS, the GPU slider is advisory only (NVIDIA consumer-card limitation, not a PartaGPU choice). |
 | **Timeout** | Each task has a maximum wall-clock budget (default: 1 hour). Exceeded → killed. |
 | **Output** | stdout capped at 1 MB, stderr at 256 KB — prevents memory blowup from infinite output. |
 | **No shell** | Commands are passed as direct `argv` (no `sh -c`). Command injection is structurally impossible. |
