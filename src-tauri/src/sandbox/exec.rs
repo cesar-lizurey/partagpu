@@ -262,11 +262,7 @@ impl Sandbox {
             // `getaddrinfo` echoue avec « Temporary failure in name resolution »
             // et les taches qui telechargent un dataset (CIFAR, etc.) plantent.
             if Path::new("/run/systemd/resolve").is_dir() {
-                cmd.args([
-                    "--ro-bind",
-                    "/run/systemd/resolve",
-                    "/run/systemd/resolve",
-                ]);
+                cmd.args(["--ro-bind", "/run/systemd/resolve", "/run/systemd/resolve"]);
             }
         }
         cmd.arg("--unshare-pid");
