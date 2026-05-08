@@ -95,6 +95,7 @@ const fr = {
   "gauge.input_aria": "Limite de partage {label}",
   "gauge.input_disabled_title": "Activez le partage pour ajuster la limite",
   "gauge.input_drag_title": "Faites glisser pour ajuster la limite de partage",
+  "gauge.you_label": "Vous (cette machine)",
 
   // ── SharingToggle ──────────────────────────────────────────
   "sharing.status_disabled": "Désactivé",
@@ -425,6 +426,7 @@ const en: Record<keyof typeof fr, string> = {
   "gauge.input_aria": "{label} share limit",
   "gauge.input_disabled_title": "Enable sharing to adjust the limit",
   "gauge.input_drag_title": "Drag to adjust the share limit",
+  "gauge.you_label": "You (this machine)",
 
   // ── SharingToggle ──────────────────────────────────────────
   "sharing.status_disabled": "Disabled",

@@ -28,6 +28,7 @@ import type {
   Task,
   UserStatus,
 } from "../lib/api";
+import { aggregateByUser, buildSelfUsage } from "../lib/usage";
 import { Sparkline } from "../components/Sparkline";
 import { useT } from "../lib/i18n";
 import type { MessageKey } from "../lib/messages";
@@ -292,64 +293,107 @@ export function MySharing() {
           {config && config.status !== "Disabled" && (
             <p className="section__hint">{t("mysharing.resources_hint")}</p>
           )}
-          <div className="gauges">
-            <ResourceGauge
-              label="CPU"
-              percent={resources.cpu_percent}
-              detail={t("mysharing.cores_suffix", { n: resources.cpu_cores })}
-              limit={
-                config && config.status !== "Disabled"
-                  ? config.cpu_limit_percent
-                  : undefined
-              }
-              limitMax={100}
-              limitStep={5}
-              limitUnit="%"
-              onLimitChange={
-                config && config.status !== "Disabled"
-                  ? (v) => setLimit("cpu", v)
-                  : undefined
-              }
-            />
-            <ResourceGauge
-              label="RAM"
-              percent={resources.ram_percent}
-              detail={`${resources.ram_used_mb} / ${resources.ram_total_mb} Mo`}
-              limit={
-                config && config.status !== "Disabled"
-                  ? config.ram_limit_mb
-                  : undefined
-              }
-              limitMax={resources.ram_total_mb}
-              limitStep={256}
-              limitUnit="Mo"
-              onLimitChange={
-                config && config.status !== "Disabled"
-                  ? (v) => setLimit("ram", v)
-                  : undefined
-              }
-            />
-            {resources.gpu_available && (
-              <ResourceGauge
-                label={`GPU (${resources.gpu_name})`}
-                percent={resources.gpu_percent}
-                detail={`${resources.gpu_memory_used_mb} / ${resources.gpu_memory_total_mb} Mo`}
-                limit={
-                  config && config.status !== "Disabled"
-                    ? config.gpu_limit_percent
-                    : undefined
-                }
-                limitMax={100}
-                limitStep={5}
-                limitUnit="%"
-                onLimitChange={
-                  config && config.status !== "Disabled"
-                    ? (v) => setLimit("gpu", v)
-                    : undefined
-                }
-              />
-            )}
-          </div>
+          {(() => {
+            // Calcule les segments par utilisateur sur chaque jauge :
+            // - segment vert = vous (ce qui n'est pas attribuable a une tache PartaGPU)
+            // - un segment couleur par utilisateur distant qui consomme la machine
+            // En mode CPU/GPU les valeurs sont des % cumulables ; pour la RAM
+            // on convertit ram_used_mb / ram_percent en Mo absolus pour chaque
+            // tache (le total reste ram_total_mb).
+            const remoteUsers = aggregateByUser(tasks, t("common.unknown"));
+            const selfLabel = t("gauge.you_label");
+            const self = buildSelfUsage(
+              resources.cpu_percent,
+              resources.ram_used_mb,
+              resources.gpu_percent,
+              remoteUsers,
+              selfLabel,
+            );
+            const all = self ? [self, ...remoteUsers] : remoteUsers;
+            const cpuSegments = all.map((u) => ({
+              value: u.cpu,
+              color: u.color,
+              name: u.name,
+            }));
+            const ramSegments =
+              resources.ram_total_mb > 0
+                ? all.map((u) => ({
+                    // Le track de la jauge RAM est en %, on convertit donc
+                    // les Mo de chaque user en % du total physique.
+                    value: (u.ramMb / resources.ram_total_mb) * 100,
+                    color: u.color,
+                    name: u.name,
+                  }))
+                : [];
+            const gpuSegments = all.map((u) => ({
+              value: u.gpu,
+              color: u.color,
+              name: u.name,
+            }));
+            return (
+              <div className="gauges">
+                <ResourceGauge
+                  label="CPU"
+                  percent={resources.cpu_percent}
+                  detail={t("mysharing.cores_suffix", { n: resources.cpu_cores })}
+                  segments={cpuSegments}
+                  limit={
+                    config && config.status !== "Disabled"
+                      ? config.cpu_limit_percent
+                      : undefined
+                  }
+                  limitMax={100}
+                  limitStep={5}
+                  limitUnit="%"
+                  onLimitChange={
+                    config && config.status !== "Disabled"
+                      ? (v) => setLimit("cpu", v)
+                      : undefined
+                  }
+                />
+                <ResourceGauge
+                  label="RAM"
+                  percent={resources.ram_percent}
+                  detail={`${resources.ram_used_mb} / ${resources.ram_total_mb} Mo`}
+                  segments={ramSegments}
+                  limit={
+                    config && config.status !== "Disabled"
+                      ? config.ram_limit_mb
+                      : undefined
+                  }
+                  limitMax={resources.ram_total_mb}
+                  limitStep={256}
+                  limitUnit="Mo"
+                  onLimitChange={
+                    config && config.status !== "Disabled"
+                      ? (v) => setLimit("ram", v)
+                      : undefined
+                  }
+                />
+                {resources.gpu_available && (
+                  <ResourceGauge
+                    label={`GPU (${resources.gpu_name})`}
+                    percent={resources.gpu_percent}
+                    detail={`${resources.gpu_memory_used_mb} / ${resources.gpu_memory_total_mb} Mo`}
+                    segments={gpuSegments}
+                    limit={
+                      config && config.status !== "Disabled"
+                        ? config.gpu_limit_percent
+                        : undefined
+                    }
+                    limitMax={100}
+                    limitStep={5}
+                    limitUnit="%"
+                    onLimitChange={
+                      config && config.status !== "Disabled"
+                        ? (v) => setLimit("gpu", v)
+                        : undefined
+                    }
+                  />
+                )}
+              </div>
+            );
+          })()}
 
           {history.length > 1 && (
             <div className="history">

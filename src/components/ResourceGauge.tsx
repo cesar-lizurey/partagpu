@@ -1,12 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
 
+/** A single colored slice inside the gauge bar, used to stack contributors
+ *  (you + remote users sharing this machine) on the same gauge. */
+export interface GaugeSegment {
+  /** Width of the segment in the same unit as `percent` (i.e. the same scale
+   *  as the gauge total). The sum of all `value` should not exceed 100. */
+  value: number;
+  /** Hex string or CSS variable, e.g. `"#6366f1"` or `"var(--color-success)"`. */
+  color: string;
+  /** Tooltip text shown on hover. */
+  name: string;
+}
+
 interface ResourceGaugeProps {
   label: string;
-  /** Current usage as a 0-100 percent of the gauge. */
+  /** Current usage as a 0-100 percent of the gauge. Ignored when `segments`
+   *  is provided (the stacked total is the source of truth). */
   percent: number;
   /** Optional textual detail (e.g. "8192 / 16384 Mo"). */
   detail?: string;
+  /** When provided, the gauge fill is rendered as a stack of these segments
+   *  instead of one solid color. Use this to overlay per-user contributions
+   *  (e.g. "you" + each remote user feeding the shared machine). */
+  segments?: GaugeSegment[];
   /** Limit value in the same unit as the slider below (0-100 for %, Mo for RAM). */
   limit?: number;
   /** Maximum value the limit can take (100 for %, ramTotalMb for RAM). */
@@ -25,6 +42,7 @@ export function ResourceGauge({
   label,
   percent,
   detail,
+  segments,
   limit,
   limitMax = 100,
   limitStep = 5,
@@ -40,6 +58,13 @@ export function ResourceGauge({
       : clampedPercent > 50
         ? "var(--color-warning)"
         : "var(--color-success)";
+
+  // En mode segments empilés, on ignore `percent` pour le rendu de la barre
+  // et on additionne les segments. Le badge en haut continue d'afficher le
+  // total parce que `percent` reste le total système (utile quand un
+  // process hors PartaGPU consomme de la place qu'on n'attribue à aucun
+  // segment).
+  const hasSegments = !!segments && segments.length > 0;
 
   // Local state for instant visual feedback while dragging the limit cursor.
   // The actual cgroup write is debounced through onLimitChange upstream.
@@ -86,10 +111,27 @@ export function ResourceGauge({
           onLimitChange ? " resource-gauge__track--interactive" : ""
         }`}
       >
-        <div
-          className="resource-gauge__fill"
-          style={{ width: `${clampedPercent}%`, backgroundColor: color }}
-        />
+        {hasSegments ? (
+          <div className="resource-gauge__stack" aria-hidden="true">
+            {segments!.map((seg, i) => {
+              const w = Math.min(100, Math.max(0, seg.value));
+              if (w < 0.5) return null;
+              return (
+                <div
+                  key={`${seg.name}-${i}`}
+                  className="resource-gauge__segment"
+                  style={{ width: `${w}%`, backgroundColor: seg.color }}
+                  title={`${seg.name} : ${seg.value.toFixed(1)}${limitUnit === "Mo" ? " Mo" : "%"}`}
+                />
+              );
+            })}
+          </div>
+        ) : (
+          <div
+            className="resource-gauge__fill"
+            style={{ width: `${clampedPercent}%`, backgroundColor: color }}
+          />
+        )}
         {limitPercentForDisplay !== undefined && limitPercentForDisplay < 100 && (
           <div
             className="resource-gauge__limit"

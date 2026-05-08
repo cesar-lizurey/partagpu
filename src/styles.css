@@ -760,6 +760,22 @@ body {
   transition: width 0.5s ease;
 }
 
+/* Mode jauge empilée : un conteneur flex qui aligne les segments par utilisateur
+   bord à bord. Les segments individuels n'ont pas de border-radius pour rester
+   contigus ; le conteneur prend le radius du track via overflow. */
+.resource-gauge__stack {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.resource-gauge__segment {
+  height: 100%;
+  transition: width 0.5s ease;
+}
+
 /* Visual marker of the limit position. Always rendered when limit is set,
    serves as the visual cursor (the actual <input type="range"> overlay
    provides the interaction). */
