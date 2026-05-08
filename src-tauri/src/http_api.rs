@@ -179,6 +179,9 @@ async fn handle_connection(mut stream: TcpStream, state: ApiState) -> Result<(),
         }
         ("POST", "/api/dispatch") => handle_dispatch(&req, &state).await,
         ("POST", "/api/cancel") => handle_cancel(&req, &state).await,
+        ("GET", path) if path.starts_with("/api/tasks/") && path.contains("/output") => {
+            handle_task_output(path, &state)
+        }
         ("OPTIONS", _) => ("204 No Content", String::new()),
         _ => ("404 Not Found", r#"{"error":"Not found"}"#.to_string()),
     };
@@ -470,6 +473,82 @@ async fn handle_cancel(req: &Request, state: &ApiState) -> (&'static str, String
         }
         Err(e) => error_resp("500 Internal Server Error", &format!("interrompu : {e}")),
     }
+}
+
+/// `GET /api/tasks/<local_id>/output?stdout_since=N&stderr_since=M`
+///
+/// Renvoie les chunks de stdout/stderr accumules depuis les offsets indiques.
+/// Permet aux clients SDK (run_remote(live=True), distribute(live=True))
+/// d'afficher la sortie de la tache en streaming pendant que /api/dispatch
+/// bloque sur la connexion principale.
+///
+/// Reponse 200 :
+/// ```json
+/// {
+///   "stdout_chunk": "...",
+///   "stderr_chunk": "...",
+///   "stdout_total": 1234,
+///   "stderr_total": 56,
+///   "status": "Running",
+///   "exit_code": null
+/// }
+/// ```
+fn handle_task_output(path: &str, state: &ApiState) -> (&'static str, String) {
+    // path = "/api/tasks/<id>/output[?stdout_since=N&stderr_since=M]"
+    let rest = match path.strip_prefix("/api/tasks/") {
+        Some(s) => s,
+        None => return error_resp("404 Not Found", "route invalide"),
+    };
+    let (id, query) = match rest.find("/output") {
+        Some(idx) => {
+            let id = &rest[..idx];
+            let after = &rest[idx + "/output".len()..];
+            let q = after.strip_prefix('?').unwrap_or("");
+            (id, q)
+        }
+        None => return error_resp("404 Not Found", "route invalide"),
+    };
+    if id.is_empty() {
+        return error_resp("400 Bad Request", "id manquant");
+    }
+    let mut stdout_since: usize = 0;
+    let mut stderr_since: usize = 0;
+    for kv in query.split('&').filter(|s| !s.is_empty()) {
+        if let Some((k, v)) = kv.split_once('=') {
+            match k {
+                "stdout_since" => stdout_since = v.parse().unwrap_or(0),
+                "stderr_since" => stderr_since = v.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    let task = match state.outgoing.get(id) {
+        Some(t) => t,
+        None => return error_resp("404 Not Found", "tache inconnue"),
+    };
+    let stdout_total = task.output.len();
+    let stderr_total = task.error_output.len();
+    // Slice byte-wise mais respecte les bornes UTF-8 : `floor_char_boundary`
+    // n'est pas stable, donc on utilise un slice naif et on tolere qu'un
+    // chunk se termine au milieu d'un caractere multi-octet (le client
+    // re-concatenera au prochain poll).
+    let stdout_chunk = task.output.as_bytes().get(stdout_since..).unwrap_or(&[]);
+    let stderr_chunk = task
+        .error_output
+        .as_bytes()
+        .get(stderr_since..)
+        .unwrap_or(&[]);
+    let stdout_chunk = String::from_utf8_lossy(stdout_chunk).to_string();
+    let stderr_chunk = String::from_utf8_lossy(stderr_chunk).to_string();
+    let body = serde_json::json!({
+        "stdout_chunk": stdout_chunk,
+        "stderr_chunk": stderr_chunk,
+        "stdout_total": stdout_total,
+        "stderr_total": stderr_total,
+        "status": task.status,
+        "exit_code": task.exit_code,
+    });
+    ("200 OK", body.to_string())
 }
 
 /// Submit + poll a task on a remote peer. Blocking. Updates the matching

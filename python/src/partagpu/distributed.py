@@ -37,6 +37,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import socket
+import threading
 import uuid
 from pathlib import Path
 from typing import Sequence
@@ -132,6 +133,7 @@ def distribute(
     timeout: int = 3600,
     user: str | None = None,
     api_base: str = API_BASE,
+    live: bool = False,
 ) -> list[TaskResult]:
     """Run ``script`` as a DDP training across ``gpus``.
 
@@ -151,6 +153,9 @@ def distribute(
         timeout: Per-worker wall-clock cap, in seconds.
         user: Optional label propagated to every peer's incoming-task panel.
         api_base: Override the local app URL.
+        live: If True, print stdout/stderr from each rank as it arrives,
+            prefixed with ``[rankN] `` so concurrent output remains readable.
+            The full text is still returned in each :class:`TaskResult`.
 
     Returns:
         A list of :class:`partagpu.TaskResult`, one per rank, in rank order.
@@ -208,6 +213,11 @@ def distribute(
     # failure without waiting for run_remote to return.
     local_ids = [str(uuid.uuid4()) for _ in gpus]
 
+    # Verrou partage entre les rangs en mode live : evite que deux rangs
+    # printent une demi-ligne chacun en meme temps. Une seule ligne de stdout
+    # est ecrite atomiquement.
+    print_lock = threading.Lock() if live else None
+
     def _launch(rank: int, gpu: GPUResource) -> TaskResult:
         env_prefix = [
             "env",
@@ -230,6 +240,9 @@ def distribute(
             workspace=workspace,
             api_base=api_base,
             local_id=local_ids[rank],
+            live=live,
+            live_prefix=f"[rank{rank}] " if live else "",
+            live_lock=print_lock,
         )
 
     def _cancel_siblings(except_rank: int, results: list) -> None:

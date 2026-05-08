@@ -29,10 +29,13 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
+import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence, Union
+from typing import IO, Callable, Iterable, Mapping, Optional, Sequence, Union
 
 import requests
 
@@ -134,6 +137,114 @@ def _build_workspace(workspace: WorkspaceArg | None) -> list[dict]:
     ]
 
 
+class _LivePoller:
+    """Background thread that polls `GET /api/tasks/<id>/output` and prints
+    incoming stdout/stderr chunks. Used by `run_remote(live=True)` so the
+    notebook can show live training logs while `/api/dispatch` blocks on
+    its main connection.
+
+    Lines are split client-side and prefixed with `prefix` (typically
+    "[rank0] " when called from `distribute(live=True)`) so concurrent
+    ranks remain readable.
+    """
+
+    POLL_INTERVAL_SEC = 0.25
+    REQUEST_TIMEOUT = 5.0
+
+    def __init__(
+        self,
+        api_base: str,
+        local_id: str,
+        prefix: str,
+        stdout: IO[str],
+        stderr: IO[str],
+        lock: Optional[threading.Lock],
+    ) -> None:
+        self.api_base = api_base.rstrip("/")
+        self.local_id = local_id
+        self.prefix = prefix
+        self.stdout = stdout
+        self.stderr = stderr
+        self.lock = lock or threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._stdout_offset = 0
+        self._stderr_offset = 0
+        self._stdout_tail = ""
+        self._stderr_tail = ""
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        # Final poll pour rattraper les derniers octets ecrits entre le dernier
+        # tick et la terminaison de la tache distante.
+        self._poll_once()
+        self._flush_tails()
+        # Le thread se termine seul au prochain tick ; on attend un court
+        # delai pour eviter de laisser un thread daemon en vol.
+        self._thread.join(timeout=self.POLL_INTERVAL_SEC * 2)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._poll_once()
+            self._stop.wait(self.POLL_INTERVAL_SEC)
+
+    def _poll_once(self) -> None:
+        url = (
+            f"{self.api_base}/api/tasks/{self.local_id}/output"
+            f"?stdout_since={self._stdout_offset}&stderr_since={self._stderr_offset}"
+        )
+        try:
+            resp = requests.get(url, timeout=self.REQUEST_TIMEOUT)
+        except Exception:  # noqa: BLE001 — best-effort, ne pas casser le user code
+            return
+        if resp.status_code != 200:
+            return
+        try:
+            data = resp.json()
+        except json.JSONDecodeError:
+            return
+        out_chunk = data.get("stdout_chunk") or ""
+        err_chunk = data.get("stderr_chunk") or ""
+        if out_chunk:
+            self._stdout_offset = data.get("stdout_total", self._stdout_offset)
+            self._emit(self.stdout, "_stdout_tail", out_chunk)
+        if err_chunk:
+            self._stderr_offset = data.get("stderr_total", self._stderr_offset)
+            self._emit(self.stderr, "_stderr_tail", err_chunk)
+
+    def _emit(self, stream: IO[str], tail_attr: str, chunk: str) -> None:
+        # Concatener avec le reliquat du tour precedent (un chunk peut couper
+        # une ligne en plein milieu) puis split sur '\n' pour prefixer chaque
+        # ligne completer ; on garde le reliquat (apres le dernier \n) pour
+        # le prochain tick.
+        buf = getattr(self, tail_attr) + chunk
+        lines = buf.split("\n")
+        complete_lines, remainder = lines[:-1], lines[-1]
+        setattr(self, tail_attr, remainder)
+        if not complete_lines:
+            return
+        with self.lock:
+            for line in complete_lines:
+                stream.write(f"{self.prefix}{line}\n")
+            stream.flush()
+
+    def _flush_tails(self) -> None:
+        # Si la tache se termine sans \n final, on print quand meme le
+        # dernier morceau pour ne pas perdre de sortie.
+        with self.lock:
+            if self._stdout_tail:
+                self.stdout.write(f"{self.prefix}{self._stdout_tail}\n")
+                self.stdout.flush()
+                self._stdout_tail = ""
+            if self._stderr_tail:
+                self.stderr.write(f"{self.prefix}{self._stderr_tail}\n")
+                self.stderr.flush()
+                self._stderr_tail = ""
+
+
 def run_remote(
     peer: PeerLike,
     args: Sequence[str],
@@ -144,6 +255,11 @@ def run_remote(
     workspace: WorkspaceArg | None = None,
     api_base: str = API_BASE,
     local_id: str | None = None,
+    live: bool = False,
+    live_prefix: str = "",
+    live_stdout: Optional[IO[str]] = None,
+    live_stderr: Optional[IO[str]] = None,
+    live_lock: Optional[threading.Lock] = None,
 ) -> TaskResult:
     """Run ``args`` on the given peer through the PartaGPU app.
 
@@ -163,6 +279,15 @@ def run_remote(
             (basename used as the workspace path). Total payload capped at
             ~16 MB on the peer side.
         api_base: Override the local app URL (default ``http://127.0.0.1:7654``).
+        live: If True, poll the local app every ~250 ms and print stdout/stderr
+            chunks as they arrive (instead of returning everything at the end).
+            ``live_prefix`` is prepended to each line ; useful when several
+            ranks of :func:`distribute` print concurrently.
+        live_prefix: String prepended to each printed line in live mode.
+        live_stdout / live_stderr: Files to print to in live mode (default
+            ``sys.stdout`` / ``sys.stderr``).
+        live_lock: Optional :class:`threading.Lock` shared with other live
+            calls so concurrent ranks don't garble each other's lines.
 
     Returns:
         A :class:`TaskResult`. The call **blocks** until the task is in a
@@ -205,6 +330,22 @@ def run_remote(
         payload["user"] = user
 
     url = f"{api_base.rstrip('/')}/api/dispatch"
+
+    # Live mode : on lance le POST /api/dispatch dans un thread (qui reste
+    # bloque jusqu'a la fin) pendant qu'on poll /api/tasks/<id>/output sur la
+    # connexion principale et qu'on print les chunks au fur et a mesure.
+    poller: Optional[_LivePoller] = None
+    if live:
+        poller = _LivePoller(
+            api_base=api_base,
+            local_id=local_id,
+            prefix=live_prefix,
+            stdout=live_stdout or sys.stdout,
+            stderr=live_stderr or sys.stderr,
+            lock=live_lock,
+        )
+        poller.start()
+
     try:
         resp = requests.post(url, json=payload, timeout=timeout + 60)
     except KeyboardInterrupt:
@@ -219,6 +360,9 @@ def run_remote(
         ) from e
     except requests.RequestException as e:
         raise RemoteTaskError(f"Erreur HTTP locale : {e}") from e
+    finally:
+        if poller is not None:
+            poller.stop()
 
     if resp.status_code >= 400:
         try:
