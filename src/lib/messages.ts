@@ -204,6 +204,8 @@ const fr = {
   "task.remove_title": "Supprimer de l'historique",
   "task.remove_confirm": "Supprimer cette tâche de l'historique ?",
   "task.remove_failed": "Suppression refusée : {error}",
+  "task.duration_running_title": "Temps écoulé depuis le début de la tâche",
+  "task.duration_total_title": "Durée totale de la tâche (terminée)",
   "task.network_badge": "réseau",
   "task.network_badge_title": "Sandbox avec accès réseau (DDP rendezvous)",
 
@@ -540,6 +542,8 @@ const en: Record<keyof typeof fr, string> = {
   "task.remove_title": "Remove from history",
   "task.remove_confirm": "Remove this task from history?",
   "task.remove_failed": "Remove rejected: {error}",
+  "task.duration_running_title": "Time elapsed since the task started",
+  "task.duration_total_title": "Total task duration (finished)",
   "task.network_badge": "network",
   "task.network_badge_title": "Sandbox with network access (DDP rendezvous)",
 

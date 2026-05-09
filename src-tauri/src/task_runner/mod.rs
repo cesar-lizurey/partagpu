@@ -95,6 +95,12 @@ pub struct Task {
     pub error_output: String,
     pub exit_code: Option<i32>,
     pub created_at: u64,
+    /// Unix timestamp (seconds) at which the task transitioned to a terminal
+    /// state (Completed / Failed / Cancelled). `None` while the task is
+    /// still Queued or Running. Combined with `created_at` it gives the
+    /// total wall-clock time visible in the UI.
+    #[serde(default)]
+    pub ended_at: Option<u64>,
     /// Whether the sandbox was launched with host network access (DDP rendezvous).
     /// Surfaced to the UI as a "network" indicator.
     #[serde(default)]
@@ -107,7 +113,7 @@ pub struct Task {
     pub artifacts: Vec<crate::sandbox::Artifact>,
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -138,6 +144,7 @@ pub fn new_task(
         error_output: String::new(),
         exit_code: None,
         created_at: now_secs(),
+        ended_at: None,
         network_enabled: false,
         artifacts: Vec::new(),
     }

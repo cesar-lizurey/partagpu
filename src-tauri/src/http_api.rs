@@ -391,6 +391,12 @@ pub fn dispatch_task_blocking(
             local_task.error_output = task.error_output.clone();
             local_task.exit_code = task.exit_code;
             local_task.artifacts = task.artifacts.clone();
+            // Stamp the local end time when the dispatch returns. We use
+            // `now()` here rather than `task.ended_at` so the duration shown
+            // in the UI matches the time the user actually waited for the
+            // dispatch to come back, not the (slightly earlier) moment the
+            // peer's sandbox exited.
+            local_task.ended_at = Some(crate::task_runner::now_secs());
             outgoing.replace(local_task.clone());
             outgoing.clear_remote_ref(&local_id);
             Ok(local_task)

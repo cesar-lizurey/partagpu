@@ -1,6 +1,6 @@
 {
   "name": "partagpu",
-  "version": "1.11.3",
+  "version": "1.11.4",
   "description": "Application de partage de ressources de calcul (CPU/GPU/RAM) sur réseau local",
   "author": {
     "name": "César Lizurey",

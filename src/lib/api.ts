@@ -95,6 +95,10 @@ export interface Task {
   error_output: string;
   exit_code: number | null;
   created_at: number;
+  /** Unix timestamp (seconds) when the task transitioned to a terminal state.
+   *  Null while still Queued/Running. Combined with `created_at` it gives
+   *  the total wall-clock time shown under the progress bar. */
+  ended_at?: number | null;
   /** True when the sandbox kept host network access (DDP rendezvous). */
   network_enabled?: boolean;
   /** Files retrieved from `/workspace` after the task completed (when the

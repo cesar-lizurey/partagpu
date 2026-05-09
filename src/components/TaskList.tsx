@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   cancelIncomingTask,
   cancelOutgoingTask,
@@ -8,6 +8,32 @@ import {
 } from "../lib/api";
 import { useT } from "../lib/i18n";
 import type { MessageKey } from "../lib/messages";
+
+/** "1m 23s", "12s", "2h 5m". `secs` doit être >= 0. Garde une granularité
+ *  utile sans bruit (on ne mélange pas h/m/s à trois niveaux). */
+function formatDuration(secs: number): string {
+  const s = Math.max(0, Math.floor(secs));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const remS = s % 60;
+  if (m < 60) return `${m}m ${remS}s`;
+  const h = Math.floor(m / 60);
+  const remM = m % 60;
+  return `${h}h ${remM}m`;
+}
+
+/** Durée à afficher pour une tâche : si elle tourne encore, "now − created_at"
+ *  rafraîchi par le tick parent ; si elle est terminée, "ended_at − created_at"
+ *  (figé). Renvoie null pour les tâches en queue (pas encore démarrées). */
+function taskDurationSecs(task: Task, nowSecs: number): number | null {
+  if (task.status === "Queued") return null;
+  const start = task.created_at;
+  const end =
+    task.status === "Running"
+      ? nowSecs
+      : (task.ended_at ?? nowSecs);
+  return Math.max(0, end - start);
+}
 
 interface TaskListProps {
   tasks: Task[];
@@ -42,6 +68,19 @@ export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
       }),
     [tasks],
   );
+
+  // Tick chaque seconde uniquement quand au moins une tâche tourne, sinon
+  // pas de re-render inutile. La durée des tâches terminées est figée et
+  // n'a pas besoin du ticker.
+  const hasRunning = sortedTasks.some((task) => task.status === "Running");
+  const [nowSecs, setNowSecs] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    if (!hasRunning) return;
+    const id = setInterval(() => {
+      setNowSecs(Math.floor(Date.now() / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [hasRunning]);
 
   if (sortedTasks.length === 0) {
     return (
@@ -145,6 +184,24 @@ export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
                     {task.progress.toFixed(0)}%
                   </span>
                 </div>
+                {(() => {
+                  const d = taskDurationSecs(task, nowSecs);
+                  if (d === null) return null;
+                  const isRunning = task.status === "Running";
+                  return (
+                    <div
+                      className="progress-bar__duration"
+                      title={
+                        isRunning
+                          ? t("task.duration_running_title")
+                          : t("task.duration_total_title")
+                      }
+                    >
+                      {isRunning ? "↻ " : "✓ "}
+                      {formatDuration(d)}
+                    </div>
+                  );
+                })()}
               </td>
               <td>{task.cpu_usage.toFixed(0)}%</td>
               <td>{task.ram_usage_mb} Mo</td>

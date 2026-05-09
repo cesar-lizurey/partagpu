@@ -1010,6 +1010,17 @@ body {
   color: white;
 }
 
+/* Affiché juste sous la barre de progression : temps écoulé pour une tâche
+   active, durée totale pour une tâche terminée. tabular-nums pour que les
+   chiffres restent stables pendant le tick d'1 Hz quand la durée s'incrémente. */
+.progress-bar__duration {
+  margin-top: 3px;
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* ── Alert ─────────────────────────────────────────────── */
 
 .alert {

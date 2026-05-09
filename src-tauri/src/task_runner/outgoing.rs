@@ -125,6 +125,9 @@ impl OutgoingTasks {
         for (id, mut task) in loaded.tasks {
             if matches!(task.status, TaskStatus::Running | TaskStatus::Queued) {
                 task.status = TaskStatus::Cancelled;
+                if task.ended_at.is_none() {
+                    task.ended_at = Some(super::now_secs());
+                }
                 task.error_output = if task.error_output.is_empty() {
                     "Dispatch interrompu par redémarrage de l'application.".to_string()
                 } else {
@@ -203,6 +206,9 @@ impl OutgoingTasks {
             if let Some(task) = map.get_mut(id) {
                 task.status = TaskStatus::Failed;
                 task.error_output = error.to_string();
+                if task.ended_at.is_none() {
+                    task.ended_at = Some(super::now_secs());
+                }
             }
         }
         self.notify();
@@ -213,6 +219,9 @@ impl OutgoingTasks {
             let mut map = self.tasks.lock().unwrap();
             if let Some(task) = map.get_mut(id) {
                 task.status = TaskStatus::Cancelled;
+                if task.ended_at.is_none() {
+                    task.ended_at = Some(super::now_secs());
+                }
             }
         }
         self.notify();

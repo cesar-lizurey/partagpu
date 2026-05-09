@@ -164,6 +164,9 @@ impl IncomingTasks {
             // Tasks that were Running/Queued at shutdown are dead now.
             if matches!(task.status, TaskStatus::Running | TaskStatus::Queued) {
                 task.status = TaskStatus::Cancelled;
+                if task.ended_at.is_none() {
+                    task.ended_at = Some(super::now_secs());
+                }
                 task.error_output = if task.error_output.is_empty() {
                     "Tâche interrompue par redémarrage de l'application.".to_string()
                 } else {
@@ -500,6 +503,9 @@ impl IncomingTasks {
                             }
                         }
                     }
+                    if task.ended_at.is_none() {
+                        task.ended_at = Some(super::now_secs());
+                    }
                 }
             }
 
@@ -529,7 +535,12 @@ impl IncomingTasks {
                     TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
                         return Err("Tâche déjà terminée.".into());
                     }
-                    _ => task.status = TaskStatus::Cancelled,
+                    _ => {
+                        task.status = TaskStatus::Cancelled;
+                        if task.ended_at.is_none() {
+                            task.ended_at = Some(super::now_secs());
+                        }
+                    }
                 },
             }
         }
