@@ -60,6 +60,21 @@ export function GuideEn() {
           instantly via the kernel's cgroup v2, no password required.
         </p>
         <p>
+          The gauges also display a <strong>per-user breakdown</strong>:
+          each bar is split into segments — a green segment{" "}
+          (<em>"You (this machine)"</em>) for what you consume locally, plus
+          one colored segment per remote user feeding your machine through a
+          PartaGPU task. Hover a segment to see the details.
+        </p>
+        <p>
+          The GPU gauge can show an{" "}
+          <em>"advisory only — CUDA MPS not running"</em> warning next to the
+          limit: this means the NVIDIA MPS daemon isn't currently running
+          (typically because <code>nvidia-cuda-mps-control</code> isn't
+          installed), and your GPU slider is purely informational. Without
+          MPS, the CUDA driver cannot partition a consumer GPU.
+        </p>
+        <p>
           The <strong>"Max concurrent tasks"</strong> field (default 4)
           caps how many tasks can run at the same time. Beyond it, new
           tasks queue up — protection against a peer trying to flood your
@@ -92,7 +107,12 @@ export function GuideEn() {
             <code>pip install partagpu</code>, then{" "}
             <code>partagpu.run_remote(...)</code> or{" "}
             <code>partagpu.distribute("train.py")</code> in a notebook.
-            See the Python package documentation.
+            Three handy options: <code>live=True</code> (logs streamed line
+            by line during training), <code>outputs=["model.pt"]</code> (the
+            checkpoint comes back into RAM in{" "}
+            <code>results[0].artifacts</code>), and <code>local=False</code>
+            {" "}(only use remote peers when you don't share your own
+            machine). See the Python package documentation.
           </li>
         </ul>
       </section>
@@ -103,13 +123,25 @@ export function GuideEn() {
           <li>
             <strong>Task table</strong>: status, progress, CPU/RAM/GPU per
             task, updated every second via Tauri events (no visible
-            polling).
+            polling). Sorted <strong>newest first</strong> so you don't
+            have to scroll after a dispatch.
+          </li>
+          <li>
+            <strong>Task duration</strong> below the progress bar:{" "}
+            <code>↻ 2m 13s</code> for an active task (refreshed at 1 Hz),{" "}
+            <code>✓ 6m 42s</code> for a finished task (frozen on the total
+            duration). Queued tasks have no clock yet.
           </li>
           <li>
             <strong>Stop button</strong> on each running task: clean
             SIGTERM on the peer side, SIGKILL after 2 s. For DDP jobs,
             cancelling one rank propagates to all the others to avoid an
             NCCL hang.
+          </li>
+          <li>
+            <strong>🗑 Remove button</strong> on terminal tasks
+            (Completed/Failed/Cancelled) to clean up the history. Refuses
+            if the task is still active — you must cancel it first.
           </li>
           <li>
             <strong>Desktop notifications</strong>: when a remote dispatch
@@ -207,10 +239,11 @@ export function GuideEn() {
         <ul>
           <li>
             <strong>HMAC authentication</strong>: every peer request carries
-            a <code>X-PartaGPU-AUTH: &lt;ts&gt;:&lt;HMAC&gt;</code> header
-            that binds auth to the body + a timestamp inside a 30 s window
-            (anti-replay). A different room = different HMAC = request
-            rejected before even attempting decryption.
+            a <code>X-PartaGPU-AUTH: &lt;ts_ms&gt;:&lt;HMAC&gt;</code> header
+            that binds auth to the body + a millisecond timestamp inside a
+            30 000 ms window (anti-replay), with a cache of accepted headers
+            to block byte-identical replays. A different room = different
+            HMAC = request rejected before even attempting decryption.
           </li>
           <li>
             <strong>AES-256-GCM encryption</strong> with{" "}

@@ -62,6 +62,21 @@ export function GuideFr() {
           mot de passe.
         </p>
         <p>
+          Les jauges affichent en plus la <strong>répartition par utilisateur</strong>
+          {" "}: chaque barre est segmentée — un segment vert (<em>« Vous (cette
+          machine) »</em>) pour ce que vous consommez en local, puis un segment
+          coloré par utilisateur distant qui consomme votre machine via une tâche
+          PartaGPU. Survolez un segment pour voir le détail.
+        </p>
+        <p>
+          La jauge GPU peut afficher un avertissement{" "}
+          <em>« indicative — CUDA MPS inactif »</em> à côté de la limite : ça
+          veut dire que le daemon NVIDIA MPS n'est pas en cours d'exécution
+          (typiquement parce que <code>nvidia-cuda-mps-control</code> n'est pas
+          installé), et que votre slider GPU est purement informatif. Sans MPS,
+          le driver CUDA ne sait pas partitionner un GPU grand public.
+        </p>
+        <p>
           Le champ <strong>« Tâches simultanées maximum »</strong> (par défaut
           4) borne le nombre de tâches qui peuvent tourner en même temps. Au-delà,
           les nouvelles arrivantes restent en file d'attente — protection contre
@@ -95,7 +110,12 @@ export function GuideFr() {
             <code>pip install partagpu</code> puis{" "}
             <code>partagpu.run_remote(...)</code> ou{" "}
             <code>partagpu.distribute("train.py")</code> dans un notebook.
-            Voir la doc du package Python.
+            Trois options utiles : <code>live=True</code> (logs streamés ligne
+            par ligne pendant l'entraînement), <code>outputs=["model.pt"]</code>
+            {" "}(rapatrie le checkpoint en RAM dans <code>results[0].artifacts</code>),
+            et <code>local=False</code> (n'utilise que les pairs distants
+            quand vous ne partagez pas votre propre machine). Voir la doc du
+            package Python.
           </li>
         </ul>
       </section>
@@ -106,12 +126,24 @@ export function GuideFr() {
           <li>
             <strong>Tableau des tâches</strong> : statut, progression, CPU/RAM/GPU
             par tâche, mis à jour chaque seconde via les événements Tauri (pas
-            de polling visible).
+            de polling visible). Trié <strong>plus récent en haut</strong>{" "}
+            pour ne pas avoir à scroller après un dispatch.
+          </li>
+          <li>
+            <strong>Durée des tâches</strong> sous la barre de progression :{" "}
+            <code>↻ 2m 13s</code> pour une tâche active (rafraîchi à 1 Hz),{" "}
+            <code>✓ 6m 42s</code> pour une tâche terminée (figé sur la durée
+            totale). Les tâches encore en file d'attente n'ont pas d'horloge.
           </li>
           <li>
             <strong>Bouton Stop</strong> sur chaque tâche en cours : SIGTERM
             propre côté pair, SIGKILL après 2 s. Pour les jobs DDP, l'annulation
             d'un rang propage à tous les autres pour éviter le hang NCCL.
+          </li>
+          <li>
+            <strong>Bouton 🗑 supprimer</strong> sur les tâches terminales
+            (Completed/Failed/Cancelled) pour nettoyer l'historique. Refuse si
+            la tâche est encore active — vous devez canceller d'abord.
           </li>
           <li>
             <strong>Notifications desktop</strong> : à la fin d'un dispatch
@@ -208,10 +240,11 @@ export function GuideFr() {
         <ul>
           <li>
             <strong>Authentification HMAC</strong> : chaque requête entre pairs
-            porte un header <code>X-PartaGPU-AUTH: &lt;ts&gt;:&lt;HMAC&gt;</code>
-            {" "}qui lie l'auth au corps + un timestamp dans une fenêtre de 30 s
-            (anti-replay). Une autre salle = HMAC différent = requête rejetée
-            avant même le déchiffrement.
+            porte un header <code>X-PartaGPU-AUTH: &lt;ts_ms&gt;:&lt;HMAC&gt;</code>
+            {" "}qui lie l'auth au corps + un timestamp en millisecondes dans une
+            fenêtre de 30 000 ms (anti-replay), avec un cache des headers déjà
+            vus pour bloquer les rejeux byte-identiques. Une autre salle = HMAC
+            différent = requête rejetée avant même le déchiffrement.
           </li>
           <li>
             <strong>Chiffrement AES-256-GCM</strong> avec{" "}
