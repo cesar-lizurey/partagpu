@@ -42,9 +42,9 @@ pub(super) fn sample_gpu_per_pid() -> HashMap<u32, f32> {
 /// Read the cgroup-accounted RAM of a sandbox task in megabytes. Reads
 /// `/proc/<root_pid>/cgroup` to find which sub-cgroup the bwrap parent
 /// lives in (`/sys/fs/cgroup/partagpu/task-<uuid>/`), then parses
-/// `memory.stat` from that cgroup and sums `anon + kernel_stack + pagetables
-/// + slab + sock` — i.e. memory that is actually allocated to the task and
-/// not reclaimable file cache.
+/// `memory.stat` from that cgroup and sums
+/// `anon + kernel_stack + pagetables + slab + sock` — i.e. memory that is
+/// actually allocated to the task and not reclaimable file cache.
 ///
 /// Why not `memory.current` : that field includes file-backed page cache.
 /// A task that mmap'd a 10 GiB dataset shows 10 GiB in `memory.current`,
