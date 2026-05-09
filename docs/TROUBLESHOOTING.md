@@ -42,6 +42,35 @@ dpkg -l | grep nvidia-driver              # version du paquet
 sudo reboot
 ```
 
+### Jauge GPU : « indicative (CUDA MPS inactif, la limite n'est pas appliquée) »
+
+L'avertissement signifie que le daemon **CUDA MPS** (Multi-Process Service) n'est pas disponible sur la machine. Les limites CPU et RAM continuent d'être enforcées par cgroup v2, mais la limite GPU n'est qu'**advisory** : elle est annoncée aux pairs mais aucune contrainte n'est appliquée côté CUDA, et une tâche peut saturer ton GPU à 100 %.
+
+PartaGPU démarre le daemon MPS automatiquement à l'activation du partage (commande `setup-mps` du helper) **uniquement si** le binaire `nvidia-cuda-mps-control` est installé. Sinon le helper logge un warning et continue en mode advisory.
+
+```bash
+# Verifier la présence du binaire
+which nvidia-cuda-mps-control       # doit renvoyer /usr/bin/nvidia-cuda-mps-control
+
+# Verifier que le daemon tourne (apres activation du partage)
+pgrep -laf nvidia-cuda-mps          # doit lister "nvidia-cuda-mps-control -d"
+
+# Logs du daemon (en root)
+sudo cat /var/lib/partagpu/mps-log/control.log
+sudo cat /var/lib/partagpu/mps-log/server.log
+```
+
+**Fix — installer MPS** :
+
+```bash
+# Ubuntu / Debian (paquet officiel ~2-3 Go, fournit aussi nvcc et libs CUDA)
+sudo apt install nvidia-cuda-toolkit
+```
+
+Puis dans l'app : **Mon partage → Désactiver → Activer**. Sans ce cycle, le helper ne (re)lance pas MPS et l'avertissement persiste.
+
+**Si server.log reste vide alors que le daemon tourne et que des tâches GPU s'exécutent**, c'est que les tâches sandboxées ne se connectent pas au socket MPS — typiquement parce que le bind-mount `/var/lib/partagpu/mps` ou la variable `CUDA_MPS_PIPE_DIRECTORY` ne sont pas propagées dans l'env de la tâche. Lancer une tâche `printenv | grep MPS` via *Mon utilisation* permet de vérifier.
+
 ---
 
 ## Pairs et découverte

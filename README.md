@@ -211,11 +211,31 @@ Sur chaque jauge de ressource (*Mon partage* → *Ressources de cette machine*),
 
 ![Curseurs de limite de partage](docs/images/resource-sliders.svg)
 
-- **CPU** : pourcentage max des cœurs alloués aux tâches partagées (par pas de 5 %)
+- **CPU** : pourcentage max des cœurs alloués aux tâches partagées (par pas de 5 %, % de la **machine entière** — sur 16 cœurs, 50 % autorise 8 cœurs cumulés)
 - **RAM** : quantité max en Mo (par pas de 256 Mo, 0 = illimitée)
 - **GPU** : pourcentage max du GPU (visible uniquement si un GPU NVIDIA est détecté)
 
 Le curseur n'apparaît que quand le partage est *Actif* — sans partage, il n'y a rien à limiter. Les modifications sont debounced à 300 ms et appliquées via les [cgroups v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) du noyau Linux, sans demander de mot de passe (seule la première activation du partage en demande un).
+
+#### Limite GPU : nécessite CUDA MPS pour être réellement appliquée
+
+Les limites **CPU et RAM** sont appliquées par le noyau (cgroups v2) — elles fonctionnent toujours. La limite **GPU**, elle, repose sur le **daemon CUDA MPS** (Multi-Process Service) de NVIDIA pour capper la fraction de SM (Streaming Multiprocessors) que reçoit chaque tâche via la variable `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE`.
+
+Si MPS n'est pas installé sur la machine, la jauge GPU affiche **« indicative (CUDA MPS inactif, la limite n'est pas appliquée) »** en italique sous le curseur : la valeur est annoncée aux pairs (qui voient bien `gpu_limit=50%`) mais le driver CUDA ignore le cap et toute tâche peut saturer ton GPU à 100 %. L'isolation se réduit alors à la sandbox bubblewrap + au compte `partagpu`.
+
+Pour activer l'enforcement réel :
+
+```bash
+# Ubuntu / Debian — installe nvidia-cuda-mps-control + nvidia-cuda-mps-server (~2-3 Go)
+sudo apt install nvidia-cuda-toolkit
+
+# Vérifier
+which nvidia-cuda-mps-control   # doit afficher /usr/bin/nvidia-cuda-mps-control
+```
+
+Puis dans l'app : **Mon partage → Désactiver → Activer**. Le helper appelle `setup-mps` à l'activation et démarre le daemon ; sans ce cycle, MPS reste inactif. L'avertissement disparaît alors et le slider GPU devient un vrai contrat respecté côté CUDA.
+
+Avantage concret de MPS au-delà du cap : sur Ampere et plus récent (RTX 30xx/40xx, A100…), plusieurs contextes CUDA tournent **simultanément** sur des SM différents au lieu de se bloquer en time-slicing. Tu peux donc continuer à utiliser ton GPU pendant qu'une tâche peer tourne, sans gels par contention.
 
 ---
 

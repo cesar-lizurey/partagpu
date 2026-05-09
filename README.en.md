@@ -211,11 +211,31 @@ On every resource gauge (*My sharing* → *Resources of this machine*), a **drag
 
 ![Share-limit sliders](docs/images/resource-sliders.svg)
 
-- **CPU**: maximum percentage of cores granted to shared tasks (5% steps)
+- **CPU**: maximum percentage of cores granted to shared tasks (5% steps, % of the **whole machine** — on a 16-core box, 50 % allows up to 8 cores worth of CPU time)
 - **RAM**: maximum amount in MB (256 MB steps, 0 = unlimited)
 - **GPU**: maximum percentage of the GPU (visible only when an NVIDIA GPU is detected)
 
 The slider only appears when sharing is *Active* — without sharing, there's nothing to limit. Changes are debounced at 300 ms and applied via the kernel's [cgroups v2](https://docs.kernel.org/admin-guide/cgroup-v2.html), without asking for a password (only the first activation does).
+
+#### GPU limit: requires CUDA MPS to be actually enforced
+
+The **CPU and RAM** limits are enforced by the kernel (cgroups v2) — they always work. The **GPU** limit, however, relies on NVIDIA's **CUDA MPS daemon** (Multi-Process Service) to cap each task's fraction of SMs (Streaming Multiprocessors) via the `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE` env var.
+
+If MPS isn't installed on the machine, the GPU gauge shows **"advisory only (CUDA MPS not running, limit isn't enforced)"** in italics under the slider: the value is announced to peers (so they see `gpu_limit=50%`) but the CUDA driver ignores the cap and any task can saturate your GPU at 100 %. Isolation then falls back to bubblewrap sandbox + the `partagpu` account.
+
+To turn on real enforcement:
+
+```bash
+# Ubuntu / Debian — installs nvidia-cuda-mps-control + nvidia-cuda-mps-server (~2-3 GB)
+sudo apt install nvidia-cuda-toolkit
+
+# Verify
+which nvidia-cuda-mps-control   # should print /usr/bin/nvidia-cuda-mps-control
+```
+
+Then in the app: **My sharing → Disable → Enable**. The helper invokes `setup-mps` only on enable and starts the daemon; without that cycle MPS stays off. The warning then disappears and the GPU slider becomes a real contract honored by CUDA.
+
+Concrete benefit beyond the cap: on Ampere and newer (RTX 30xx/40xx, A100…), several CUDA contexts run **simultaneously** on different SMs instead of blocking each other through time-slicing. You can keep using your GPU while a peer task runs, without contention freezes.
 
 ---
 

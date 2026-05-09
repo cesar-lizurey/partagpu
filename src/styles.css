@@ -1088,6 +1088,21 @@ body {
   color: var(--color-primary);
 }
 
+.guide__code {
+  background: var(--color-bg);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 8px 0 12px 0;
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+
+.guide__code code {
+  background: transparent;
+  padding: 0;
+  color: var(--color-text);
+}
+
 .guide__section--tip {
   border-left: 3px solid var(--color-warning);
 }

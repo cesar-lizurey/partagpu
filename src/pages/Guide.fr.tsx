@@ -62,6 +62,12 @@ export function GuideFr() {
           mot de passe.
         </p>
         <p>
+          La limite <strong>CPU</strong> est exprimée en % de la{" "}
+          <strong>machine entière</strong>, pas d'un cœur : sur un poste
+          16 cœurs, 50 % autorise jusqu'à 8 cœurs cumulés pour les tâches
+          partagées. La limite <strong>RAM</strong> est en Mo (0 = illimitée).
+        </p>
+        <p>
           Les jauges affichent en plus la <strong>répartition par utilisateur</strong>
           {" "}: chaque barre est segmentée — un segment vert (<em>« Vous (cette
           machine) »</em>) pour ce que vous consommez en local, puis un segment
@@ -73,8 +79,21 @@ export function GuideFr() {
           <em>« indicative — CUDA MPS inactif »</em> à côté de la limite : ça
           veut dire que le daemon NVIDIA MPS n'est pas en cours d'exécution
           (typiquement parce que <code>nvidia-cuda-mps-control</code> n'est pas
-          installé), et que votre slider GPU est purement informatif. Sans MPS,
-          le driver CUDA ne sait pas partitionner un GPU grand public.
+          installé). Tant que MPS n'est pas actif, le slider GPU est{" "}
+          <strong>purement informatif</strong> : il est annoncé aux pairs mais
+          le driver CUDA ne le respecte pas, et une tâche peut saturer votre
+          GPU à 100 %. Pour activer l'enforcement réel sur Ubuntu/Debian :
+        </p>
+        <pre className="guide__code">
+          <code>sudo apt install nvidia-cuda-toolkit</code>
+        </pre>
+        <p>
+          Puis <em>Mon partage → Désactiver → Activer</em> pour que le helper
+          relance le daemon MPS. L'avertissement disparaît alors et le slider
+          devient un vrai contrat respecté côté CUDA. Bénéfice annexe sur les
+          GPU récents (Ampere/Hopper) : plusieurs tâches CUDA tournent{" "}
+          <strong>simultanément</strong> sur des SM différents au lieu de se
+          bloquer en time-slicing.
         </p>
         <p>
           Le champ <strong>« Tâches simultanées maximum »</strong> (par défaut

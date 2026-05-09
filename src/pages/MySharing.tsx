@@ -294,22 +294,15 @@ export function MySharing() {
             <p className="section__hint">{t("mysharing.resources_hint")}</p>
           )}
           {(() => {
-            // Calcule les segments par utilisateur sur chaque jauge :
-            // - segment vert = vous (ce qui n'est pas attribuable a une tache PartaGPU)
-            // - un segment couleur par utilisateur distant qui consomme la machine
-            // En mode CPU/GPU les valeurs sont des % cumulables ; pour la RAM
-            // on convertit les Mo de chaque tache en % du total physique.
+            // Reconciliation calculee une seule fois pour la section :
+            // les taches mesurees via cgroup peuvent depasser sysinfo::used_memory()
+            // quand le cache disque entre en jeu. On harmonise pour que la jauge
+            // ET la valeur courante de l'historique racontent la meme histoire
+            // (la sparkline elle-meme reste basee sur les samples Rust).
             const remoteUsers = aggregateByUser(tasks, t("common.unknown"));
             const remoteCpu = remoteUsers.reduce((s, u) => s + u.cpu, 0);
             const remoteRam = remoteUsers.reduce((s, u) => s + u.ramMb, 0);
             const remoteGpu = remoteUsers.reduce((s, u) => s + u.gpu, 0);
-            // On harmonise le total affiche avec ce que la barre montre vraiment :
-            // les taches sont comptees via cgroup memory.current (inclut le cache),
-            // alors que sysinfo::used_memory() exclut le cache. Si une tache charge
-            // un dataset en cache, sa mesure cgroup peut depasser le "used" systeme.
-            // Sans cette reconciliation, le badge disait 4 Go pendant que la barre
-            // remplissait 14 Go, et le segment "vous" vert disparaissait car
-            // max(0, sysUsed - remoteRam) tombait a 0.
             const displayedCpu = Math.max(resources.cpu_percent, remoteCpu);
             const displayedRamMb = Math.max(resources.ram_used_mb, remoteRam);
             const displayedGpu = Math.max(resources.gpu_percent, remoteGpu);
@@ -345,54 +338,16 @@ export function MySharing() {
               name: u.name,
             }));
             return (
-              <div className="gauges">
-                <ResourceGauge
-                  label="CPU"
-                  percent={displayedCpu}
-                  detail={t("mysharing.cores_suffix", { n: resources.cpu_cores })}
-                  segments={cpuSegments}
-                  limit={
-                    config && config.status !== "Disabled"
-                      ? config.cpu_limit_percent
-                      : undefined
-                  }
-                  limitMax={100}
-                  limitStep={5}
-                  limitUnit="%"
-                  onLimitChange={
-                    config && config.status !== "Disabled"
-                      ? (v) => setLimit("cpu", v)
-                      : undefined
-                  }
-                />
-                <ResourceGauge
-                  label="RAM"
-                  percent={displayedRamPercent}
-                  detail={`${displayedRamMb} / ${resources.ram_total_mb} Mo`}
-                  segments={ramSegments}
-                  limit={
-                    config && config.status !== "Disabled"
-                      ? config.ram_limit_mb
-                      : undefined
-                  }
-                  limitMax={resources.ram_total_mb}
-                  limitStep={256}
-                  limitUnit="Mo"
-                  onLimitChange={
-                    config && config.status !== "Disabled"
-                      ? (v) => setLimit("ram", v)
-                      : undefined
-                  }
-                />
-                {resources.gpu_available && (
+              <>
+                <div className="gauges">
                   <ResourceGauge
-                    label={`GPU (${resources.gpu_name})`}
-                    percent={displayedGpu}
-                    detail={`${resources.gpu_memory_used_mb} / ${resources.gpu_memory_total_mb} Mo`}
-                    segments={gpuSegments}
+                    label="CPU"
+                    percent={displayedCpu}
+                    detail={t("mysharing.cores_suffix", { n: resources.cpu_cores })}
+                    segments={cpuSegments}
                     limit={
                       config && config.status !== "Disabled"
-                        ? config.gpu_limit_percent
+                        ? config.cpu_limit_percent
                         : undefined
                     }
                     limitMax={100}
@@ -400,64 +355,104 @@ export function MySharing() {
                     limitUnit="%"
                     onLimitChange={
                       config && config.status !== "Disabled"
-                        ? (v) => setLimit("gpu", v)
-                        : undefined
-                    }
-                    limitWarning={
-                      config &&
-                      config.status !== "Disabled" &&
-                      config.gpu_limit_percent < 100 &&
-                      !resources.gpu_limit_enforced
-                        ? t("gauge.gpu_advisory")
+                        ? (v) => setLimit("cpu", v)
                         : undefined
                     }
                   />
+                  <ResourceGauge
+                    label="RAM"
+                    percent={displayedRamPercent}
+                    detail={`${displayedRamMb} / ${resources.ram_total_mb} Mo`}
+                    segments={ramSegments}
+                    limit={
+                      config && config.status !== "Disabled"
+                        ? config.ram_limit_mb
+                        : undefined
+                    }
+                    limitMax={resources.ram_total_mb}
+                    limitStep={256}
+                    limitUnit="Mo"
+                    onLimitChange={
+                      config && config.status !== "Disabled"
+                        ? (v) => setLimit("ram", v)
+                        : undefined
+                    }
+                  />
+                  {resources.gpu_available && (
+                    <ResourceGauge
+                      label={`GPU (${resources.gpu_name})`}
+                      percent={displayedGpu}
+                      detail={`${resources.gpu_memory_used_mb} / ${resources.gpu_memory_total_mb} Mo`}
+                      segments={gpuSegments}
+                      limit={
+                        config && config.status !== "Disabled"
+                          ? config.gpu_limit_percent
+                          : undefined
+                      }
+                      limitMax={100}
+                      limitStep={5}
+                      limitUnit="%"
+                      onLimitChange={
+                        config && config.status !== "Disabled"
+                          ? (v) => setLimit("gpu", v)
+                          : undefined
+                      }
+                      limitWarning={
+                        config &&
+                        config.status !== "Disabled" &&
+                        config.gpu_limit_percent < 100 &&
+                        !resources.gpu_limit_enforced
+                          ? t("gauge.gpu_advisory")
+                          : undefined
+                      }
+                    />
+                  )}
+                </div>
+
+                {history.length > 1 && (
+                  <div className="history">
+                    <h4 className="history__title">
+                      {t("mysharing.history_title")}
+                      <span className="history__sublabel">
+                        {t("mysharing.history_sublabel")}
+                      </span>
+                    </h4>
+                    <div className="history__row">
+                      <HistoryPanel
+                        label="CPU"
+                        unit="%"
+                        values={history.map((s) => s.cpu_percent)}
+                        max={100}
+                        current={displayedCpu}
+                        color="#6366f1"
+                        fill="rgba(99,102,241,0.18)"
+                      />
+                      <HistoryPanel
+                        label="RAM"
+                        unit="Mo"
+                        values={history.map((s) => s.ram_used_mb)}
+                        max={resources.ram_total_mb || 1}
+                        current={displayedRamMb}
+                        color="#10b981"
+                        fill="rgba(16,185,129,0.18)"
+                      />
+                      {resources.gpu_available && (
+                        <HistoryPanel
+                          label="GPU"
+                          unit="%"
+                          values={history.map((s) => s.gpu_percent)}
+                          max={100}
+                          current={displayedGpu}
+                          color="#f59e0b"
+                          fill="rgba(245,158,11,0.18)"
+                        />
+                      )}
+                    </div>
+                  </div>
                 )}
-              </div>
+              </>
             );
           })()}
-
-          {history.length > 1 && (
-            <div className="history">
-              <h4 className="history__title">
-                {t("mysharing.history_title")}
-                <span className="history__sublabel">
-                  {t("mysharing.history_sublabel")}
-                </span>
-              </h4>
-              <div className="history__row">
-                <HistoryPanel
-                  label="CPU"
-                  unit="%"
-                  values={history.map((s) => s.cpu_percent)}
-                  max={100}
-                  current={resources.cpu_percent}
-                  color="#6366f1"
-                  fill="rgba(99,102,241,0.18)"
-                />
-                <HistoryPanel
-                  label="RAM"
-                  unit="Mo"
-                  values={history.map((s) => s.ram_used_mb)}
-                  max={resources.ram_total_mb || 1}
-                  current={resources.ram_used_mb}
-                  color="#10b981"
-                  fill="rgba(16,185,129,0.18)"
-                />
-                {resources.gpu_available && (
-                  <HistoryPanel
-                    label="GPU"
-                    unit="%"
-                    values={history.map((s) => s.gpu_percent)}
-                    max={100}
-                    current={resources.gpu_percent}
-                    color="#f59e0b"
-                    fill="rgba(245,158,11,0.18)"
-                  />
-                )}
-              </div>
-            </div>
-          )}
         </section>
       )}
 

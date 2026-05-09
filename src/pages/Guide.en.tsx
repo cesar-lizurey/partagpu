@@ -60,6 +60,12 @@ export function GuideEn() {
           instantly via the kernel's cgroup v2, no password required.
         </p>
         <p>
+          The <strong>CPU</strong> limit is a percentage of the{" "}
+          <strong>whole machine</strong>, not of a single core: on a 16-core
+          host, 50 % allows up to 8 cores worth of CPU time for shared tasks.
+          The <strong>RAM</strong> limit is in MB (0 = unlimited).
+        </p>
+        <p>
           The gauges also display a <strong>per-user breakdown</strong>:
           each bar is split into segments — a green segment{" "}
           (<em>"You (this machine)"</em>) for what you consume locally, plus
@@ -71,8 +77,21 @@ export function GuideEn() {
           <em>"advisory only — CUDA MPS not running"</em> warning next to the
           limit: this means the NVIDIA MPS daemon isn't currently running
           (typically because <code>nvidia-cuda-mps-control</code> isn't
-          installed), and your GPU slider is purely informational. Without
-          MPS, the CUDA driver cannot partition a consumer GPU.
+          installed). As long as MPS is inactive, the GPU slider is{" "}
+          <strong>purely informational</strong>: it is announced to peers but
+          the CUDA driver ignores it, and a task can saturate your GPU at
+          100 %. To enable real enforcement on Ubuntu/Debian:
+        </p>
+        <pre className="guide__code">
+          <code>sudo apt install nvidia-cuda-toolkit</code>
+        </pre>
+        <p>
+          Then <em>My sharing → Disable → Enable</em> so the helper restarts
+          the MPS daemon. The warning then disappears and the slider becomes
+          a real contract honored by CUDA. Bonus on recent GPUs
+          (Ampere/Hopper): several CUDA tasks run{" "}
+          <strong>simultaneously</strong> on different SMs instead of
+          blocking each other through time-slicing.
         </p>
         <p>
           The <strong>"Max concurrent tasks"</strong> field (default 4)

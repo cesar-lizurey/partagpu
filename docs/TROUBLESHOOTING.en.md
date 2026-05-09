@@ -42,6 +42,35 @@ dpkg -l | grep nvidia-driver              # package version
 sudo reboot
 ```
 
+### GPU gauge: "advisory only (CUDA MPS not running, limit isn't enforced)"
+
+The warning means the **CUDA MPS** (Multi-Process Service) daemon isn't available on the machine. CPU and RAM limits keep being enforced through cgroup v2, but the GPU limit becomes purely **advisory**: it is announced to peers but no constraint is applied on the CUDA side, and a task can saturate your GPU at 100 %.
+
+PartaGPU starts the MPS daemon automatically on share-enable (the helper's `setup-mps` command), **only if** the `nvidia-cuda-mps-control` binary is installed. Otherwise the helper logs a warning and continues in advisory mode.
+
+```bash
+# Verify the binary is present
+which nvidia-cuda-mps-control       # should print /usr/bin/nvidia-cuda-mps-control
+
+# Verify the daemon is running (after sharing is enabled)
+pgrep -laf nvidia-cuda-mps          # should list "nvidia-cuda-mps-control -d"
+
+# Daemon logs (root)
+sudo cat /var/lib/partagpu/mps-log/control.log
+sudo cat /var/lib/partagpu/mps-log/server.log
+```
+
+**Fix — install MPS**:
+
+```bash
+# Ubuntu / Debian (official package ~2-3 GB, also ships nvcc and CUDA libs)
+sudo apt install nvidia-cuda-toolkit
+```
+
+Then in the app: **My sharing → Disable → Enable**. Without this cycle the helper does not (re)launch MPS and the warning sticks.
+
+**If server.log stays empty while the daemon is running and GPU tasks have executed**, sandboxed tasks are not connecting to the MPS socket — typically because the `/var/lib/partagpu/mps` bind-mount or the `CUDA_MPS_PIPE_DIRECTORY` env var aren't propagated into the task. Running a `printenv | grep MPS` task via *My usage* lets you check.
+
 ---
 
 ## Peers and discovery
