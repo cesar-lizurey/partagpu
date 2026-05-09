@@ -91,10 +91,11 @@ The app exposes **two** HTTP servers, hand-rolled in Rust with `tokio` (no frame
 
 **Audience**: other PartaGPU machines on the LAN.
 
-**Auth**: `X-PartaGPU-AUTH: <ts>:<hmac_hex>` header validated by `AuthManager::verify_request_auth`. The request is accepted when:
+**Auth**: `X-PartaGPU-AUTH: <ts_ms>:<hmac_hex>` header validated by `AuthManager::verify_request_auth`. The timestamp is in milliseconds (`AUTH_WINDOW_MS = 30 000`) — second-granularity would produce byte-identical headers when polling at sub-second cadence and trip the replay cache. The request is accepted when:
 - The local app is `is_joined()` (in a room)
 - Sharing is `Active`
-- The timestamp is within ±30 s (`AUTH_WINDOW_SECS`)
+- The timestamp is within ±30 000 ms (`AUTH_WINDOW_MS`)
+- The header has not been seen in the replay cache (kept for `2 × AUTH_WINDOW_MS / 1000 = 60 s`)
 - The HMAC `HMAC-SHA256(auth_key, "PartaGPU/auth-req/v1\n" || ts || "\n" || method || "\n" || path || "\n" || sha256(body))` matches in constant time
 
 **Routes**:
@@ -296,11 +297,11 @@ bwrap \
 ### Security characteristics
 
 - **Read-only filesystem** except `/workspace` and `/tmp` (tmpfs)
-- **No network by default** (`--unshare-net`). Lifted only if `network_enabled=true` in the request (required for DDP).
+- **No network by default** (`--unshare-net`). Lifted only if `network_enabled=true` in the request (required for DDP). When networking is open, `/run/systemd/resolve/` is also bound so DNS works on modern Ubuntu/Debian (`/etc/resolv.conf` is a symlink there).
 - **Isolated PID namespace**: the task can't see / signal host processes
 - **Runs as `partagpu` UID**: dedicated account with no access to other users' homes
-- **partagpu cgroup**: CPU/RAM/PIDs cap enforced by the UI sliders
-- **GPU SM via CUDA MPS**: when `nvidia-cuda-mps-control` is installed on the host, an MPS daemon is launched as the `partagpu` UID when sharing becomes Active. The sandbox bind-mounts `/var/lib/partagpu/mps` and exports `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=<gpu_limit>` per task — the CUDA driver actually caps the SM-thread share the task can use. Without MPS (cuda-toolkit absent or no NVIDIA GPU), the GPU slider stays advisory : there's no kernel/driver partitioning of consumer GPUs without MIG.
+- **partagpu cgroup**: CPU/RAM/PIDs cap enforced by the UI sliders. The `cpu.max` quota is multiplied by `available_parallelism()` in both the helper and user_manager paths : 50% on a 16-core box ⇒ 8 effective cores, not 1/16 of a core. Per-task RAM is read by summing the unreclaimable fields of `memory.stat` (`anon + kernel_stack + pagetables + slab + sock`), not `memory.current` which includes evictable file cache (an mmap'd dataset would otherwise inflate the per-user segment past the system "used" total reported by sysinfo).
+- **GPU SM via CUDA MPS**: when `nvidia-cuda-mps-control` is installed on the host, an MPS daemon is launched as the `partagpu` UID when sharing becomes Active. The sandbox bind-mounts `/var/lib/partagpu/mps` and exports `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=<gpu_limit>` per task — the CUDA driver actually caps the SM-thread share the task can use. **MPS env-var injection is gated by a liveness check** (`pgrep nvidia-cuda-mps-control`) : if the daemon failed to start or has crashed, the sandbox no longer pushes the env var (otherwise subsequent CUDA tasks fail with error 805 "MPS client failed to connect"). It silently falls back to advisory mode ; the UI shows a warning ("advisory only — CUDA MPS not running") next to the GPU gauge so users know their slider isn't actually enforced.
 - **No user `$HOME`**: the sandbox sees nothing of your home
 
 ### Workspace: file transfer
@@ -323,6 +324,22 @@ The sandbox binds every detected `/dev/nvidia*` at exec. CUDA + NCCL work normal
 ### Allowlist
 
 Only commands in `Sandbox::allowlist` can be launched. Defaults: `python3`, `python`, `nvidia-smi`, `bash`, `make`, `gcc`, `julia`, `Rscript`, etc. Managed from the UI (page *My sharing* → tab *Allowlist*) or via the Tauri commands `add_to_allowlist` / `remove_from_allowlist`.
+
+### Artifact retrieval (`outputs=`)
+
+The client can ask for files to be fetched back from `/workspace` after the task exits, before the tempdir is destroyed:
+
+1. The client passes `outputs=["model.pt", "metrics.csv"]` to `run_remote()` or `distribute()`
+2. The Python SDK serializes that into the `POST /api/dispatch` body (field `outputs: Vec<String>`)
+3. The local app forwards it as-is to the peer via `POST /peer/v1/tasks` (field `outputs` in `SubmitBody`)
+4. The peer attaches it to `SandboxOptions.outputs` and runs bwrap as usual
+5. After bwrap's `wait()` (and before `drop(workspace_host)`), `collect_artifacts()` walks the list: for each path, `canonicalize()` then `starts_with(workspace_root)` rejects path traversals and symlinks pointing outside the workspace; the contents are read and base64-encoded
+6. Artifacts are returned in `SandboxResult.artifacts: Vec<Artifact>`, attached to the final `Task`, propagated to the client via the poll
+7. The Python SDK base64-decodes them and exposes `result.artifacts: dict[str, bytes]`
+
+Aggregate cap `MAX_ARTIFACT_TOTAL_BYTES = 256 MiB` per task. Files that would exceed the cumulative cap are skipped with a warning in `stderr`. Artifacts are **not** persisted to disk (cleared in `task_for_persist`): they don't survive an app restart, their only purpose is to be retrieved while the client is still connected.
+
+Polling note: the local poll on `GET /peer/v1/tasks/<id>` reads its body via `into_reader().take(1 GiB)` rather than `into_string()` (capped at 10 MB by default) — otherwise even moderately-sized artifacts would saturate the limit and the cell would hang in the polling loop forever.
 
 ---
 
@@ -544,6 +561,18 @@ loop:
   if task.status == terminal: return task
   sleep 500ms
 ```
+
+### Python SDK side (`live=True`)
+
+So the **notebook cell** sees logs live too (not just the native app), the SDK exposes `live=True` on `run_remote()` / `distribute()`. The mechanism:
+
+1. The client generates its `local_id` Python-side before the `POST /api/dispatch`
+2. A `_LivePoller` thread is started ; it does `GET /api/tasks/<local_id>/output?stdout_since=N&stderr_since=M` every ~250 ms (local-only endpoint on 127.0.0.1:7654)
+3. The local app responds with a byte-wise slice of the OutgoingTask's current `output` / `error_output` (themselves updated by `mirror_running` on every poll tick to the peer)
+4. The poller maintains a per-stream buffer, splits on `\n`, prefixes each complete line with `live_prefix` (e.g. `[rank0] ` in `distribute`), and writes atomically through a `threading.Lock` shared between ranks (otherwise lines from different ranks interleave character-by-character)
+5. On final flush (the `POST /api/dispatch` returning), the poller flushes any pending `tail` (a line without trailing `\n`) and exits
+
+The polling endpoint is gated by the same CSRF / DNS-rebinding guards as `/api/dispatch` (Host check + Origin absence). No additional auth — it's the local API, loopback trust is already assumed.
 
 ### UI side
 

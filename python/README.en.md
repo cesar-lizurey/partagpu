@@ -59,6 +59,8 @@ result.check()  # raises if exit != 0
 - `timeout=int` — seconds (default 300)
 - `user="alice"` — informational label shown on the peer
 - `local_id="..."` — pre-allocated id so you can cancel the task before it returns
+- `live=True` — print the peer's stdout/stderr as it streams (~250 ms cadence) instead of returning everything at the end. Handy for following long-running training runs from a notebook.
+- `outputs=["model.pt", ...]` — files to fetch back from the peer's `/workspace` after exit. Available as `result.artifacts: dict[str, bytes]`. Aggregate cap of 256 MiB per task.
 
 `Ctrl+C` in the notebook automatically propagates a cancel to the peer.
 
@@ -81,10 +83,17 @@ results = partagpu.distribute(
     args=["--epochs", "10"],
     extra_files=["config.yaml", "utils.py"],
     timeout=1800,
+    live=True,                    # stream logs while running
+    outputs=["model.pt"],         # fetch the checkpoint back into RAM
+    local=False,                  # skip the local machine
 )
 for r in results:
     print(r.target_machine, r.exit_code)
     print(r.stdout[-500:])
+
+# The checkpoint is in results[0].artifacts (rank 0 by DDP convention)
+import io, torch
+weights = torch.load(io.BytesIO(results[0].artifacts["model.pt"]), map_location="cpu")
 ```
 
 `distribute`:
@@ -94,6 +103,11 @@ for r in results:
 - pins each worker to a single physical GPU via `CUDA_VISIBLE_DEVICES` (the script always uses `cuda:0`, regardless of the physical index).
 - opens the sandbox network isolation on every peer (NCCL/Gloo rendezvous).
 - launches `world_size` workers in parallel (on their respective machines) and waits for every result.
+
+Extra optional parameters:
+- `live=True` — each rank prints its logs prefixed with `[rankN]` as they arrive (a shared lock keeps lines from interleaving between ranks).
+- `outputs=["model.pt", ...]` — paths (relative to `/workspace`) to fetch back from each rank after exit. By DDP convention only rank 0 saves a checkpoint, so only `results[0].artifacts` is typically non-empty. Aggregate cap of 256 MiB per task.
+- `local=False` — exclude the local machine from auto-discovery. Useful when sharing isn't enabled locally and you just want to consume remote GPUs. Without this filter, rank 0 lands on the local peer-API and gets a 403.
 
 In `train.py`, initialize DDP the standard way:
 

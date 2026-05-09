@@ -514,6 +514,8 @@ Useful options:
 - `network=True`: the peer's sandbox keeps network access (required for DDP rendezvous).
 - `workspace={"train.py": "<content>"}` or `workspace=[Path("./train.py")]`: push files into the sandbox `/workspace` (up to 16 MB total).
 - `timeout=int`: seconds (default 300).
+- `live=True`: stream the peer's stdout/stderr while it runs (~250 ms cadence) instead of returning everything at the end.
+- `outputs=["model.pt", ...]`: fetch files back from the peer's `/workspace` after exit, exposed as `result.artifacts: dict[str, bytes]`. Aggregate cap of 256 MiB.
 
 ### DDP training (`distribute`)
 
@@ -525,10 +527,17 @@ results = partagpu.distribute(
     args=["--epochs", "10"],
     extra_files=["config.yaml", "model.py"],
     timeout=1800,
+    live=True,                 # stream logs while training
+    outputs=["model.pt"],      # checkpoint to fetch back
+    local=False,               # exclude the local machine if not sharing
 )
 for r in results:
     print(r.target_machine, "exit", r.exit_code)
     print(r.stdout[-500:])
+
+# By DDP convention only rank 0 saves: results[0].artifacts holds model.pt
+import io, torch
+weights = torch.load(io.BytesIO(results[0].artifacts["model.pt"]), map_location="cpu")
 ```
 
 `distribute`:
@@ -539,6 +548,11 @@ for r in results:
 - pins each worker to its own GPU via `CUDA_VISIBLE_DEVICES` (the script always uses `cuda:0`);
 - opens the sandbox network isolation on every peer for the NCCL/Gloo rendezvous;
 - launches the workers in parallel and waits for every result.
+
+Extra optional parameters:
+- `live=True`: each rank prints its logs prefixed with `[rankN]` as they arrive (a shared lock keeps lines from interleaving between ranks).
+- `outputs=[...]`: fetch files from each rank's `/workspace`. By DDP convention only rank 0 saves a checkpoint, so only `results[0].artifacts` is typically non-empty.
+- `local=False`: exclude the local machine from auto-discovery. Useful when sharing isn't enabled locally and you just want to consume remote GPUs — without this filter rank 0 lands on the local peer-API and gets a 403.
 
 In `train.py`, standard DDP init:
 

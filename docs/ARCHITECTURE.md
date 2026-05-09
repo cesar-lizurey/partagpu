@@ -147,13 +147,17 @@ La route `/peer/v1/verify` est **unauthenticated** (c'est le bootstrap d'auth), 
 Pour `POST /peer/v1/tasks`, `GET /peer/v1/tasks/<id>` et `DELETE /peer/v1/tasks/<id>`, le client envoie un header :
 
 ```
-X-PartaGPU-AUTH: <unix_ts>:<HMAC-SHA256(auth_key, "PartaGPU/auth-req/v1\n" || ts || "\n" || method || "\n" || path || "\n" || sha256(body)) hex>
+X-PartaGPU-AUTH: <unix_ts_ms>:<HMAC-SHA256(auth_key, "PartaGPU/auth-req/v1\n" || ts || "\n" || method || "\n" || path || "\n" || sha256(body)) hex>
 ```
+
+Le timestamp est en **millisecondes** (`AUTH_WINDOW_MS = 30_000`). C'est important : si on était resté en secondes, le polling SDK qui poll à 250 ms produirait des headers byte-identiques dans la même seconde et serait rejeté par le cache anti-replay du peer (qui mémorise les headers déjà acceptés pour `2 × AUTH_WINDOW_MS / 1000` secondes — cf. `REPLAY_RETENTION_SECS` dans `peer_api`).
 
 Le serveur (`peer_api::handle_connection`) vérifie l'auth **avant** le déchiffrement, sur les bytes wire (l'envelope JSON chiffré pour POST, vide pour GET/DELETE) :
 1. Parse `<ts>:<hmac>` (sinon 401 Malformed)
-2. Vérifie `|now - ts| ≤ 30 s` (sinon 401 TimestampOutOfWindow)
-3. Recalcule le HMAC, compare en temps constant (sinon 401 Mismatch)
+2. Vérifie `|now - ts| ≤ 30_000 ms` (sinon 401 TimestampOutOfWindow)
+3. Vérifie l'absence du header dans le replay cache (sinon 409 Replay)
+4. Recalcule le HMAC, compare en temps constant (sinon 401 Mismatch)
+5. Insère le header dans le replay cache pour la durée de rétention
 
 Le HMAC **lie l'auth au corps** : un header capté ne peut pas être rejoué sur une requête différente même dans la fenêtre de 30 s. Et un attaquant qui ne connaît pas l'`auth_key` n'arrive jamais à la couche AES — l'auth gate est validée avant le déchiffrement.
 
@@ -296,11 +300,11 @@ bwrap \
 ### Caractéristiques de sécurité
 
 - **Système de fichiers en lecture seule** sauf `/workspace` et `/tmp` (tmpfs)
-- **Pas de network par défaut** (`--unshare-net`). Levée seulement si `network_enabled=true` dans la requête (requis pour DDP).
+- **Pas de network par défaut** (`--unshare-net`). Levée seulement si `network_enabled=true` dans la requête (requis pour DDP). Quand le réseau est ouvert, on bind aussi `/run/systemd/resolve/` pour que le DNS marche sous Ubuntu/Debian moderne (`/etc/resolv.conf` y est un symlink).
 - **PID namespace isolé** : la tâche ne peut pas voir / signaler les processus de l'hôte
 - **Run as `partagpu` UID** : compte dédié sans accès aux home directories des autres
-- **Cgroup partagpu** : limite CPU/RAM/PIDs imposée par les sliders de l'UI
-- **GPU SM via CUDA MPS** : si `nvidia-cuda-mps-control` est installé sur l'hôte, un daemon MPS est lancé sous l'UID `partagpu` au passage en *Actif*. Le sandbox bind-monte `/var/lib/partagpu/mps` et exporte `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=<gpu_limit>` à chaque tâche — le driver CUDA cap réellement la part de SM threads que la tâche peut utiliser. Sans MPS (cuda-toolkit absent ou pas de GPU NVIDIA), le slider GPU reste advisory : pas de moyen kernel/driver de partitionner un GPU grand public sans MIG.
+- **Cgroup partagpu** : limite CPU/RAM/PIDs imposée par les sliders de l'UI. Le quota `cpu.max` est multiplié par `available_parallelism()` côté helper et user_manager : 50% sur 16 cœurs = 8 cœurs effectifs, pas 1/16 de cœur. La limite RAM par tâche est lue via la somme des champs unreclaimable de `memory.stat` (`anon + kernel_stack + pagetables + slab + sock`), pas `memory.current` qui inclut le cache page (un dataset mmap'd gonflerait le total alors que sysinfo l'expose comme available).
+- **GPU SM via CUDA MPS** : si `nvidia-cuda-mps-control` est installé sur l'hôte, un daemon MPS est lancé sous l'UID `partagpu` au passage en *Actif*. Le sandbox bind-monte `/var/lib/partagpu/mps` et exporte `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=<gpu_limit>` à chaque tâche — le driver CUDA cap réellement la part de SM threads que la tâche peut utiliser. **L'injection MPS est conditionnée à un check de liveness** (`pgrep nvidia-cuda-mps-control`) : si le daemon a échoué au démarrage ou s'est arrêté, le sandbox ne pousse plus la variable d'env (sinon les tâches CUDA suivantes plantent avec error 805 « MPS client failed to connect »). On retombe alors silencieusement en mode advisory ; l'UI affiche un avertissement (« indicative — CUDA MPS inactif ») sur la jauge GPU pour que l'utilisateur sache que son slider n'est pas appliqué.
 - **Pas de `$HOME` utilisateur** : le sandbox ne voit rien de votre home
 
 ### Workspace : transfert de fichiers
@@ -323,6 +327,22 @@ Le sandbox bind tous les `/dev/nvidia*` détectés à l'exec. CUDA + NCCL foncti
 ### Allowlist
 
 Seules les commandes dans `Sandbox::allowlist` peuvent être lancées. Defaults : `python3`, `python`, `nvidia-smi`, `bash`, `make`, `gcc`, `julia`, `Rscript`, etc. Géré depuis l'UI (page *Mon partage* → onglet *Allowlist*) ou via les Tauri commands `add_to_allowlist` / `remove_from_allowlist`.
+
+### Récupération d'artefacts (`outputs=`)
+
+Le client peut demander des fichiers à rapatrier depuis `/workspace` après l'exit de la tâche, avant la destruction du tempdir :
+
+1. Le client passe `outputs=["model.pt", "metrics.csv"]` à `run_remote()` ou `distribute()`
+2. Le SDK Python sérialise ça dans le body POST `/api/dispatch` (champ `outputs: Vec<String>`)
+3. Le local app le propage tel quel au pair via `POST /peer/v1/tasks` (champ `outputs` dans `SubmitBody`)
+4. Le pair l'attache à `SandboxOptions.outputs`, lance bwrap normalement
+5. Après le `wait()` de bwrap (avant `drop(workspace_host)`), `collect_artifacts()` parcourt la liste : pour chaque chemin, `canonicalize()` puis `starts_with(workspace_root)` rejette les path traversal et symlinks pointant hors workspace ; le contenu est lu et encodé base64
+6. Les artefacts sont retournés dans `SandboxResult.artifacts: Vec<Artifact>`, attachés au `Task` final, propagés au client via le poll
+7. Le SDK Python décode la base64 et expose `result.artifacts: dict[str, bytes]`
+
+Plafond agrégé `MAX_ARTIFACT_TOTAL_BYTES = 256 MiB` par tâche. Les fichiers qui dépasseraient le cumulatif sont skippés avec un avertissement dans `stderr`. Les artefacts ne sont **pas** persistés sur disque (truncate dans `task_for_persist`) : ils ne survivent pas à un restart de l'app, leur seul usage est d'être rapatriés tant que le client est connecté.
+
+Note polling : le poll local `GET /peer/v1/tasks/<id>` lit le body via `into_reader().take(1 GiB)` plutôt que `into_string()` (capé à 10 MB par défaut) — sinon les artefacts un peu lourds saturent la limite et la cellule reste bloquée indéfiniment dans la boucle de polling.
 
 ---
 
@@ -545,6 +565,18 @@ loop:
   if task.status == terminal: return task
   sleep 500ms
 ```
+
+### Côté SDK Python (`live=True`)
+
+Pour que la **cellule du notebook** voie aussi les logs en temps réel (et pas juste l'app native), le SDK expose `live=True` sur `run_remote()` / `distribute()`. Le mécanisme :
+
+1. Le client génère son `local_id` côté Python avant le POST `/api/dispatch`
+2. Un thread `_LivePoller` est démarré qui fait `GET /api/tasks/<local_id>/output?stdout_since=N&stderr_since=M` toutes les ~250 ms (endpoint local-only sur 127.0.0.1:7654)
+3. L'app local répond avec un slice byte-wise du `output` / `error_output` courant de l'OutgoingTask (lui-même mis à jour par `mirror_running` à chaque tick du poll vers le pair)
+4. Le poller maintient un buffer par stream, splitte sur `\n`, prefixe chaque ligne complète avec `live_prefix` (ex `[rank0] ` dans `distribute`), et écrit atomiquement via un `threading.Lock` partagé entre rangs (sinon les lignes de plusieurs rangs s'entremêlent caractère par caractère)
+5. Sur final flush (POST `/api/dispatch` qui rend la main), le poller flush les `tail` éventuels (ligne sans `\n` final) et termine
+
+L'endpoint polling est protégé par les mêmes garde-fous CSRF / DNS-rebinding que `/api/dispatch` (check du `Host` et absence d'`Origin`). Pas d'auth supplémentaire — c'est l'API locale, on est déjà en confiance loopback.
 
 ### Côté UI
 

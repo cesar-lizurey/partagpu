@@ -59,6 +59,8 @@ result.check()  # raise si exit != 0
 - `timeout=int` — secondes (défaut 300)
 - `user="alice"` — label informatif côté pair
 - `local_id="..."` — id pré-alloué pour pouvoir annuler la tâche par programme avant qu'elle ne retourne
+- `live=True` — affiche stdout/stderr du pair en streaming (~250 ms de cadence) au lieu de tout retourner à la fin. Pratique pour suivre un entraînement long depuis un notebook.
+- `outputs=["model.pt", ...]` — fichiers à rapatrier depuis le `/workspace` du pair après exit. Disponibles dans `result.artifacts: dict[str, bytes]`. Plafond agrégé 256 MiB par tâche.
 
 `Ctrl+C` dans le notebook propage automatiquement le cancel au pair.
 
@@ -81,10 +83,17 @@ results = partagpu.distribute(
     args=["--epochs", "10"],
     extra_files=["config.yaml", "utils.py"],
     timeout=1800,
+    live=True,                    # logs streames pendant le run
+    outputs=["model.pt"],         # rapatrie le checkpoint en RAM
+    local=False,                  # n'utilise pas la machine locale
 )
 for r in results:
     print(r.target_machine, r.exit_code)
     print(r.stdout[-500:])
+
+# Le checkpoint est dans results[0].artifacts (rang 0 par convention DDP)
+import io, torch
+weights = torch.load(io.BytesIO(results[0].artifacts["model.pt"]), map_location="cpu")
 ```
 
 `distribute` :
@@ -94,6 +103,11 @@ for r in results:
 - isole chaque worker à un seul GPU physique via `CUDA_VISIBLE_DEVICES` (le script utilise toujours `cuda:0`, peu importe l'index physique) ;
 - ouvre l'isolation réseau du sandbox de chaque pair (NCCL/Gloo rendezvous) ;
 - lance les `world_size` workers en parallèle (sur les machines respectives), attend tous les résultats.
+
+Paramètres optionnels supplémentaires :
+- `live=True` — chaque rang imprime ses logs préfixés `[rankN]` au fur et à mesure (lock partagé pour ne pas mélanger les lignes entre rangs).
+- `outputs=["model.pt", ...]` — chemins relatifs à `/workspace` à rapatrier en fin de tâche. Par convention DDP, seul rank 0 sauve un checkpoint, donc seul `results[0].artifacts` est non-vide. Plafond agrégé 256 MiB par tâche.
+- `local=False` — exclut la machine locale de l'auto-discover. Utile quand le partage n'est pas activé localement et que vous voulez juste consommer des GPU distants. Sans ce filtre, rank 0 atterrit sur le peer-API local et tombe sur un 403.
 
 Côté `train.py`, vous initialisez DDP standard :
 

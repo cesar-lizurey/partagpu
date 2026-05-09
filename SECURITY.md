@@ -71,7 +71,8 @@ Le serveur vérifie que `|now - ts| ≤ 30 s` puis recalcule le HMAC et compare 
 ### Détails techniques
 
 - **Primitive** : HMAC-SHA256 (RFC 2104).
-- **Tolérance de clock skew** : ±1 fenêtre (`AUTH_WINDOW_SECS = 30 s`).
+- **Tolérance de clock skew** : ±1 fenêtre (`AUTH_WINDOW_MS = 30 000 ms`). Granularité **milliseconde** (pas seconde) pour que les requêtes de polling rapide (le SDK Python `live=True` poll à 250 ms) génèrent des timestamps distincts et ne soient pas rejetées par le cache anti-replay.
+- **Anti-replay** : chaque header HMAC accepté est mémorisé pendant `2 × AUTH_WINDOW_MS / 1000 = 60 s`. Un header byte-identique reçu une seconde fois dans cette fenêtre est rejeté en 409. Cap dur de 4096 entrées pour éviter qu'un flood ne fasse exploser la RAM (au-delà, le cache est purgé — perte de garantie temporaire mais bornée).
 - **Code d'accès** : 4 mots parmi 256 = 256^4 ≈ 4,3 milliards de combinaisons.
 - **Conversion** : la passphrase est convertie en 4 octets, puis étendue à 20 octets via SHA-1 pour former un secret de longueur stable.
 - **Dérivation** : `auth_key = PBKDF2-HMAC-SHA256(room_secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000, len = 32 octets)`. Slow KDF intentionnel : la dérivation prend ~100 ms sur un CPU moderne, invisible au join de salle, mais multiplie d'un facteur ~10⁵ le coût d'un brute-force offline du passphrase à partir d'un tag HMAC observé. Distincte de la `room_key` AES dérivée par HKDF-SHA256 (la `room_key` n'est jamais broadcastée — pas le même profil de menace).
@@ -203,6 +204,7 @@ Chaque tâche s'exécute dans un **sandbox bubblewrap** avec des restrictions st
 | **GPU (CUDA MPS)** | Si NVIDIA MPS est installé, le daemon `nvidia-cuda-mps-control` tourne sous l'UID `partagpu` et la tâche reçoit `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=<gpu_limit>` — cap réel sur les SM threads. Sans MPS, le slider GPU est advisory uniquement (limitation NVIDIA grand public, pas un choix PartaGPU). |
 | **Timeout** | Chaque tâche a un délai maximum (défaut : 1 heure). Si dépassé, le processus est tué. |
 | **Sortie** | stdout limité à 1 Mo, stderr à 256 Ko — empêche un remplissage mémoire par sortie infinie. |
+| **Artefacts** | Total cumulé limité à 256 MiB par tâche (`MAX_ARTIFACT_TOTAL_BYTES`). Les fichiers demandés via `outputs=[...]` sont validés par `canonicalize() + starts_with(workspace_root)` avant lecture — un path traversal (`../etc/shadow`) ou un symlink fabriqué pendant la tâche pour pointer hors du workspace est rejeté silencieusement, pas inclus dans la réponse. |
 | **Pas de shell** | Les commandes sont passées en `argv` direct (pas de `sh -c`). L'injection de commandes est structurellement impossible. |
 
 ### Allowlist de commandes

@@ -71,7 +71,8 @@ The server checks `|now - ts| ≤ 30 s`, then recomputes the HMAC and constant-t
 ### Technical details
 
 - **Primitive**: HMAC-SHA256 (RFC 2104).
-- **Clock-skew tolerance**: ±1 window (`AUTH_WINDOW_SECS = 30 s`).
+- **Clock-skew tolerance**: ±1 window (`AUTH_WINDOW_MS = 30 000 ms`). **Millisecond** granularity (not second) so fast polling (the Python SDK with `live=True` polls at 250 ms) generates distinct timestamps and isn't rejected by the anti-replay cache.
+- **Anti-replay**: every successfully-authenticated header is cached for `2 × AUTH_WINDOW_MS / 1000 = 60 s`. A byte-identical header replayed within that window is rejected with 409. Hard cap of 4096 entries to bound memory use under flooding (cache is cleared if the cap is hit — temporary loss of guarantee but bounded).
 - **Access code**: 4 words from a 256-word list = 256^4 ≈ 4.3 billion combinations.
 - **Conversion**: the 4-word passphrase is converted to 4 bytes, then expanded to 20 bytes via SHA-1 to form a stable-length secret.
 - **Derivation**: `auth_key = PBKDF2-HMAC-SHA256(room_secret, salt = "PartaGPU/auth-key-pbkdf2-v2", iters = 600 000, len = 32 bytes)`. Intentionally slow KDF: the derivation takes ~100 ms on a modern CPU, invisible at room-join time, but multiplies by ~10⁵ the cost of an offline brute-force of the passphrase from any observed HMAC tag. Distinct from the AES `room_key`, which is HKDF-SHA256-derived (the `room_key` is never broadcast — different threat profile).
@@ -203,6 +204,7 @@ Every task runs inside a **bubblewrap sandbox** with strict restrictions.
 | **GPU (CUDA MPS)** | When NVIDIA MPS is installed, the `nvidia-cuda-mps-control` daemon runs as the `partagpu` UID and each task receives `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=<gpu_limit>` — real SM-thread cap. Without MPS, the GPU slider is advisory only (NVIDIA consumer-card limitation, not a PartaGPU choice). |
 | **Timeout** | Each task has a maximum wall-clock budget (default: 1 hour). Exceeded → killed. |
 | **Output** | stdout capped at 1 MB, stderr at 256 KB — prevents memory blowup from infinite output. |
+| **Artifacts** | Aggregate cap of 256 MiB per task (`MAX_ARTIFACT_TOTAL_BYTES`). Files requested via `outputs=[...]` are validated with `canonicalize() + starts_with(workspace_root)` before being read — a path traversal (`../etc/shadow`) or a symlink fabricated mid-task to point outside the workspace is silently rejected, not included in the response. |
 | **No shell** | Commands are passed as direct `argv` (no `sh -c`). Command injection is structurally impossible. |
 
 ### Command allowlist

@@ -514,6 +514,8 @@ Options utiles :
 - `network=True` : le sandbox du pair garde l'accès réseau (requis pour DDP rendezvous).
 - `workspace={"train.py": "<contenu>"}` ou `workspace=[Path("./train.py")]` : pousse des fichiers dans le `/workspace` du sandbox (jusqu'à 16 Mo total).
 - `timeout=int` : secondes (défaut 300).
+- `live=True` : streame stdout/stderr du pair pendant l'exécution (poll ~250 ms) au lieu de tout retourner à la fin.
+- `outputs=["model.pt", ...]` : rapatrie des fichiers depuis le `/workspace` du pair après exit, exposés en `result.artifacts: dict[str, bytes]`. Plafond agrégé 256 MiB.
 
 ### Entraînement DDP (`distribute`)
 
@@ -525,10 +527,17 @@ results = partagpu.distribute(
     args=["--epochs", "10"],
     extra_files=["config.yaml", "model.py"],
     timeout=1800,
+    live=True,                 # logs streames pendant l'entrainement
+    outputs=["model.pt"],      # checkpoint a rapatrier
+    local=False,               # exclure la machine locale si non-partagee
 )
 for r in results:
     print(r.target_machine, "exit", r.exit_code)
     print(r.stdout[-500:])
+
+# Rang 0 sauve par convention DDP : results[0].artifacts contient model.pt
+import io, torch
+weights = torch.load(io.BytesIO(results[0].artifacts["model.pt"]), map_location="cpu")
 ```
 
 `distribute` :
@@ -539,6 +548,11 @@ for r in results:
 - isole chaque worker à son GPU via `CUDA_VISIBLE_DEVICES` (le script utilise `cuda:0` quoi qu'il arrive) ;
 - ouvre l'isolation réseau du sandbox de chaque pair pour le rendezvous NCCL/Gloo ;
 - lance les workers en parallèle, attend tous les résultats.
+
+Options optionnelles supplémentaires :
+- `live=True` : chaque rang imprime ses logs préfixés `[rankN]` au fur et à mesure (lock partagé pour ne pas mélanger les lignes).
+- `outputs=[...]` : rapatrie des fichiers du `/workspace` de chaque rang. Par convention DDP, seul rank 0 sauve un checkpoint donc seul `results[0].artifacts` est typiquement non-vide.
+- `local=False` : exclut la machine locale de l'auto-discover. Utile quand le partage n'est pas activé localement et qu'on veut juste consommer des GPU distants — sans ça, rank 0 atterrit sur le peer-API local et tombe sur un 403.
 
 Côté `train.py`, init DDP standard :
 
