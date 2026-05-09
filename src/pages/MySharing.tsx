@@ -298,14 +298,30 @@ export function MySharing() {
             // - segment vert = vous (ce qui n'est pas attribuable a une tache PartaGPU)
             // - un segment couleur par utilisateur distant qui consomme la machine
             // En mode CPU/GPU les valeurs sont des % cumulables ; pour la RAM
-            // on convertit ram_used_mb / ram_percent en Mo absolus pour chaque
-            // tache (le total reste ram_total_mb).
+            // on convertit les Mo de chaque tache en % du total physique.
             const remoteUsers = aggregateByUser(tasks, t("common.unknown"));
+            const remoteCpu = remoteUsers.reduce((s, u) => s + u.cpu, 0);
+            const remoteRam = remoteUsers.reduce((s, u) => s + u.ramMb, 0);
+            const remoteGpu = remoteUsers.reduce((s, u) => s + u.gpu, 0);
+            // On harmonise le total affiche avec ce que la barre montre vraiment :
+            // les taches sont comptees via cgroup memory.current (inclut le cache),
+            // alors que sysinfo::used_memory() exclut le cache. Si une tache charge
+            // un dataset en cache, sa mesure cgroup peut depasser le "used" systeme.
+            // Sans cette reconciliation, le badge disait 4 Go pendant que la barre
+            // remplissait 14 Go, et le segment "vous" vert disparaissait car
+            // max(0, sysUsed - remoteRam) tombait a 0.
+            const displayedCpu = Math.max(resources.cpu_percent, remoteCpu);
+            const displayedRamMb = Math.max(resources.ram_used_mb, remoteRam);
+            const displayedGpu = Math.max(resources.gpu_percent, remoteGpu);
+            const displayedRamPercent =
+              resources.ram_total_mb > 0
+                ? (displayedRamMb / resources.ram_total_mb) * 100
+                : 0;
             const selfLabel = t("gauge.you_label");
             const self = buildSelfUsage(
-              resources.cpu_percent,
-              resources.ram_used_mb,
-              resources.gpu_percent,
+              displayedCpu,
+              displayedRamMb,
+              displayedGpu,
               remoteUsers,
               selfLabel,
             );
@@ -318,8 +334,6 @@ export function MySharing() {
             const ramSegments =
               resources.ram_total_mb > 0
                 ? all.map((u) => ({
-                    // Le track de la jauge RAM est en %, on convertit donc
-                    // les Mo de chaque user en % du total physique.
                     value: (u.ramMb / resources.ram_total_mb) * 100,
                     color: u.color,
                     name: u.name,
@@ -334,7 +348,7 @@ export function MySharing() {
               <div className="gauges">
                 <ResourceGauge
                   label="CPU"
-                  percent={resources.cpu_percent}
+                  percent={displayedCpu}
                   detail={t("mysharing.cores_suffix", { n: resources.cpu_cores })}
                   segments={cpuSegments}
                   limit={
@@ -353,8 +367,8 @@ export function MySharing() {
                 />
                 <ResourceGauge
                   label="RAM"
-                  percent={resources.ram_percent}
-                  detail={`${resources.ram_used_mb} / ${resources.ram_total_mb} Mo`}
+                  percent={displayedRamPercent}
+                  detail={`${displayedRamMb} / ${resources.ram_total_mb} Mo`}
                   segments={ramSegments}
                   limit={
                     config && config.status !== "Disabled"
@@ -373,7 +387,7 @@ export function MySharing() {
                 {resources.gpu_available && (
                   <ResourceGauge
                     label={`GPU (${resources.gpu_name})`}
-                    percent={resources.gpu_percent}
+                    percent={displayedGpu}
                     detail={`${resources.gpu_memory_used_mb} / ${resources.gpu_memory_total_mb} Mo`}
                     segments={gpuSegments}
                     limit={

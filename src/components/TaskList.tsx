@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   cancelIncomingTask,
   cancelOutgoingTask,
+  removeIncomingTask,
+  removeOutgoingTask,
   type Task,
 } from "../lib/api";
 import { useT } from "../lib/i18n";
@@ -23,12 +25,25 @@ const STATUS_INFO: Record<string, { key: MessageKey; className: string }> = {
 };
 
 const CANCELLABLE = new Set(["Queued", "Running"]);
+const REMOVABLE = new Set(["Completed", "Failed", "Cancelled"]);
 
 export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
   const t = useT();
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
 
-  if (tasks.length === 0) {
+  // Newest task first. Falls back to id for the rare case where two tasks
+  // share the same created_at second so the order stays stable.
+  const sortedTasks = useMemo(
+    () =>
+      [...tasks].sort((a, b) => {
+        if (b.created_at !== a.created_at) return b.created_at - a.created_at;
+        return b.id.localeCompare(a.id);
+      }),
+    [tasks],
+  );
+
+  if (sortedTasks.length === 0) {
     return (
       <p className="empty-state">
         {direction === "incoming"
@@ -56,6 +71,25 @@ export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
     }
   };
 
+  const handleRemove = async (taskId: string) => {
+    if (!confirm(t("task.remove_confirm"))) return;
+    setRemovingId(taskId);
+    try {
+      if (direction === "incoming") {
+        await removeIncomingTask(taskId);
+      } else {
+        await removeOutgoingTask(taskId);
+      }
+      onCancelled?.();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("Remove failed:", err);
+      alert(t("task.remove_failed", { error: String(err) }));
+    } finally {
+      setRemovingId(null);
+    }
+  };
+
   return (
     <table className="peer-table">
       <thead>
@@ -71,12 +105,14 @@ export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
         </tr>
       </thead>
       <tbody>
-        {tasks.map((task) => {
+        {sortedTasks.map((task) => {
           const info = STATUS_INFO[task.status];
           const label = info ? t(info.key) : task.status;
           const className = info?.className ?? "";
           const canCancel = CANCELLABLE.has(task.status);
+          const canRemove = REMOVABLE.has(task.status);
           const isCancelling = cancellingId === task.id;
+          const isRemoving = removingId === task.id;
           return (
             <tr key={task.id}>
               <td className="task-command">
@@ -114,18 +150,33 @@ export function TaskList({ tasks, direction, onCancelled }: TaskListProps) {
               <td>{task.ram_usage_mb} Mo</td>
               <td>{task.gpu_usage.toFixed(0)}%</td>
               <td>
-                {canCancel ? (
-                  <button
-                    type="button"
-                    onClick={() => handleCancel(task.id)}
-                    disabled={isCancelling}
-                    title={t("task.cancel_title")}
-                  >
-                    {isCancelling ? "…" : t("task.cancel_btn")}
-                  </button>
-                ) : (
-                  <span style={{ opacity: 0.4 }}>—</span>
-                )}
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {canCancel ? (
+                    <button
+                      type="button"
+                      onClick={() => handleCancel(task.id)}
+                      disabled={isCancelling}
+                      title={t("task.cancel_title")}
+                    >
+                      {isCancelling ? "…" : t("task.cancel_btn")}
+                    </button>
+                  ) : null}
+                  {canRemove ? (
+                    <button
+                      type="button"
+                      className="task-remove-btn"
+                      onClick={() => handleRemove(task.id)}
+                      disabled={isRemoving}
+                      title={t("task.remove_title")}
+                      aria-label={t("task.remove_title")}
+                    >
+                      {isRemoving ? "…" : "🗑"}
+                    </button>
+                  ) : null}
+                  {!canCancel && !canRemove ? (
+                    <span style={{ opacity: 0.4 }}>—</span>
+                  ) : null}
+                </div>
               </td>
             </tr>
           );

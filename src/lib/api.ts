@@ -233,6 +233,15 @@ export const cancelIncomingTask = (taskId: string) =>
 export const cancelOutgoingTask = (localId: string) =>
   invoke<boolean>("cancel_outgoing_task", { localId });
 
+/** Drop an incoming task from local history. Only allowed once the task has
+ *  reached a terminal state (Completed/Failed/Cancelled). */
+export const removeIncomingTask = (taskId: string) =>
+  invoke<void>("remove_incoming_task", { taskId });
+
+/** Drop an outgoing task from local history (terminal states only). */
+export const removeOutgoingTask = (localId: string) =>
+  invoke<void>("remove_outgoing_task", { localId });
+
 export const getAllowlist = () => invoke<string[]>("get_allowlist");
 
 export const addToAllowlist = (command: string) =>

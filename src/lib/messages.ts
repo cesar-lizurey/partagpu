@@ -199,6 +199,9 @@ const fr = {
   "task.cancel_btn": "Stop",
   "task.cancel_title": "Arrêter cette tâche",
   "task.cancel_failed": "Annulation refusée : {error}",
+  "task.remove_title": "Supprimer de l'historique",
+  "task.remove_confirm": "Supprimer cette tâche de l'historique ?",
+  "task.remove_failed": "Suppression refusée : {error}",
   "task.network_badge": "réseau",
   "task.network_badge_title": "Sandbox avec accès réseau (DDP rendezvous)",
 
@@ -530,6 +533,9 @@ const en: Record<keyof typeof fr, string> = {
   "task.cancel_btn": "Stop",
   "task.cancel_title": "Stop this task",
   "task.cancel_failed": "Cancel rejected: {error}",
+  "task.remove_title": "Remove from history",
+  "task.remove_confirm": "Remove this task from history?",
+  "task.remove_failed": "Remove rejected: {error}",
   "task.network_badge": "network",
   "task.network_badge_title": "Sandbox with network access (DDP rendezvous)",
 

@@ -174,6 +174,8 @@ pub fn run() {
             api::submit_task,
             api::cancel_incoming_task,
             api::cancel_outgoing_task,
+            api::remove_incoming_task,
+            api::remove_outgoing_task,
             api::dispatch_task,
             api::get_managed_venv_status,
             api::setup_managed_venv,

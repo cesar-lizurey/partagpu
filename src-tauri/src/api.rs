@@ -469,6 +469,25 @@ pub async fn cancel_outgoing_task(
     .map_err(|e| format!("cancel interrompu : {e}"))?
 }
 
+/// Supprime une tâche entrante de l'historique local. Refuse si la tâche est
+/// encore active (Queued/Running) — le frontend doit l'annuler d'abord.
+#[tauri::command]
+pub fn remove_incoming_task(
+    tasks: State<'_, IncomingTasks>,
+    task_id: String,
+) -> Result<(), String> {
+    tasks.inner().remove_finished(&task_id)
+}
+
+/// Supprime une tâche sortante de l'historique local (états terminaux uniquement).
+#[tauri::command]
+pub fn remove_outgoing_task(
+    outgoing: State<'_, crate::task_runner::OutgoingTasks>,
+    local_id: String,
+) -> Result<(), String> {
+    outgoing.inner().remove_finished(&local_id)
+}
+
 #[tauri::command]
 pub fn get_machine_info(discovery: State<'_, Discovery>) -> Result<MachineInfo, String> {
     let hostname = hostname::get()

@@ -275,4 +275,25 @@ impl OutgoingTasks {
         self.remote_refs.lock().unwrap().remove(id);
         self.notify();
     }
+
+    /// Remove a task from history. Refuses if the task is still active
+    /// (Queued/Running) — the UI must cancel it first.
+    pub fn remove_finished(&self, id: &str) -> Result<(), String> {
+        {
+            let mut map = self.tasks.lock().unwrap();
+            match map.get(id) {
+                None => return Err("Tâche introuvable.".into()),
+                Some(task) => match task.status {
+                    TaskStatus::Queued | TaskStatus::Running => {
+                        return Err("Tâche en cours : annulez-la avant de la supprimer.".into());
+                    }
+                    _ => {}
+                },
+            }
+            map.remove(id);
+        }
+        self.remote_refs.lock().unwrap().remove(id);
+        self.notify();
+        Ok(())
+    }
 }
