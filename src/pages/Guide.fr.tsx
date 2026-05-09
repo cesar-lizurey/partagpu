@@ -40,9 +40,10 @@ export function GuideFr() {
         <h3>2. Activer le partage sur cette machine</h3>
         <p>
           Onglet <strong>« Mon partage »</strong> → bouton <em>« Activer »</em>.
-          Une fenêtre PolicyKit demande le mot de passe administrateur. L'app
-          crée le compte système <code>partagpu</code>, configure son cgroup
-          v2 et ouvre le pare-feu sur les ports nécessaires.
+          Une fenêtre PolicyKit demande le mot de passe de la session courante
+          (pas un mot de passe admin distinct). L'app crée le compte système{" "}
+          <code>partagpu</code>, configure son cgroup v2 et ouvre le pare-feu
+          sur les ports nécessaires.
         </p>
         <p>
           Définissez ensuite le <strong>mot de passe du compte partagpu</strong>{" "}

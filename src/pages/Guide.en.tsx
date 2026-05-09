@@ -39,9 +39,10 @@ export function GuideEn() {
         <h3>2. Enable sharing on this machine</h3>
         <p>
           <strong>"My sharing"</strong> tab → <em>"Enable"</em> button. A
-          PolicyKit window asks for the admin password. The app creates the{" "}
-          <code>partagpu</code> system account, configures its cgroup v2,
-          and opens the firewall on the required ports.
+          PolicyKit window asks for the current session password (not a
+          separate admin password). The app creates the <code>partagpu</code>{" "}
+          system account, configures its cgroup v2, and opens the firewall
+          on the required ports.
         </p>
         <p>
           Then set the <strong>partagpu account password</strong> in the

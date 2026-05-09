@@ -10,13 +10,13 @@
   <action id="com.partagpu.manage">
     <description>Manage the PartaGPU compute sharing user and cgroups</description>
     <description xml:lang="fr">Gérer l'utilisateur de partage de calcul PartaGPU et les cgroups</description>
-    <message>PartaGPU a besoin des droits administrateur pour gérer le partage de ressources.</message>
-    <message xml:lang="fr">PartaGPU a besoin des droits administrateur pour gérer le partage de ressources.</message>
+    <message>Authentifiez-vous pour autoriser PartaGPU à gérer le partage de ressources.</message>
+    <message xml:lang="fr">Authentifiez-vous pour autoriser PartaGPU à gérer le partage de ressources.</message>
     <icon_name>system-users</icon_name>
     <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self_keep</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/partagpu/partagpu-helper</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>

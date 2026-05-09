@@ -138,9 +138,9 @@ const fr = {
   "venv.log_summary_many": "Log d'installation ({n} lignes)",
   "venv.log_waiting": "(en attente de la première ligne…)",
   "venv.confirm_install":
-    "Installer la toolkit ML dans le venv géré ?\n\nPackages : torch, torchvision, numpy, scipy, pandas,\nscikit-learn, matplotlib, pillow.\nTéléchargement de ~3 Go, prend 5 à 10 minutes selon votre\nconnexion. Le mot de passe administrateur sera demandé.",
+    "Installer la toolkit ML dans le venv géré ?\n\nPackages : torch, torchvision, numpy, scipy, pandas,\nscikit-learn, matplotlib, pillow.\nTéléchargement de ~3 Go, prend 5 à 10 minutes selon votre\nconnexion. Le mot de passe de la session sera demandé.",
   "venv.confirm_update":
-    "Vérifier les mises à jour de la toolkit ML ?\n\nLance pip install --upgrade sur torch, torchvision, numpy,\nscipy, pandas, scikit-learn, matplotlib, pillow.\nTéléchargement uniquement de ce qui a une nouvelle version.\nLe mot de passe administrateur sera demandé.",
+    "Vérifier les mises à jour de la toolkit ML ?\n\nLance pip install --upgrade sur torch, torchvision, numpy,\nscipy, pandas, scikit-learn, matplotlib, pillow.\nTéléchargement uniquement de ce qui a une nouvelle version.\nLe mot de passe de la session sera demandé.",
   "venv.confirm_remove":
     "Supprimer le venv géré ?\n\nLes tâches reçues qui utilisaient torch/numpy via ce venv échoueront jusqu'à réinstallation.",
 
@@ -452,7 +452,7 @@ const en: Record<keyof typeof fr, string> = {
   "sharing.tip_disable_paused":
     "Fully clean up PartaGPU: delete the partagpu account, remove the managed venv, close the firewall.",
   "sharing.confirm_disable":
-    "Disabling sharing will FULLY CLEAN UP PartaGPU on this machine:\n\n  • The 'partagpu' system account is deleted\n  • Running tasks on this host are killed\n  • The managed venv (torch + numpy, ~2 GB) is removed\n  • The cgroup and SSH/sudo rules are cleaned up\n  • The PartaGPU firewall is closed\n\nTo use PartaGPU again afterwards, everything will need to be re-created\n(admin password + re-install the venv ~5 min).\n\nFor a temporary pause, use \"Pause\" instead.\n\nConfirm full deactivation?",
+    "Disabling sharing will FULLY CLEAN UP PartaGPU on this machine:\n\n  • The 'partagpu' system account is deleted\n  • Running tasks on this host are killed\n  • The managed venv (torch + numpy, ~2 GB) is removed\n  • The cgroup and SSH/sudo rules are cleaned up\n  • The PartaGPU firewall is closed\n\nTo use PartaGPU again afterwards, everything will need to be re-created\n(session password + re-install the venv ~5 min).\n\nFor a temporary pause, use \"Pause\" instead.\n\nConfirm full deactivation?",
 
   // ── ManagedVenvPanel ───────────────────────────────────────
   "venv.intro":
@@ -476,9 +476,9 @@ const en: Record<keyof typeof fr, string> = {
   "venv.log_summary_many": "Install log ({n} lines)",
   "venv.log_waiting": "(waiting for the first line…)",
   "venv.confirm_install":
-    "Install the ML toolkit in the managed venv?\n\nPackages: torch, torchvision, numpy, scipy, pandas,\nscikit-learn, matplotlib, pillow.\nDownloads ~3 GB, takes 5 to 10 minutes depending on your\nconnection. The admin password will be requested.",
+    "Install the ML toolkit in the managed venv?\n\nPackages: torch, torchvision, numpy, scipy, pandas,\nscikit-learn, matplotlib, pillow.\nDownloads ~3 GB, takes 5 to 10 minutes depending on your\nconnection. The session password will be requested.",
   "venv.confirm_update":
-    "Check for ML toolkit updates?\n\nRuns pip install --upgrade on torch, torchvision, numpy,\nscipy, pandas, scikit-learn, matplotlib, pillow.\nOnly downloads packages with a new version.\nThe admin password will be requested.",
+    "Check for ML toolkit updates?\n\nRuns pip install --upgrade on torch, torchvision, numpy,\nscipy, pandas, scikit-learn, matplotlib, pillow.\nOnly downloads packages with a new version.\nThe session password will be requested.",
   "venv.confirm_remove":
     "Remove the managed venv?\n\nIncoming tasks that used torch/numpy via this venv will fail until reinstall.",
 
