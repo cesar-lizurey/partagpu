@@ -2899,7 +2899,7 @@ dependencies = [
 
 [[package]]
 name = "partagpu"
-version = "1.11.1"
+version = "1.11.2"
 dependencies = [
  "aes-gcm",
  "data-encoding",

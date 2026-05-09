@@ -712,11 +712,28 @@ fn run_remote_blocking(
             }
         };
 
-        let body = match r.into_string() {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("dispatch poll body: {e}");
-                continue;
+        // ureq's `into_string()` plafonne a 10 MB par defaut. Quand la tache
+        // remonte de gros artefacts (ex : un model.pt de ~30 MB binaire ->
+        // ~57 MB une fois chiffre + base64 + enveloppe JSON), on depassait
+        // la limite, le poll retournait Err -> continue, et la cellule
+        // restait bloquee dans la boucle pour toujours alors que la tache
+        // distante etait terminee. On bypass via into_reader().take().
+        const MAX_POLL_BODY: u64 = 1024 * 1024 * 1024; // 1 GiB
+        let body = {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            match r.into_reader().take(MAX_POLL_BODY).read_to_end(&mut buf) {
+                Ok(_) => match String::from_utf8(buf) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("dispatch poll body utf8: {e}");
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("dispatch poll body read: {e}");
+                    continue;
+                }
             }
         };
         // GET has no body, so the server response is encrypted with the
