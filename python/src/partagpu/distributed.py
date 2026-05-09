@@ -135,6 +135,7 @@ def distribute(
     api_base: str = API_BASE,
     live: bool = False,
     outputs: Sequence[str] = (),
+    local: bool = True,
 ) -> list[TaskResult]:
     """Run ``script`` as a DDP training across ``gpus``.
 
@@ -162,6 +163,12 @@ def distribute(
             saves a checkpoint, so other ranks return an empty
             :attr:`TaskResult.artifacts`. Total payload per rank capped at
             256 MiB.
+        local: If False, exclude the local machine from auto-discovery (only
+            applies when ``gpus`` is None). Useful when sharing is disabled
+            on the local machine but you still want to dispatch to remote
+            peers — without this filter, rank 0 would land on the local
+            peer-API and fail with HTTP 403. Ignored when ``gpus`` is
+            explicitly provided (you control the list yourself).
 
     Returns:
         A list of :class:`partagpu.TaskResult`, one per rank, in rank order.
@@ -188,6 +195,12 @@ def distribute(
 
     if gpus is None:
         gpus = discover(api_base=api_base)
+        if not local:
+            # On filtre le pair local quand sharing est off sur la machine
+            # qui dispatch : sinon rank 0 atterrit sur le peer-API local et
+            # se mange un 403, et tous les autres rangs timeout sur le
+            # rendezvous TCPStore qui n'a jamais ouvert.
+            gpus = [g for g in gpus if g.host != "local"]
     if not gpus:
         raise RuntimeError(
             "Aucun GPU disponible. Verifiez que PartaGPU tourne, que vous etes "
