@@ -1,12 +1,16 @@
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const SERVICE_TYPE: &str = "_partagpu._tcp.local.";
 const SERVICE_PORT: u16 = 7654;
+/// Port of the peer-API (HTTP) on every PartaGPU host. Distinct from the
+/// mDNS-announced `SERVICE_PORT` (7654 = local API). Probes hit this port.
+const PEER_API_PORT: u16 = 7655;
 
 /// Maximum number of peers we track. Beyond this, new peers are ignored.
 const MAX_PEERS: usize = 50;
@@ -14,6 +18,20 @@ const MAX_PEERS: usize = 50;
 /// Minimum interval between updates from the same peer (in seconds).
 /// Updates arriving faster than this are silently dropped.
 const RATE_LIMIT_SECS: u64 = 2;
+
+/// How often we re-verify each peer via the active `/peer/v1/verify` probe.
+/// Catches the case where a peer leaves the room or rotates its passphrase
+/// without going through a full mDNS re-announce. Cheap : one HTTP
+/// round-trip every minute per known peer.
+const REVERIFY_INTERVAL_SECS: u64 = 60;
+
+/// Timeout for one verify probe HTTP call. Short enough not to stall the
+/// discovery thread on a dead peer, long enough for cross-LAN latency.
+const PROBE_TIMEOUT_SECS: u64 = 3;
+
+/// Length in bytes of the random nonce sent in `/peer/v1/verify?nonce=…`.
+/// 16 bytes = 128 bits = no birthday-collision concern at our volume.
+const NONCE_BYTES: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peer {
@@ -26,13 +44,24 @@ pub struct Peer {
     pub cpu_limit: f32,
     pub ram_limit: f32,
     pub gpu_limit: f32,
-    /// TOTP code announced by this peer (for verification).
-    pub totp_code: String,
-    /// Whether this peer's TOTP code has been verified.
+    /// Number of CUDA devices visible on this peer (announced via mDNS).
+    /// 0 if no GPU or no driver.
+    #[serde(default)]
+    pub gpu_count: u32,
+    /// Whether this peer answered the active `/peer/v1/verify` HMAC
+    /// challenge with a valid response. False until the first successful
+    /// probe ; flips back to false if a re-verification fails (peer left
+    /// the room, etc.). No HMAC tag is broadcast statically — a passive
+    /// LAN listener cannot collect tags to brute-force the passphrase.
     pub verified: bool,
     /// True if another peer already claimed this hostname (possible spoof).
     #[serde(default)]
     pub hostname_conflict: bool,
+    /// Peer's ephemeral X25519 public key (base64), regenerated on app restart.
+    /// Used to derive a forward-secret session key per request via ECDH.
+    /// Empty when the peer is on an older version (no FS support).
+    #[serde(default)]
+    pub eph_pk: String,
 }
 
 /// Internal tracking data per peer (not serialized to frontend).
@@ -40,6 +69,7 @@ struct PeerMeta {
     last_update: Instant,
 }
 
+#[derive(Clone)]
 pub struct Discovery {
     daemon: ServiceDaemon,
     peers: Arc<Mutex<HashMap<String, Peer>>>,
@@ -48,7 +78,39 @@ pub struct Discovery {
     hostname: String,
     display_name: Arc<Mutex<String>>,
     auth: Option<crate::auth::AuthManager>,
+    sharing: Option<crate::sharing::SharingController>,
     sec_log: Option<crate::security_log::SecurityLog>,
+    /// Local ephemeral X25519 public key (base64). Announced over mDNS so
+    /// peers can use ECDH for forward secrecy. Empty until set_ephemeral_key.
+    eph_pk_b64: Arc<Mutex<String>>,
+    /// Cached last announced state to avoid re-registering when unchanged.
+    last_announced: Arc<Mutex<String>>,
+}
+
+fn display_name_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join("partagpu").join("display-name")
+}
+
+fn load_display_name() -> Option<String> {
+    let content = std::fs::read_to_string(display_name_path()).ok()?;
+    let trimmed = content.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn save_display_name(name: &str) {
+    let path = display_name_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, name);
 }
 
 impl Discovery {
@@ -56,6 +118,7 @@ impl Discovery {
         let daemon =
             ServiceDaemon::new().map_err(|e| format!("Failed to create mDNS daemon: {e}"))?;
         let instance_name = format!("partagpu-{machine_id}");
+        let initial_display_name = load_display_name().unwrap_or_else(|| hostname.to_string());
 
         Ok(Self {
             daemon,
@@ -63,15 +126,32 @@ impl Discovery {
             peer_meta: Arc::new(Mutex::new(HashMap::new())),
             instance_name,
             hostname: hostname.to_string(),
-            display_name: Arc::new(Mutex::new(hostname.to_string())),
+            display_name: Arc::new(Mutex::new(initial_display_name)),
             auth: None,
+            sharing: None,
             sec_log: None,
+            eph_pk_b64: Arc::new(Mutex::new(String::new())),
+            last_announced: Arc::new(Mutex::new(String::new())),
         })
     }
 
-    /// Attach an AuthManager so peers can be verified via TOTP.
+    /// Plug in this app's ephemeral X25519 public key (base64) so it gets
+    /// announced over mDNS. Called once at startup from `lib.rs::run`.
+    pub fn set_ephemeral_pubkey(&self, pk_b64: String) {
+        *self.eph_pk_b64.lock().unwrap() = pk_b64;
+        // Force re-announce so the new property propagates.
+        *self.last_announced.lock().unwrap() = String::new();
+    }
+
+    /// Attach an AuthManager so peers can be actively verified via the
+    /// `/peer/v1/verify` HMAC challenge.
     pub fn set_auth(&mut self, auth: crate::auth::AuthManager) {
         self.auth = Some(auth);
+    }
+
+    /// Attach a SharingController so the mDNS service reflects the real sharing state.
+    pub fn set_sharing(&mut self, sharing: crate::sharing::SharingController) {
+        self.sharing = Some(sharing);
     }
 
     /// Attach a SecurityLog for event logging.
@@ -85,7 +165,46 @@ impl Discovery {
 
     pub fn set_display_name(&self, name: &str) {
         *self.display_name.lock().unwrap() = name.to_string();
+        save_display_name(name);
         let _ = self.register();
+    }
+
+    /// Build the current sharing properties from the SharingController.
+    fn sharing_properties(&self) -> (String, String, String, String) {
+        match &self.sharing {
+            Some(sc) => {
+                let cfg = sc.get_config();
+                let active = cfg.status == crate::sharing::SharingStatus::Active;
+                (
+                    if active { "true" } else { "false" }.to_string(),
+                    cfg.cpu_limit_percent.to_string(),
+                    cfg.ram_limit_mb.to_string(),
+                    cfg.gpu_limit_percent.to_string(),
+                )
+            }
+            None => (
+                "false".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+            ),
+        }
+    }
+
+    /// Number of GPUs visible on this host (queried fresh; ~50 ms when GPU present).
+    fn local_gpu_count(&self) -> u32 {
+        crate::resource::list_gpus().len() as u32
+    }
+
+    /// Force an immediate mDNS re-announcement (unregister + register).
+    /// Used after the auth state changes (join/create/leave room) so peers
+    /// pick up the new auth proof without waiting for the periodic refresh.
+    pub fn force_refresh_announcement(&self) {
+        let fullname = format!("{}.{}", self.instance_name, SERVICE_TYPE);
+        let _ = self.daemon.unregister(&fullname);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let _ = self.register();
+        *self.last_announced.lock().unwrap() = String::new();
     }
 
     pub fn register(&self) -> Result<(), String> {
@@ -93,27 +212,29 @@ impl Discovery {
             local_ip_address::local_ip().map_err(|e| format!("Failed to get local IP: {e}"))?;
 
         let display_name = self.display_name.lock().unwrap().clone();
-        let totp_code = self
-            .auth
-            .as_ref()
-            .and_then(|a| a.current_code())
-            .unwrap_or_default();
+        let (sharing, cpu_limit, ram_limit, gpu_limit) = self.sharing_properties();
+        let gpu_count = self.local_gpu_count().to_string();
+        let eph_pk = self.eph_pk_b64.lock().unwrap().clone();
 
+        // No auth tag in the TXT : peer verification happens via an active
+        // HTTP challenge on `/peer/v1/verify` (the HMAC is bound to a
+        // fresh nonce per probe, nothing is broadcast statically).
         let properties = [
             ("hostname", self.hostname.as_str()),
             ("display_name", &display_name),
-            ("sharing", "false"),
-            ("cpu_limit", "0"),
-            ("ram_limit", "0"),
-            ("gpu_limit", "0"),
-            ("totp", &totp_code),
+            ("sharing", &sharing),
+            ("cpu_limit", &cpu_limit),
+            ("ram_limit", &ram_limit),
+            ("gpu_limit", &gpu_limit),
+            ("gpu_count", &gpu_count),
+            ("eph_pk", &eph_pk),
         ];
 
         let ip_str = local_ip.to_string();
         let service = ServiceInfo::new(
             SERVICE_TYPE,
             &self.instance_name,
-            &format!("{}.local.", self.hostname),
+            &format!("{}.local.", self.instance_name),
             &ip_str,
             SERVICE_PORT,
             &properties[..],
@@ -125,6 +246,81 @@ impl Discovery {
             .map_err(|e| format!("Failed to register service: {e}"))?;
 
         Ok(())
+    }
+
+    /// Periodically re-register the mDNS service to refresh sharing limits
+    /// and ephemeral pubkey. Cadence is generous (every 5 s) but the
+    /// `last_announced` cache means we only actually re-register on a
+    /// state change.
+    pub fn start_mdns_refresh(&self) {
+        let daemon = self.daemon.clone();
+        let sharing = self.sharing.clone();
+        let instance_name = self.instance_name.clone();
+        let hostname = self.hostname.clone();
+        let display_name = self.display_name.clone();
+        let eph_pk_b64 = self.eph_pk_b64.clone();
+        let last_announced = self.last_announced.clone();
+
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+
+                let (sharing_str, cpu, ram, gpu) = match &sharing {
+                    Some(sc) => {
+                        let cfg = sc.get_config();
+                        let active = cfg.status == crate::sharing::SharingStatus::Active;
+                        (
+                            if active { "true" } else { "false" }.to_string(),
+                            cfg.cpu_limit_percent.to_string(),
+                            cfg.ram_limit_mb.to_string(),
+                            cfg.gpu_limit_percent.to_string(),
+                        )
+                    }
+                    None => ("false".into(), "0".into(), "0".into(), "0".into()),
+                };
+
+                let gpu_count = crate::resource::list_gpus().len().to_string();
+                let eph_pk = eph_pk_b64.lock().unwrap().clone();
+
+                // Only re-register if something changed.
+                let state_key = format!("{sharing_str}|{cpu}|{ram}|{gpu}|{gpu_count}|{eph_pk}");
+                {
+                    let mut last = last_announced.lock().unwrap();
+                    if *last == state_key {
+                        continue;
+                    }
+                    *last = state_key;
+                }
+
+                let ip = match local_ip_address::local_ip() {
+                    Ok(ip) => ip.to_string(),
+                    Err(_) => continue,
+                };
+
+                let dn = display_name.lock().unwrap().clone();
+                let properties = [
+                    ("hostname", hostname.as_str()),
+                    ("display_name", dn.as_str()),
+                    ("sharing", &sharing_str),
+                    ("cpu_limit", &cpu),
+                    ("ram_limit", &ram),
+                    ("gpu_limit", &gpu),
+                    ("gpu_count", &gpu_count),
+                    ("eph_pk", eph_pk.as_str()),
+                ];
+
+                if let Ok(service) = ServiceInfo::new(
+                    SERVICE_TYPE,
+                    &instance_name,
+                    &format!("{}.local.", instance_name),
+                    &ip,
+                    SERVICE_PORT,
+                    &properties[..],
+                ) {
+                    let _ = daemon.register(service);
+                }
+            }
+        });
     }
 
     pub fn start_browsing(&self) -> Result<(), String> {
@@ -140,166 +336,187 @@ impl Discovery {
         let sec_log = self.sec_log.clone();
 
         std::thread::spawn(move || {
-            loop {
-                match receiver.recv() {
-                    Ok(event) => match event {
-                        ServiceEvent::ServiceResolved(info) => {
-                            let name = info.get_fullname().to_string();
-                            if name.contains(&my_name) {
-                                continue;
-                            }
+            while let Ok(event) = receiver.recv() {
+                match event {
+                    ServiceEvent::ServiceResolved(info) => {
+                        let name = info.get_fullname().to_string();
+                        if name.contains(&my_name) {
+                            continue;
+                        }
 
-                            // ── Rate limiting ──────────────────────
-                            {
-                                let mut meta = peer_meta.lock().unwrap();
-                                if let Some(m) = meta.get(&name) {
-                                    if m.last_update.elapsed().as_secs() < RATE_LIMIT_SECS {
-                                        continue; // too fast, drop
-                                    }
+                        // ── Rate limiting ──────────────────────
+                        {
+                            let mut meta = peer_meta.lock().unwrap();
+                            if let Some(m) = meta.get(&name) {
+                                if m.last_update.elapsed().as_secs() < RATE_LIMIT_SECS {
+                                    continue; // too fast, drop
                                 }
-                                meta.insert(
-                                    name.clone(),
-                                    PeerMeta {
-                                        last_update: Instant::now(),
-                                    },
-                                );
                             }
+                            meta.insert(
+                                name.clone(),
+                                PeerMeta {
+                                    last_update: Instant::now(),
+                                },
+                            );
+                        }
 
-                            // ── Max peers limit ────────────────────
-                            {
-                                let map = peers.lock().unwrap();
-                                if map.len() >= MAX_PEERS && !map.contains_key(&name) {
-                                    eprintln!(
+                        // ── Max peers limit ────────────────────
+                        {
+                            let map = peers.lock().unwrap();
+                            if map.len() >= MAX_PEERS && !map.contains_key(&name) {
+                                eprintln!(
                                         "SECURITY: max peers ({MAX_PEERS}) reached, ignoring new peer: {name}"
                                     );
-                                    continue;
-                                }
+                                continue;
                             }
+                        }
 
-                            let ip = info
-                                .get_addresses()
-                                .iter()
-                                .find(|a| matches!(a, IpAddr::V4(_)))
-                                .map(|a| a.to_string())
-                                .unwrap_or_default();
+                        let ip = info
+                            .get_addresses()
+                            .iter()
+                            .find(|a| matches!(a, IpAddr::V4(_)))
+                            .map(|a| a.to_string())
+                            .unwrap_or_default();
 
-                            let props = info.get_properties();
-                            let hostname = props
-                                .get_property_val_str("hostname")
-                                .unwrap_or("unknown")
-                                .to_string();
-                            let display_name = props
-                                .get_property_val_str("display_name")
-                                .unwrap_or("")
-                                .to_string();
-                            let sharing = props
-                                .get_property_val_str("sharing")
-                                .unwrap_or("false")
-                                == "true";
-                            let cpu_limit: f32 = props
-                                .get_property_val_str("cpu_limit")
-                                .unwrap_or("0")
-                                .parse()
-                                .unwrap_or(0.0);
-                            let ram_limit: f32 = props
-                                .get_property_val_str("ram_limit")
-                                .unwrap_or("0")
-                                .parse()
-                                .unwrap_or(0.0);
-                            let gpu_limit: f32 = props
-                                .get_property_val_str("gpu_limit")
-                                .unwrap_or("0")
-                                .parse()
-                                .unwrap_or(0.0);
-                            let totp_code = props
-                                .get_property_val_str("totp")
-                                .unwrap_or("")
-                                .to_string();
+                        let props = info.get_properties();
+                        let hostname = props
+                            .get_property_val_str("hostname")
+                            .unwrap_or("unknown")
+                            .to_string();
+                        let display_name = props
+                            .get_property_val_str("display_name")
+                            .unwrap_or("")
+                            .to_string();
+                        let sharing =
+                            props.get_property_val_str("sharing").unwrap_or("false") == "true";
+                        let cpu_limit: f32 = props
+                            .get_property_val_str("cpu_limit")
+                            .unwrap_or("0")
+                            .parse()
+                            .unwrap_or(0.0);
+                        let ram_limit: f32 = props
+                            .get_property_val_str("ram_limit")
+                            .unwrap_or("0")
+                            .parse()
+                            .unwrap_or(0.0);
+                        let gpu_limit: f32 = props
+                            .get_property_val_str("gpu_limit")
+                            .unwrap_or("0")
+                            .parse()
+                            .unwrap_or(0.0);
+                        let gpu_count: u32 = props
+                            .get_property_val_str("gpu_count")
+                            .unwrap_or("0")
+                            .parse()
+                            .unwrap_or(0);
+                        let eph_pk = props
+                            .get_property_val_str("eph_pk")
+                            .unwrap_or("")
+                            .to_string();
 
-                            let verified = match &auth {
-                                Some(a) if !totp_code.is_empty() => a.verify_code(&totp_code),
-                                Some(_) => false,
-                                None => true,
-                            };
+                        // verified starts false ; flipped by the active
+                        // probe spawned below once `/peer/v1/verify` returns
+                        // a valid HMAC. When there's no AuthManager (test
+                        // setup), default to true so dev fixtures work.
+                        let verified = auth.is_none();
 
-                            // ── Hostname conflict detection ────────
-                            let hostname_conflict = {
-                                let map = peers.lock().unwrap();
-                                map.values().any(|p| {
-                                    p.hostname == hostname && p.id != name && p.ip != ip
-                                })
-                            };
+                        // ── Hostname conflict detection ────────
+                        let hostname_conflict = {
+                            let map = peers.lock().unwrap();
+                            map.values()
+                                .any(|p| p.hostname == hostname && p.id != name && p.ip != ip)
+                        };
 
-                            if hostname_conflict {
-                                if let Some(ref log) = sec_log {
-                                    log.peer_event(
+                        if hostname_conflict {
+                            if let Some(ref log) = sec_log {
+                                log.peer_event(
                                         crate::security_log::EventCategory::HostnameConflict,
                                         &format!("Conflit : « {hostname} » annoncé par {ip} mais déjà connu depuis une autre IP"),
                                         &ip, &hostname,
                                     );
-                                }
                             }
+                        }
 
-                            let peer = Peer {
-                                id: name.clone(),
-                                display_name,
-                                hostname,
-                                ip,
-                                port: info.get_port(),
-                                sharing_enabled: sharing,
-                                cpu_limit,
-                                ram_limit,
-                                gpu_limit,
-                                totp_code,
-                                verified,
-                                hostname_conflict,
-                            };
+                        let peer = Peer {
+                            id: name.clone(),
+                            display_name,
+                            hostname,
+                            ip: ip.clone(),
+                            port: info.get_port(),
+                            sharing_enabled: sharing,
+                            cpu_limit,
+                            ram_limit,
+                            gpu_limit,
+                            gpu_count,
+                            verified,
+                            hostname_conflict,
+                            eph_pk,
+                        };
 
-                            if let Ok(mut map) = peers.lock() {
-                                let is_new = !map.contains_key(&name);
-                                map.insert(name, peer.clone());
+                        let is_new;
+                        if let Ok(mut map) = peers.lock() {
+                            is_new = !map.contains_key(&peer.id);
+                            map.insert(peer.id.clone(), peer.clone());
+                        } else {
+                            is_new = false;
+                        }
 
-                                if let Some(ref log) = sec_log {
-                                    if is_new {
-                                        let cat = if peer.verified {
-                                            crate::security_log::EventCategory::PeerVerified
+                        // Active verify probe — flips peer.verified to
+                        // true if the peer answers /peer/v1/verify with a
+                        // valid HMAC. Spawned in its own thread so the
+                        // discovery loop is never blocked on a slow peer.
+                        if is_new && auth.is_some() && !peer.ip.is_empty() {
+                            spawn_verify_probe(
+                                peer.id.clone(),
+                                peer.ip.clone(),
+                                peer.hostname.clone(),
+                                peers.clone(),
+                                auth.clone().unwrap(),
+                                sec_log.clone(),
+                            );
+                        } else if is_new {
+                            // No-auth fixture path : log directly.
+                            if let Some(ref log) = sec_log {
+                                let cat = if peer.verified {
+                                    crate::security_log::EventCategory::PeerVerified
+                                } else {
+                                    crate::security_log::EventCategory::PeerRejected
+                                };
+                                log.peer_event(
+                                    cat,
+                                    &format!(
+                                        "Pair {} ({})",
+                                        peer.hostname,
+                                        if peer.verified {
+                                            "vérifié"
                                         } else {
-                                            crate::security_log::EventCategory::PeerRejected
-                                        };
-                                        log.peer_event(
-                                            cat,
-                                            &format!(
-                                                "Pair {} ({})",
-                                                peer.hostname,
-                                                if peer.verified { "vérifié" } else { "non vérifié" },
-                                            ),
-                                            &peer.ip,
-                                            &peer.hostname,
-                                        );
-                                    }
+                                            "non vérifié"
+                                        },
+                                    ),
+                                    &peer.ip,
+                                    &peer.hostname,
+                                );
+                            }
+                        }
+                    }
+                    ServiceEvent::ServiceRemoved(_, name) => {
+                        if let Ok(mut map) = peers.lock() {
+                            if let Some(removed) = map.remove(&name) {
+                                if let Some(ref log) = sec_log {
+                                    log.peer_event(
+                                        crate::security_log::EventCategory::PeerDisconnected,
+                                        &format!("Pair déconnecté : {}", removed.hostname),
+                                        &removed.ip,
+                                        &removed.hostname,
+                                    );
                                 }
                             }
                         }
-                        ServiceEvent::ServiceRemoved(_, name) => {
-                            if let Ok(mut map) = peers.lock() {
-                                if let Some(removed) = map.remove(&name) {
-                                    if let Some(ref log) = sec_log {
-                                        log.peer_event(
-                                            crate::security_log::EventCategory::PeerDisconnected,
-                                            &format!("Pair déconnecté : {}", removed.hostname),
-                                            &removed.ip,
-                                            &removed.hostname,
-                                        );
-                                    }
-                                }
-                            }
-                            if let Ok(mut meta) = peer_meta.lock() {
-                                meta.remove(&name);
-                            }
+                        if let Ok(mut meta) = peer_meta.lock() {
+                            meta.remove(&name);
                         }
-                        _ => {}
-                    },
-                    Err(_) => break,
+                    }
+                    _ => {}
                 }
             }
         });
@@ -331,4 +548,136 @@ impl Discovery {
     pub fn shutdown(&self) {
         let _ = self.daemon.shutdown();
     }
+
+    /// Spawn a background loop that re-verifies every known peer via
+    /// `/peer/v1/verify` every `REVERIFY_INTERVAL_SECS`. Catches the case
+    /// where a peer leaves the room or rotates passphrase mid-session.
+    pub fn start_reverify_loop(&self) {
+        let auth = match &self.auth {
+            Some(a) => a.clone(),
+            None => return, // no room context => nothing to verify
+        };
+        let peers = self.peers.clone();
+        let sec_log = self.sec_log.clone();
+
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(REVERIFY_INTERVAL_SECS));
+
+            // Snapshot the (id, ip, hostname) tuples while we hold the
+            // lock briefly, then drop it before issuing HTTP requests.
+            let snapshot: Vec<(String, String, String)> = match peers.lock() {
+                Ok(m) => m
+                    .values()
+                    .filter(|p| !p.ip.is_empty())
+                    .map(|p| (p.id.clone(), p.ip.clone(), p.hostname.clone()))
+                    .collect(),
+                Err(_) => continue,
+            };
+
+            for (id, ip, hostname) in snapshot {
+                let now_ok = probe_verify(&ip, &auth);
+                let prev_ok = match peers.lock() {
+                    Ok(m) => m.get(&id).map(|p| p.verified).unwrap_or(false),
+                    Err(_) => continue,
+                };
+                if let Ok(mut m) = peers.lock() {
+                    if let Some(p) = m.get_mut(&id) {
+                        p.verified = now_ok;
+                    }
+                }
+                if now_ok != prev_ok {
+                    if let Some(ref log) = sec_log {
+                        let cat = if now_ok {
+                            crate::security_log::EventCategory::PeerVerified
+                        } else {
+                            crate::security_log::EventCategory::PeerRejected
+                        };
+                        log.peer_event(
+                            cat,
+                            &format!(
+                                "Re-vérification : pair {hostname} {}",
+                                if now_ok { "vérifié" } else { "non vérifié" }
+                            ),
+                            &ip,
+                            &hostname,
+                        );
+                    }
+                }
+            }
+        });
+    }
+}
+
+// ── Verify probe helpers ──────────────────────────────────────────────────
+
+/// Produce a fresh hex-encoded random nonce for a verify probe.
+fn random_nonce_hex() -> (Vec<u8>, String) {
+    let mut bytes = vec![0u8; NONCE_BYTES];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let hex = data_encoding::HEXLOWER.encode(&bytes);
+    (bytes, hex)
+}
+
+#[derive(Deserialize)]
+struct VerifyResponseBody {
+    hmac: String,
+}
+
+/// Issue a single `/peer/v1/verify` probe and return whether the peer's
+/// HMAC matches what we'd compute with our `auth_key`. A None / disjoint
+/// room => returns false, we don't trust them.
+fn probe_verify(peer_ip: &str, auth: &crate::auth::AuthManager) -> bool {
+    let (nonce_bytes, nonce_hex) = random_nonce_hex();
+    let url = format!("http://{peer_ip}:{PEER_API_PORT}/peer/v1/verify?nonce={nonce_hex}");
+    let resp = ureq::get(&url)
+        .timeout(Duration::from_secs(PROBE_TIMEOUT_SECS))
+        .call();
+    let body = match resp {
+        Ok(r) if r.status() == 200 => r.into_string().unwrap_or_default(),
+        _ => return false,
+    };
+    let parsed: VerifyResponseBody = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    auth.verify_response(&nonce_bytes, &parsed.hmac)
+}
+
+fn spawn_verify_probe(
+    id: String,
+    ip: String,
+    hostname: String,
+    peers: Arc<Mutex<HashMap<String, Peer>>>,
+    auth: crate::auth::AuthManager,
+    sec_log: Option<crate::security_log::SecurityLog>,
+) {
+    std::thread::spawn(move || {
+        let ok = probe_verify(&ip, &auth);
+        if let Ok(mut m) = peers.lock() {
+            if let Some(p) = m.get_mut(&id) {
+                p.verified = ok;
+            }
+        }
+        if let Some(log) = sec_log {
+            let cat = if ok {
+                crate::security_log::EventCategory::PeerVerified
+            } else {
+                crate::security_log::EventCategory::PeerRejected
+            };
+            log.peer_event(
+                cat,
+                &format!(
+                    "Pair {} ({})",
+                    hostname,
+                    if ok {
+                        "vérifié via /verify"
+                    } else {
+                        "verify échoué"
+                    }
+                ),
+                &ip,
+                &hostname,
+            );
+        }
+    });
 }

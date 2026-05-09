@@ -25,12 +25,22 @@ pub struct UserManager;
 
 impl UserManager {
     fn helper_path() -> String {
-        // 1. Installed system-wide (production)
+        // 1. Installed system-wide (production .deb)
         if std::path::Path::new(HELPER_INSTALLED).exists() {
             return HELPER_INSTALLED.to_string();
         }
 
-        // 2. Dev mode: built by cargo in the workspace target directory
+        // 2. Bundled next to the executable (AppImage)
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let candidate = dir.join("resources").join("partagpu-helper");
+                if candidate.exists() {
+                    return candidate.to_string_lossy().to_string();
+                }
+            }
+        }
+
+        // 3. Dev mode: built by cargo in the workspace target directory
         let target_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target");
         for profile in ["debug", "release"] {
             let candidate = format!("{target_dir}/{profile}/partagpu-helper");
@@ -75,7 +85,8 @@ impl UserManager {
             }
         }
 
-        let output = child.wait_with_output()
+        let output = child
+            .wait_with_output()
             .map_err(|e| format!("Erreur d'attente du helper : {e}"))?;
 
         if output.status.success() {
@@ -113,7 +124,7 @@ impl UserManager {
             .and_then(|o| {
                 if o.status.success() {
                     let line = String::from_utf8_lossy(&o.stdout).to_string();
-                    line.trim().split(':').last().map(|s| s.to_string())
+                    line.trim().split(':').next_back().map(|s| s.to_string())
                 } else {
                     None
                 }
@@ -167,13 +178,16 @@ impl UserManager {
 
     fn cgroup_is_writable() -> bool {
         let cpu_max = format!("{CGROUP_PATH}/cpu.max");
-        fs::OpenOptions::new()
-            .write(true)
-            .open(&cpu_max)
-            .is_ok()
+        fs::OpenOptions::new().write(true).open(&cpu_max).is_ok()
+    }
+
+    /// Check if the cgroup directory exists.
+    fn cgroup_exists() -> bool {
+        std::path::Path::new(CGROUP_PATH).exists()
     }
 
     /// Adjust cgroup limits. Direct write if possible, pkexec fallback.
+    /// If the cgroup doesn't exist and pkexec fails, returns Ok (best effort).
     pub fn setup_cgroup(
         cpu_percent: u32,
         ram_limit_mb: u64,
@@ -188,13 +202,17 @@ impl UserManager {
             return Ok(());
         }
 
-        Self::run_helper(&[
-            "setup-cgroup",
-            &cpu.to_string(),
-            &ram.to_string(),
-        ])?;
-
-        Ok(())
+        // If cgroup exists but isn't writable, or doesn't exist at all,
+        // try pkexec. If that fails (e.g. no admin rights), log and continue.
+        match Self::run_helper(&["setup-cgroup", &cpu.to_string(), &ram.to_string()]) {
+            Ok(_) => Ok(()),
+            Err(e) if Self::cgroup_exists() => {
+                // Cgroup exists from a previous setup, just can't adjust limits — acceptable
+                eprintln!("Warning: could not adjust cgroup limits: {e}");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn write_cgroup_limits(cpu_percent: u32, ram_limit_mb: u64) -> Result<(), String> {
@@ -202,7 +220,15 @@ impl UserManager {
         let mem_max_path = format!("{CGROUP_PATH}/memory.max");
 
         if cpu_percent > 0 && cpu_percent <= 100 {
-            let quota = (cpu_percent as u64) * 1000;
+            // cgroup v2 cpu.max accounts CPU time across all cores : a quota
+            // of 100000us per 100000us period caps the cgroup at one full
+            // core (≈ 6.25% of a 16-core host). The user-facing slider means
+            // "% of the whole machine", so we scale the quota by the core
+            // count : 50% on a 16-core box ⇒ 800000us per 100000us = 8 cores.
+            let cores = std::thread::available_parallelism()
+                .map(|n| n.get() as u64)
+                .unwrap_or(1);
+            let quota = (cpu_percent as u64) * 1000 * cores;
             let val = format!("{quota} 100000");
             fs::write(&cpu_max_path, &val)
                 .map_err(|e| format!("Impossible d'écrire dans {cpu_max_path} : {e}"))?;
@@ -223,6 +249,23 @@ impl UserManager {
         CGROUP_PATH
     }
 
+    /// Start the CUDA MPS daemon so the sandbox can enforce per-task GPU
+    /// SM caps via `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE`. Best-effort : if
+    /// MPS isn't installed (no `nvidia-cuda-mps-control` binary) or the
+    /// daemon fails to start, the helper logs a warning and exits 0 ; the
+    /// GPU limit then falls back to advisory-only and everything else
+    /// (cgroup, sandbox, dispatch) keeps working.
+    pub fn setup_mps() -> Result<(), String> {
+        Self::run_helper(&["setup-mps"])?;
+        Ok(())
+    }
+
+    /// Stop the CUDA MPS daemon. Best-effort + idempotent.
+    pub fn teardown_mps() -> Result<(), String> {
+        Self::run_helper(&["teardown-mps"])?;
+        Ok(())
+    }
+
     /// Open the firewall for PartaGPU (TCP 7654 + mDNS).
     pub fn open_port() -> Result<(), String> {
         Self::run_helper(&["open-port"])?;
@@ -233,5 +276,104 @@ impl UserManager {
     pub fn close_port() -> Result<(), String> {
         Self::run_helper(&["close-port"])?;
         Ok(())
+    }
+
+    /// Path of the managed venv on disk. The sandbox bind-mounts this at
+    /// `/opt/partagpu-venv` inside the sandbox (read-only).
+    pub fn managed_venv_path() -> &'static str {
+        "/var/lib/partagpu/venv"
+    }
+
+    /// True if the managed venv has been provisioned (i.e. `bin/python3` exists).
+    pub fn managed_venv_exists() -> bool {
+        std::path::Path::new(&format!("{}/bin/python3", Self::managed_venv_path())).exists()
+    }
+
+    /// Run `helper setup-venv` via pkexec. Long-running (~3 GB pip install).
+    /// If `app` is provided, stdout/stderr lines are emitted as Tauri events
+    /// (`helper-output` / `helper-output-err`) for the UI to show live.
+    pub fn setup_managed_venv(app: Option<&tauri::AppHandle>) -> Result<(), String> {
+        Self::run_helper_streaming(&["setup-venv"], app)
+    }
+
+    /// Run `helper remove-venv` via pkexec. Quick, no streaming needed.
+    pub fn remove_managed_venv() -> Result<(), String> {
+        Self::run_helper(&["remove-venv"])?;
+        Ok(())
+    }
+
+    /// Like `run_helper` but reads stdout/stderr line-by-line and (if `app`
+    /// is provided) emits each line as a Tauri event so the frontend can
+    /// display a live install log. Used by `setup-venv` which can take
+    /// 5-10 minutes.
+    fn run_helper_streaming(args: &[&str], app: Option<&tauri::AppHandle>) -> Result<(), String> {
+        use std::io::{BufRead, BufReader};
+        use std::process::Stdio;
+        use tauri::Emitter;
+
+        let helper = Self::helper_path();
+
+        let mut child = Command::new("pkexec")
+            .arg(&helper)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    "pkexec n'est pas installé. Installez policykit-1 : sudo apt install policykit-1".to_string()
+                }
+                _ => format!("Impossible de lancer pkexec : {e}"),
+            })?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "stdout du helper indisponible".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "stderr du helper indisponible".to_string())?;
+
+        // Spawn a reader thread per stream so we don't deadlock if one of
+        // them outpaces the other (pip install spams stdout heavily).
+        let app_for_stdout = app.cloned();
+        let stdout_handle = std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some(ref a) = app_for_stdout {
+                    let _ = a.emit("helper-output", &line);
+                }
+            }
+        });
+
+        let app_for_stderr = app.cloned();
+        let stderr_handle = std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some(ref a) = app_for_stderr {
+                    let _ = a.emit("helper-output-err", &line);
+                }
+            }
+        });
+
+        let status = child
+            .wait()
+            .map_err(|e| format!("Erreur d'attente du helper : {e}"))?;
+        let _ = stdout_handle.join();
+        let _ = stderr_handle.join();
+
+        if status.success() {
+            Ok(())
+        } else {
+            let code = status.code().unwrap_or(-1);
+            if code == 126 {
+                return Err("Authentification annulée par l'utilisateur.".to_string());
+            }
+            Err(format!(
+                "Erreur du helper (code {code}). Voir le log d'install."
+            ))
+        }
     }
 }

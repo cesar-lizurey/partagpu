@@ -1,7 +1,17 @@
 {
   "name": "partagpu",
-  "version": "0.1.0",
+  "version": "1.11.7",
   "description": "Application de partage de ressources de calcul (CPU/GPU/RAM) sur réseau local",
+  "author": {
+    "name": "César Lizurey",
+    "url": "https://cesar.lizurey.fr"
+  },
+  "homepage": "https://github.com/cesar-lizurey/partagpu",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cesar-lizurey/partagpu.git"
+  },
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
@@ -29,6 +39,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",
+    "@tauri-apps/plugin-notification": "^2.2.0",
     "@tauri-apps/plugin-shell": "^2.2.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

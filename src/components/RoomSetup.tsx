@@ -6,8 +6,11 @@ import {
   getRoomStatus,
 } from "../lib/api";
 import type { RoomStatus } from "../lib/api";
+import { RevealOnHold } from "./RevealOnHold";
+import { useT } from "../lib/i18n";
 
 export function RoomSetup() {
+  const t = useT();
   const [status, setStatus] = useState<RoomStatus | null>(null);
   const [mode, setMode] = useState<"idle" | "create" | "join">("idle");
   const [roomName, setRoomName] = useState("");
@@ -32,7 +35,7 @@ export function RoomSetup() {
   const handleCreate = async () => {
     setError(null);
     if (!roomName.trim()) {
-      setError("Entrez un nom de salle.");
+      setError(t("room.err_need_name"));
       return;
     }
     try {
@@ -47,11 +50,11 @@ export function RoomSetup() {
   const handleJoin = async () => {
     setError(null);
     if (!roomName.trim()) {
-      setError("Entrez un nom de salle.");
+      setError(t("room.err_need_name"));
       return;
     }
     if (!joinPassphrase.trim()) {
-      setError("Entrez le code d'accès.");
+      setError(t("room.err_need_passphrase"));
       return;
     }
     try {
@@ -75,7 +78,7 @@ export function RoomSetup() {
       <div className="room-setup">
         <div className="room-setup__header">
           <span className="room-setup__dot room-setup__dot--off" />
-          <span>Aucune salle configurée</span>
+          <span>{t("room.no_room")}</span>
         </div>
 
         {mode === "idle" && (
@@ -84,13 +87,13 @@ export function RoomSetup() {
               className="btn btn--primary"
               onClick={() => setMode("create")}
             >
-              Créer une salle
+              {t("room.create")}
             </button>
             <button
               className="btn btn--secondary"
               onClick={() => setMode("join")}
             >
-              Rejoindre une salle
+              {t("room.join")}
             </button>
           </div>
         )}
@@ -99,20 +102,20 @@ export function RoomSetup() {
           <div className="room-setup__form">
             <input
               type="text"
-              placeholder="Nom de la salle (ex: Salle B204)"
+              placeholder={t("room.create_placeholder")}
               value={roomName}
               onChange={(e) => setRoomName(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleCreate()}
             />
             <div className="room-setup__form-actions">
               <button className="btn btn--primary" onClick={handleCreate}>
-                Créer
+                {t("room.create_btn")}
               </button>
               <button
                 className="btn btn--danger"
                 onClick={() => setMode("idle")}
               >
-                Annuler
+                {t("common.cancel")}
               </button>
             </div>
           </div>
@@ -122,30 +125,30 @@ export function RoomSetup() {
           <div className="room-setup__form">
             <input
               type="text"
-              placeholder="Nom de la salle"
+              placeholder={t("room.join_name_placeholder")}
               value={roomName}
               onChange={(e) => setRoomName(e.target.value)}
             />
             <input
               type="text"
-              placeholder="Code d'accès (ex: pomme-tigre-bleu-ocean)"
+              placeholder={t("room.join_pass_placeholder")}
               value={joinPassphrase}
               onChange={(e) => setJoinPassphrase(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleJoin()}
               className="room-setup__passphrase-input"
             />
             <p className="room-setup__form-hint">
-              Demandez le code d'accès au camarade qui a créé la salle.
+              {t("room.join_hint")}
             </p>
             <div className="room-setup__form-actions">
               <button className="btn btn--primary" onClick={handleJoin}>
-                Rejoindre
+                {t("room.join_btn")}
               </button>
               <button
                 className="btn btn--danger"
                 onClick={() => setMode("idle")}
               >
-                Annuler
+                {t("common.cancel")}
               </button>
             </div>
           </div>
@@ -163,20 +166,20 @@ export function RoomSetup() {
       <div className="room-setup__header">
         <span className="room-setup__dot room-setup__dot--on" />
         <span>
-          Salle <strong>{status.room_name}</strong>
+          {t("room.in_room_label")} <strong>{status.room_name}</strong>
         </span>
         <button className="btn btn--danger btn--small" onClick={handleLeave}>
-          Quitter
+          {t("room.leave")}
         </button>
       </div>
 
       <div className="room-setup__connected">
         <div className="room-setup__passphrase-section">
           <p className="room-setup__hint">
-            Dictez ce code d'accès aux camarades pour qu'ils rejoignent :
+            {t("room.share_hint")}
           </p>
           <div className="room-setup__passphrase">
-            {status.passphrase}
+            <RevealOnHold value={status.passphrase} />
           </div>
         </div>
       </div>

@@ -1,4 +1,6 @@
 import type { Task } from "../lib/api";
+import { useT } from "../lib/i18n";
+import { aggregateByUser } from "../lib/usage";
 
 interface UsageBreakdownProps {
   tasks: Task[];
@@ -6,53 +8,6 @@ interface UsageBreakdownProps {
   totalRamMb: number;
   totalGpuPercent: number;
   gpuAvailable: boolean;
-}
-
-interface UserUsage {
-  name: string;
-  color: string;
-  cpu: number;
-  ramMb: number;
-  gpu: number;
-  taskCount: number;
-}
-
-const COLORS = [
-  "#6366f1", // indigo
-  "#f59e0b", // amber
-  "#22c55e", // green
-  "#ef4444", // red
-  "#06b6d4", // cyan
-  "#a855f7", // purple
-  "#ec4899", // pink
-  "#14b8a6", // teal
-];
-
-function aggregateByUser(tasks: Task[]): UserUsage[] {
-  const running = tasks.filter((t) => t.status === "Running");
-  const map = new Map<string, UserUsage>();
-
-  running.forEach((task) => {
-    const key = task.source_machine || task.source_user || "inconnu";
-    const existing = map.get(key);
-    if (existing) {
-      existing.cpu += task.cpu_usage;
-      existing.ramMb += task.ram_usage_mb;
-      existing.gpu += task.gpu_usage;
-      existing.taskCount += 1;
-    } else {
-      map.set(key, {
-        name: key,
-        color: COLORS[map.size % COLORS.length],
-        cpu: task.cpu_usage,
-        ramMb: task.ram_usage_mb,
-        gpu: task.gpu_usage,
-        taskCount: 1,
-      });
-    }
-  });
-
-  return Array.from(map.values()).sort((a, b) => b.cpu - a.cpu);
 }
 
 function StackedBar({
@@ -97,7 +52,8 @@ export function UsageBreakdown({
   totalGpuPercent,
   gpuAvailable,
 }: UsageBreakdownProps) {
-  const users = aggregateByUser(tasks);
+  const t = useT();
+  const users = aggregateByUser(tasks, t("common.unknown"));
 
   if (users.length === 0) {
     return null;
@@ -113,9 +69,16 @@ export function UsageBreakdown({
               style={{ backgroundColor: u.color }}
             />
             <span>{u.name}</span>
-            <span className="usage-breakdown__task-count">
-              ({u.taskCount} tâche{u.taskCount > 1 ? "s" : ""})
-            </span>
+            {u.taskCount !== null && (
+              <span className="usage-breakdown__task-count">
+                {t(
+                  u.taskCount === 1
+                    ? "breakdown.tasks_one"
+                    : "breakdown.tasks_many",
+                  { n: u.taskCount },
+                )}
+              </span>
+            )}
           </span>
         ))}
       </div>

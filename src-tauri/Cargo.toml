@@ -3,9 +3,12 @@ members = [".", "helper"]
 
 [package]
 name = "partagpu"
-version = "0.1.0"
+version = "1.11.7"
 description = "Partage de ressources de calcul sur réseau local"
-authors = ["PartaGPU"]
+authors = ["César Lizurey"]
+homepage = "https://cesar.lizurey.fr"
+repository = "https://github.com/cesar-lizurey/partagpu"
+license = "MIT"
 edition = "2021"
 
 [lib]
@@ -18,6 +21,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -26,10 +30,29 @@ sysinfo = "0.35"
 local-ip-address = "0.6"
 uuid = { version = "1", features = ["v4"] }
 hostname = "0.4"
-totp-rs = { version = "5", features = ["gen_secret"] }
-base32 = "0.5"
 data-encoding = "2"
 hmac = "0.12"
 sha1 = "0.10"
 log = "0.4"
 env_logger = "0.11"
+# Typed errors via #[derive(Error)] — used by the crypto module. The rest
+# of the codebase uses Result<T, String> ; no consumer of typed errors
+# requires more.
+thiserror = "2"
+# HTTP client used to dispatch tasks to remote peers (no TLS needed on LAN).
+ureq = { version = "2", default-features = false, features = ["json"] }
+# Peer-to-peer encryption (AES-256-GCM keyed by HKDF-SHA256(room secret + ECDH)).
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+# Slow KDF for auth_key derivation : caps the per-candidate cost of an
+# offline brute-force on the 4-word passphrase to ~100 ms.
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+rand = "0.8"
+# Forward secrecy : ephemeral X25519 keys derived via Diffie-Hellman per request.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+# Gzip for workspace compression on the dispatcher → peer hop.
+flate2 = "1"
+
+[dev-dependencies]
+tempdir = "0.3"

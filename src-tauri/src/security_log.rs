@@ -50,6 +50,12 @@ pub struct SecurityLog {
     events: Arc<Mutex<Vec<SecurityEvent>>>,
 }
 
+impl Default for SecurityLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SecurityLog {
     pub fn new() -> Self {
         Self {
@@ -96,13 +102,7 @@ impl SecurityLog {
     }
 
     /// Convenience: log with peer info.
-    pub fn peer_event(
-        &self,
-        category: EventCategory,
-        message: &str,
-        ip: &str,
-        hostname: &str,
-    ) {
+    pub fn peer_event(&self, category: EventCategory, message: &str, ip: &str, hostname: &str) {
         self.log(
             category.default_level(),
             category,
@@ -151,11 +151,9 @@ impl EventCategory {
             | EventCategory::FirewallOpened
             | EventCategory::FirewallClosed => EventLevel::Info,
 
-            EventCategory::PeerRejected
-            | EventCategory::TaskFailed => EventLevel::Warning,
+            EventCategory::PeerRejected | EventCategory::TaskFailed => EventLevel::Warning,
 
-            EventCategory::HostnameConflict
-            | EventCategory::TaskRejected => EventLevel::Alert,
+            EventCategory::HostnameConflict | EventCategory::TaskRejected => EventLevel::Alert,
         }
     }
 }

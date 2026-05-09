@@ -5,11 +5,22 @@ node_modules/
 dist/
 src-tauri/target/
 
+# CI cache
+.cargo/
+.rustup/
+
+# Helper binary copied during CI build (not versioned)
+src-tauri/resources/partagpu-helper
+
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+
+# Claude Code (personal local overrides only ; .claude/settings.json
+# stays trackable for shared team config)
+.claude/settings.local.json
 
 # OS
 .DS_Store
@@ -25,3 +36,23 @@ coverage/
 
 # Logs
 *.log
+
+# Backups
+*.bck
+*.bck[0-9]*
+
+# Python venv (notebooks examples)
+examples/venv/
+examples/.ipynb_checkpoints/
+examples/__pycache__/
+
+# Genere par Jupyter %%writefile dans examples/decouverte_gpu.ipynb (§6.3)
+examples/colorization_train.py
+
+# Python build artifacts
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+python/build/
+python/dist/

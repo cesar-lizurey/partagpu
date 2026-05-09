@@ -1,0 +1,447 @@
+//! End-to-end integration tests for the peer-to-peer HTTP API.
+//!
+//! These tests start a real `peer_api::start_on_addr` server bound to
+//! `127.0.0.1:0` (random port) in the same process, then talk to it over
+//! ureq. Each test isolates the on-disk state by setting `HOME` to a temp
+//! directory before constructing `AuthManager` / `IncomingTasks` so the
+//! user's real config is never touched.
+//!
+//! What the tests cover :
+//! - v=2 forward-secret round-trip submits a task and reads it back
+//! - rejection of plaintext bodies (415, but only when auth is provided)
+//! - rejection of bodies without the `X-PartaGPU-AUTH` header (401)
+//! - rejection of envelopes from a different room (401, HMAC mismatch)
+//! - cancel propagation (DELETE /peer/v1/tasks/<id>)
+//!
+//! What they DON'T cover : the actual sandbox execution. We submit
+//! `args = ["true"]` ; whether bwrap launches successfully isn't important
+//! to the protocol layer, and CI doesn't ship a usable bwrap.
+
+use partagpu_lib::auth::AuthManager;
+use partagpu_lib::crypto::{self, Envelope, EphemeralKey, ENCRYPTED_CONTENT_TYPE};
+use partagpu_lib::discovery::Discovery;
+use partagpu_lib::peer_api;
+use partagpu_lib::sandbox::Sandbox;
+use partagpu_lib::security_log::SecurityLog;
+use partagpu_lib::sharing::SharingController;
+use partagpu_lib::task_runner::IncomingTasks;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+/// Each test gets its own temp $HOME so on-disk persistence (room.json,
+/// incoming-tasks.json, machine-id) doesn't bleed between tests or into
+/// the user's real config.
+struct TestEnv {
+    _tmp: tempdir::TempDir,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+/// AuthManager / IncomingTasks read $HOME at construction time. To run
+/// several tests sequentially with different $HOME values we serialize
+/// access via this lock — the env var is process-global.
+static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+fn fresh_env() -> TestEnv {
+    let guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempdir::TempDir::new("partagpu-e2e").expect("tempdir");
+    std::env::set_var("HOME", tmp.path());
+    std::env::remove_var("XDG_CONFIG_HOME");
+    TestEnv {
+        _tmp: tmp,
+        _guard: guard,
+    }
+}
+
+/// Start a peer-API server bound to a random localhost port and return
+/// (port, ephemeral pubkey, room secret base32). The caller can then build
+/// requests against `http://127.0.0.1:<port>`.
+fn start_test_server() -> (u16, EphemeralKey, String) {
+    static MACHINE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    let id = MACHINE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let auth = AuthManager::new();
+    let room = auth
+        .create_room(&format!("test-room-{id}"))
+        .expect("create_room");
+    let secret_b32 = room.secret_base32;
+
+    let sharing = SharingController::new();
+    // The peer-API needs sharing.status == Active to accept tasks. We can't
+    // call `sharing.enable()` from tests because it tries to use pkexec to
+    // create the partagpu user. Instead we toggle status in-memory only
+    // via a dedicated test-only method (see crates/lib changes).
+    sharing.force_active_for_tests();
+
+    let discovery =
+        Discovery::new(&format!("test-host-{id}"), &format!("mid-{id}")).expect("Discovery::new");
+
+    let sandbox = Sandbox::new();
+    let incoming = IncomingTasks::new(sandbox);
+
+    let sec_log = SecurityLog::new();
+    let server_eph = EphemeralKey::generate();
+
+    let port = peer_api::start_on_addr(
+        "127.0.0.1:0",
+        incoming,
+        auth,
+        discovery,
+        sharing,
+        sec_log,
+        server_eph.clone(),
+    )
+    .expect("start_on_addr");
+
+    // Give the spawned tokio runtime a moment to start its accept loop.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    (port, server_eph, secret_b32)
+}
+
+/// Build the value of the `X-PartaGPU-AUTH` header for a (method, path, body)
+/// triple, signing with the room's auth key. Same primitive the real
+/// `http_api::dispatch_task_blocking` uses on the wire.
+fn auth_header(secret_b32: &str, method: &str, path: &str, body: &[u8]) -> String {
+    let auth_key = crypto::derive_auth_key(secret_b32).expect("derive_auth_key");
+    crypto::compute_request_auth(&auth_key, method, path, body)
+}
+
+#[test]
+fn rejects_plaintext_body() {
+    // With a valid auth header, a plaintext body (wrong Content-Type) must
+    // be rejected with 415. The auth check passes but the encryption-layer
+    // gate refuses the request.
+    let _env = fresh_env();
+    let (port, _eph, secret_b32) = start_test_server();
+    let path = "/peer/v1/tasks";
+    let body = r#"{"args":["true"]}"#;
+    let url = format!("http://127.0.0.1:{port}{path}");
+    let resp = ureq::post(&url)
+        .set("Content-Type", "application/json")
+        .set(
+            "X-PartaGPU-AUTH",
+            &auth_header(&secret_b32, "POST", path, body.as_bytes()),
+        )
+        .send_string(body);
+    let err = resp.expect_err("plaintext body must be rejected");
+    match err {
+        ureq::Error::Status(code, _) => assert_eq!(code, 415),
+        e => panic!("expected 415, got {e}"),
+    }
+}
+
+#[test]
+fn rejects_v2_without_room_membership() {
+    // Server in a room of its own, but client builds an auth header keyed
+    // by a *different* room secret. The HMAC check fails before decryption
+    // is even attempted ; the client gets 401.
+    let _env = fresh_env();
+    let (port, server_eph, _server_secret) = start_test_server();
+
+    let other_secret_b32 = data_encoding::BASE32.encode(b"some-other-room!!!!!!!!!!!!!!!!!");
+    let other_key = crypto::derive_room_key(&other_secret_b32).unwrap();
+    let body = serde_json::json!({"args": ["true"], "source_user": "x"});
+    let body_str = serde_json::to_string(&body).unwrap();
+    let (env, _) =
+        crypto::encrypt_v2(&other_key, &server_eph.public_b64(), body_str.as_bytes()).unwrap();
+    let env_json = serde_json::to_string(&env).unwrap();
+    let path = "/peer/v1/tasks";
+    let bad_auth = auth_header(&other_secret_b32, "POST", path, env_json.as_bytes());
+
+    let url = format!("http://127.0.0.1:{port}{path}");
+    let resp = ureq::post(&url)
+        .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
+        .set("X-PartaGPU-AUTH", &bad_auth)
+        .send_string(&env_json);
+    match resp {
+        Err(ureq::Error::Status(401, _)) => {}
+        Ok(r) => panic!("unexpected success {}", r.status()),
+        Err(e) => panic!("expected 401, got {e}"),
+    }
+}
+
+#[test]
+fn v2_round_trip_accepts_task() {
+    let _env = fresh_env();
+    let (port, server_eph, secret_b32) = start_test_server();
+    let room_key = crypto::derive_room_key(&secret_b32).unwrap();
+
+    let body = serde_json::json!({
+        "args": ["true"],
+        "source_user": "alice",
+        "timeout_secs": 5,
+    });
+    let body_str = serde_json::to_string(&body).unwrap();
+    let (env, session_key) =
+        crypto::encrypt_v2(&room_key, &server_eph.public_b64(), body_str.as_bytes()).unwrap();
+    let env_json = serde_json::to_string(&env).unwrap();
+    let path = "/peer/v1/tasks";
+    let auth = auth_header(&secret_b32, "POST", path, env_json.as_bytes());
+
+    let url = format!("http://127.0.0.1:{port}{path}");
+    let resp = ureq::post(&url)
+        .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
+        .set("X-PartaGPU-AUTH", &auth)
+        .send_string(&env_json)
+        .expect("submit");
+    assert_eq!(resp.status(), 200);
+    let resp_body = resp.into_string().expect("read response body");
+    let resp_env: Envelope = serde_json::from_str(&resp_body).expect("response is an envelope");
+    let plain = crypto::decrypt(&session_key, &resp_env).expect("decrypt response");
+    let parsed: serde_json::Value = serde_json::from_slice(&plain).expect("response JSON");
+    assert!(parsed["task_id"].is_string());
+    assert_eq!(parsed["accepted"], serde_json::Value::Bool(true));
+}
+
+#[test]
+fn cancel_unknown_task_returns_404() {
+    let _env = fresh_env();
+    let (port, _eph, secret_b32) = start_test_server();
+    let path = "/peer/v1/tasks/non-existent-id";
+    // DELETE has no body, so the HMAC covers the empty byte slice.
+    let auth = auth_header(&secret_b32, "DELETE", path, b"");
+    let url = format!("http://127.0.0.1:{port}{path}");
+    let resp = ureq::delete(&url).set("X-PartaGPU-AUTH", &auth).call();
+    match resp {
+        Err(ureq::Error::Status(404, _)) => {}
+        Ok(r) => panic!("unexpected success {}", r.status()),
+        Err(e) => panic!("expected 404, got {e}"),
+    }
+}
+
+#[test]
+fn rejects_request_without_auth_header() {
+    let _env = fresh_env();
+    let (port, server_eph, secret_b32) = start_test_server();
+    let room_key = crypto::derive_room_key(&secret_b32).unwrap();
+    let body = serde_json::json!({"args": ["true"]});
+    let body_str = serde_json::to_string(&body).unwrap();
+    let (env, _) =
+        crypto::encrypt_v2(&room_key, &server_eph.public_b64(), body_str.as_bytes()).unwrap();
+    let env_json = serde_json::to_string(&env).unwrap();
+    let url = format!("http://127.0.0.1:{port}/peer/v1/tasks");
+    let resp = ureq::post(&url)
+        .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
+        .send_string(&env_json);
+    match resp {
+        Err(ureq::Error::Status(401, _)) => {}
+        Ok(r) => panic!("unexpected success {}", r.status()),
+        Err(e) => panic!("expected 401, got {e}"),
+    }
+}
+
+/// `GET /peer/v1/verify?nonce=<hex>` returns an HMAC over the supplied
+/// nonce that the verifier can recompute with its own `auth_key`.
+/// Unauthenticated by design — it IS the auth bootstrap.
+#[test]
+fn verify_returns_hmac_over_nonce() {
+    let _env = fresh_env();
+    let (port, _eph, secret_b32) = start_test_server();
+    let auth_key = crypto::derive_auth_key(&secret_b32).unwrap();
+
+    let nonce_bytes: [u8; 16] = [7u8; 16];
+    let nonce_hex = data_encoding::HEXLOWER.encode(&nonce_bytes);
+    let url = format!("http://127.0.0.1:{port}/peer/v1/verify?nonce={nonce_hex}");
+    let resp = ureq::get(&url).call().expect("verify call");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value =
+        serde_json::from_str(&resp.into_string().unwrap()).expect("verify json");
+    let hmac_hex = body["hmac"].as_str().expect("hmac field").to_string();
+    assert_eq!(hmac_hex.len(), 64); // full HMAC-SHA256 = 32 bytes hex
+    assert!(crypto::verify_response(&auth_key, &nonce_bytes, &hmac_hex));
+}
+
+#[test]
+fn verify_rejects_short_nonce() {
+    let _env = fresh_env();
+    let (port, _eph, _secret) = start_test_server();
+    // 4-byte nonce = 8 hex chars : below VERIFY_NONCE_MIN_BYTES.
+    let url = format!("http://127.0.0.1:{port}/peer/v1/verify?nonce=deadbeef");
+    let resp = ureq::get(&url).call();
+    match resp {
+        Err(ureq::Error::Status(400, _)) => {}
+        Ok(r) => panic!("short nonce should be rejected, got {}", r.status()),
+        Err(e) => panic!("expected 400, got {e}"),
+    }
+}
+
+#[test]
+fn verify_rejects_non_hex_nonce() {
+    let _env = fresh_env();
+    let (port, _eph, _secret) = start_test_server();
+    let url = format!("http://127.0.0.1:{port}/peer/v1/verify?nonce=not-hex-at-all-1234567890");
+    let resp = ureq::get(&url).call();
+    match resp {
+        Err(ureq::Error::Status(400, _)) => {}
+        Ok(r) => panic!("non-hex nonce should be rejected, got {}", r.status()),
+        Err(e) => panic!("expected 400, got {e}"),
+    }
+}
+
+/// A captured legitimate request, replayed byte-for-byte within the
+/// 30-s window, must be rejected by the server's replay cache. Without
+/// the cache, the receiver would happily run the same task twice.
+#[test]
+fn rejects_replay_within_window() {
+    let _env = fresh_env();
+    let (port, server_eph, secret_b32) = start_test_server();
+    let room_key = crypto::derive_room_key(&secret_b32).unwrap();
+
+    let body = serde_json::json!({"args": ["true"], "timeout_secs": 5});
+    let body_str = serde_json::to_string(&body).unwrap();
+    let (env, _) =
+        crypto::encrypt_v2(&room_key, &server_eph.public_b64(), body_str.as_bytes()).unwrap();
+    let env_json = serde_json::to_string(&env).unwrap();
+    let path = "/peer/v1/tasks";
+    let auth = auth_header(&secret_b32, "POST", path, env_json.as_bytes());
+
+    let url = format!("http://127.0.0.1:{port}{path}");
+
+    // First send: accepted.
+    let r1 = ureq::post(&url)
+        .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
+        .set("X-PartaGPU-AUTH", &auth)
+        .send_string(&env_json)
+        .expect("first dispatch");
+    assert_eq!(r1.status(), 200);
+
+    // Second send with the EXACT same auth header, body, path: replay.
+    // Must be rejected.
+    let r2 = ureq::post(&url)
+        .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
+        .set("X-PartaGPU-AUTH", &auth)
+        .send_string(&env_json);
+    match r2 {
+        Err(ureq::Error::Status(401, _)) => {}
+        Ok(r) => panic!("replay should have been rejected, got {}", r.status()),
+        Err(e) => panic!("expected 401 replay reject, got {e}"),
+    }
+}
+
+// ── 2-instance integration tests ─────────────────────────────────────────
+//
+// The tests above build requests by hand against a single server. These
+// exercise the full loop with TWO real peer-API instances bound to
+// different ports, sharing the same room secret — which is the actual
+// runtime topology (one app per machine, all with the same passphrase).
+
+/// Spawn a peer-API instance that joins an existing room secret instead
+/// of creating its own. Used by the 2-instance tests below so both peers
+/// share the same `auth_key`. Each instance has its own AuthManager,
+/// IncomingTasks, EphemeralKey — i.e. the only thing in common is the
+/// derived secret, exactly like a real two-machine deployment.
+fn start_test_server_joining(secret_b32: &str) -> (u16, EphemeralKey) {
+    static MACHINE_COUNT: AtomicUsize = AtomicUsize::new(10_000);
+    let id = MACHINE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let auth = AuthManager::new();
+    auth.join_room(&format!("test-room-joined-{id}"), secret_b32)
+        .expect("join_room");
+
+    let sharing = SharingController::new();
+    sharing.force_active_for_tests();
+
+    let discovery =
+        Discovery::new(&format!("test-host-{id}"), &format!("mid-{id}")).expect("Discovery::new");
+
+    let sandbox = Sandbox::new();
+    let incoming = IncomingTasks::new(sandbox);
+
+    let sec_log = SecurityLog::new();
+    let server_eph = EphemeralKey::generate();
+
+    let port = peer_api::start_on_addr(
+        "127.0.0.1:0",
+        incoming,
+        auth,
+        discovery,
+        sharing,
+        sec_log,
+        server_eph.clone(),
+    )
+    .expect("start_on_addr");
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    (port, server_eph)
+}
+
+/// Two peer-API instances in the same room must successfully verify each
+/// other via `/peer/v1/verify`. This proves the active-challenge flow
+/// works between two real running servers (not just one server + a
+/// hand-built request).
+#[test]
+fn two_instances_verify_each_other() {
+    let _env = fresh_env();
+
+    // Instance A creates the room ; instance B joins the same secret.
+    let (port_a, _eph_a, secret_b32) = start_test_server();
+    let (port_b, _eph_b) = start_test_server_joining(&secret_b32);
+
+    // We compute the expected HMAC with the auth_key the room agreed on,
+    // then check both servers return that HMAC for a fresh nonce — i.e.
+    // each peer can prove room membership to the other.
+    let auth_key = crypto::derive_auth_key(&secret_b32).unwrap();
+    let nonce: [u8; 16] = [0xab; 16];
+    let nonce_hex = data_encoding::HEXLOWER.encode(&nonce);
+    let expected = crypto::compute_verify_response(&auth_key, &nonce);
+
+    for port in [port_a, port_b] {
+        let url = format!("http://127.0.0.1:{port}/peer/v1/verify?nonce={nonce_hex}");
+        let body = ureq::get(&url)
+            .call()
+            .expect("verify")
+            .into_string()
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let hmac = parsed["hmac"].as_str().unwrap();
+        assert_eq!(
+            hmac, expected,
+            "instance on port {port} returned a wrong HMAC"
+        );
+    }
+}
+
+/// Full dispatch loop : instance A (acting as client) sends an encrypted
+/// task to instance B's `/peer/v1/tasks`, signed with the shared
+/// `auth_key`. B accepts (200) and responds with an encrypted body that
+/// A decrypts using the v=2 session key. Exercises every piece of the
+/// peer-to-peer protocol with two distinct real servers.
+#[test]
+fn two_instances_dispatch_end_to_end() {
+    let _env = fresh_env();
+
+    // A creates the room ; B joins it.
+    let (_port_a, _eph_a, secret_b32) = start_test_server();
+    let (port_b, eph_b) = start_test_server_joining(&secret_b32);
+
+    // A acts as client : derive shared keys from the room secret.
+    let room_key = crypto::derive_room_key(&secret_b32).unwrap();
+
+    let body = serde_json::json!({
+        "args": ["true"],
+        "source_user": "alice",
+        "timeout_secs": 5,
+    });
+    let body_str = serde_json::to_string(&body).unwrap();
+    let (env, session_key) =
+        crypto::encrypt_v2(&room_key, &eph_b.public_b64(), body_str.as_bytes()).unwrap();
+    let env_json = serde_json::to_string(&env).unwrap();
+    let path = "/peer/v1/tasks";
+    let auth = auth_header(&secret_b32, "POST", path, env_json.as_bytes());
+
+    let url = format!("http://127.0.0.1:{port_b}{path}");
+    let resp = ureq::post(&url)
+        .set("Content-Type", ENCRYPTED_CONTENT_TYPE)
+        .set("X-PartaGPU-AUTH", &auth)
+        .send_string(&env_json)
+        .expect("dispatch from A to B");
+    assert_eq!(resp.status(), 200);
+
+    // A reads B's encrypted response with the same session key.
+    let resp_body = resp.into_string().unwrap();
+    let resp_env: Envelope = serde_json::from_str(&resp_body).expect("response envelope");
+    let plain = crypto::decrypt(&session_key, &resp_env).expect("decrypt response");
+    let parsed: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+    assert!(parsed["task_id"].is_string());
+    assert_eq!(parsed["accepted"], serde_json::Value::Bool(true));
+}

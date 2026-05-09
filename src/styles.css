@@ -1,3 +1,45 @@
+/* ── Fonts ─────────────────────────────────────────────── */
+
+@font-face {
+  font-family: "Oxanium";
+  src: url("./fonts/Oxanium-Light.ttf") format("truetype");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Oxanium";
+  src: url("./fonts/Oxanium-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Oxanium";
+  src: url("./fonts/Oxanium-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Oxanium";
+  src: url("./fonts/Oxanium-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Oxanium";
+  src: url("./fonts/Oxanium-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ── Variables ──────────────────────────────────────────── */
 
 :root {
@@ -13,7 +55,10 @@
   --color-warning: #f59e0b;
   --color-danger: #ef4444;
   --radius: 8px;
-  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font: "Oxanium", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Tells the browser to use dark-themed form widgets (select dropdown,
+     scrollbars, etc.) instead of light system defaults. */
+  color-scheme: dark;
 }
 
 /* ── Reset ─────────────────────────────────────────────── */
@@ -53,6 +98,9 @@ body {
 }
 
 .app__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 1.5rem;
   font-weight: 700;
   background: linear-gradient(135deg, var(--color-primary), #a78bfa);
@@ -60,9 +108,66 @@ body {
   -webkit-text-fill-color: transparent;
 }
 
+.app__logo {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+}
+
+.app__version {
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  background: none;
+  -webkit-text-fill-color: var(--color-text-muted);
+  margin-left: 4px;
+  letter-spacing: 0.02em;
+}
+
 .app__machine {
   color: var(--color-text-muted);
   font-size: 0.85rem;
+}
+
+.app__header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Language toggle ───────────────────────────────────── */
+
+.lang-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.lang-toggle:hover {
+  border-color: var(--color-border);
+}
+
+.lang-toggle:active {
+  transform: scale(0.95);
+}
+
+.lang-toggle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.lang-toggle__flag {
+  display: block;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
 }
 
 /* ── Editable instance name ────────────────────────────── */
@@ -235,6 +340,56 @@ body {
   border-radius: var(--radius);
   display: inline-block;
   user-select: all;
+}
+
+/* Reveal-on-hold (used for passphrases and other low-stakes secrets) */
+
+.reveal-on-hold {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.reveal-on-hold__value {
+  /* Inherit the surrounding font (monospace for the passphrase, normal
+   * elsewhere) — so masked stars look stable while the value changes. */
+  font-variant-numeric: tabular-nums;
+}
+
+.reveal-on-hold__btn {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Suppress the OS text-selection cursor on long press. */
+  user-select: none;
+  -webkit-user-select: none;
+  /* Disable the iOS / Android touch callout that pops a context menu. */
+  -webkit-touch-callout: none;
+  /* Default to inheriting font color but leave size at our 18px svg. */
+  line-height: 0;
+}
+
+.reveal-on-hold__btn:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.reveal-on-hold__btn:active,
+.reveal-on-hold__btn[aria-pressed="true"] {
+  color: var(--color-primary);
+  background: rgba(99, 102, 241, 0.12);
+  border-color: var(--color-primary);
+}
+
+.reveal-on-hold__btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 
 .room-setup__form-hint {
@@ -553,7 +708,14 @@ body {
   font-size: 0.75rem;
   color: var(--color-text-muted);
   white-space: nowrap;
-  min-width: 80px;
+  /* Largeur fixe pour aligner les pistes des trois lignes (CPU/RAM/GPU) :
+     les valeurs RAM en Mo sont plus longues que les % CPU/GPU, sans largeur
+     fixe les barres se decalaient horizontalement. flex-shrink: 0 empeche
+     l'ecrasement quand la fenetre est etroite. */
+  width: 140px;
+  flex-shrink: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Resource gauges ───────────────────────────────────── */
@@ -585,58 +747,132 @@ body {
   color: var(--color-text-muted);
 }
 
+/* The track is taller when interactive (room for the draggable limit thumb). */
 .resource-gauge__track {
   position: relative;
   height: 8px;
   background: var(--color-border);
+  border-radius: 4px;
   overflow: visible;
+}
+
+.resource-gauge__track--interactive {
+  height: 14px;
+  cursor: pointer;
 }
 
 .resource-gauge__fill {
   height: 100%;
+  border-radius: 4px;
   transition: width 0.5s ease;
 }
 
+/* Mode jauge empilée : un conteneur flex qui aligne les segments par utilisateur
+   bord à bord. Les segments individuels n'ont pas de border-radius pour rester
+   contigus ; le conteneur prend le radius du track via overflow. */
+.resource-gauge__stack {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.resource-gauge__segment {
+  height: 100%;
+  transition: width 0.5s ease;
+}
+
+/* Visual marker of the limit position. Always rendered when limit is set,
+   serves as the visual cursor (the actual <input type="range"> overlay
+   provides the interaction). */
 .resource-gauge__limit {
   position: absolute;
-  top: -3px;
-  width: 2px;
-  height: 14px;
-  background: var(--color-text-muted);
-  border-radius: 1px;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 4px;
+  height: calc(100% + 8px);
+  background: var(--color-danger);
+  border-radius: 2px;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.18);
 }
 
-/* ── Resource sliders ──────────────────────────────────── */
-
-.resource-sliders {
-  background: var(--color-surface);
-  padding: 16px 20px;
-  border-radius: var(--radius);
-}
-
-.resource-sliders h3 {
-  margin-bottom: 16px;
-}
-
-.slider-group {
-  margin-bottom: 14px;
-}
-
-.slider-group label {
-  display: block;
-  font-size: 0.85rem;
-  margin-bottom: 4px;
-}
-
-.slider-group__hint {
-  color: var(--color-text-muted);
-  font-weight: 400;
-}
-
-.slider-group input[type="range"] {
+/* Transparent <input type="range"> stretched over the gauge. We hide its
+   default track and style the thumb as a wider draggable handle that
+   visually aligns with the .resource-gauge__limit marker. */
+.resource-gauge__limit-input {
+  position: absolute;
+  inset: -8px 0;
   width: 100%;
-  accent-color: var(--color-primary);
-  cursor: pointer;
+  height: calc(100% + 16px);
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+
+.resource-gauge__limit-input:disabled {
+  cursor: not-allowed;
+}
+
+.resource-gauge__limit-input::-webkit-slider-runnable-track,
+.resource-gauge__limit-input::-moz-range-track {
+  background: transparent;
+  border: none;
+  height: 100%;
+}
+
+/* Thumb: wider invisible hit area, drawn graphically by the .__limit
+   marker behind. Browsers each need their own selector. */
+.resource-gauge__limit-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 30px;
+  background: transparent;
+  border: none;
+  cursor: ew-resize;
+}
+
+.resource-gauge__limit-input::-moz-range-thumb {
+  width: 18px;
+  height: 30px;
+  background: transparent;
+  border: none;
+  cursor: ew-resize;
+}
+
+.resource-gauge__limit-input:focus {
+  outline: none;
+}
+
+.resource-gauge__limit-input:focus + .resource-gauge__limit,
+.resource-gauge__track:hover .resource-gauge__limit {
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.32);
+}
+
+.resource-gauge__limit-input:disabled ~ .resource-gauge__limit {
+  background: var(--color-text-muted);
+  box-shadow: none;
+}
+
+.resource-gauge__limit-label {
+  margin-top: 8px;
+  font-size: 0.78em;
+  color: var(--color-text-muted);
+}
+
+.resource-gauge__limit-label strong {
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.resource-gauge__limit-warning {
+  color: var(--color-warning);
+  font-style: italic;
 }
 
 /* ── Tables ────────────────────────────────────────────── */
@@ -774,6 +1010,17 @@ body {
   color: white;
 }
 
+/* Affiché juste sous la barre de progression : temps écoulé pour une tâche
+   active, durée totale pour une tâche terminée. tabular-nums pour que les
+   chiffres restent stables pendant le tick d'1 Hz quand la durée s'incrémente. */
+.progress-bar__duration {
+  margin-top: 3px;
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* ── Alert ─────────────────────────────────────────────── */
 
 .alert {
@@ -839,6 +1086,21 @@ body {
   border-radius: 4px;
   font-size: 0.85em;
   color: var(--color-primary);
+}
+
+.guide__code {
+  background: var(--color-bg);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 8px 0 12px 0;
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+
+.guide__code code {
+  background: transparent;
+  padding: 0;
+  color: var(--color-text);
 }
 
 .guide__section--tip {
@@ -1020,4 +1282,914 @@ body {
     gap: 12px;
     align-items: flex-start;
   }
+}
+
+/* ── TaskDispatcher ────────────────────────────────────────────────────── */
+
+.task-dispatcher {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.task-dispatcher__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.task-dispatcher__row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-end;
+}
+
+.task-dispatcher__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+
+.task-dispatcher__field--narrow {
+  flex: 0 0 110px;
+}
+
+.task-dispatcher__label {
+  font-size: 0.82em;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.task-dispatcher__input {
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: 0.95em;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.task-dispatcher__input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.task-dispatcher__input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.task-dispatcher__input--mono {
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  font-size: 0.92em;
+}
+
+/* Force the closed-select label to use our theme color (Linux/Chromium
+   otherwise dims it). Custom dropdown arrow drawn as an SVG background. */
+select.task-dispatcher__input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'><path d='M1 1l5 5 5-5' stroke='%238b8fa3' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  cursor: pointer;
+}
+
+/* Style the option list popup. Some browsers (Chromium on Linux notably)
+   ignore color/background here unless color-scheme is set on :root, but
+   we set both for max compat. */
+select.task-dispatcher__input option {
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  padding: 8px 10px;
+}
+
+.task-dispatcher__parsed {
+  font-size: 0.78em;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-dispatcher__parsed code {
+  background: var(--color-surface);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--color-text);
+}
+
+.task-dispatcher__network {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.task-dispatcher__checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.95em;
+  cursor: pointer;
+  user-select: none;
+}
+
+.task-dispatcher__checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--color-primary);
+}
+
+.task-dispatcher__help {
+  margin: 0;
+  padding-left: 26px;
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
+.task-dispatcher__help strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.task-dispatcher__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.task-dispatcher__result {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.task-dispatcher__result-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  font-size: 0.95em;
+  color: var(--color-text-muted);
+}
+
+.task-dispatcher__result-header strong {
+  color: var(--color-text);
+}
+
+.task-dispatcher__result details > summary {
+  cursor: pointer;
+  font-size: 0.88em;
+  color: var(--color-text-muted);
+  padding: 4px 0;
+}
+
+.task-dispatcher__pre {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 6px 0 0 0;
+  max-height: 320px;
+  overflow: auto;
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  font-size: 0.85em;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--color-text);
+}
+
+.task-dispatcher__pre--err {
+  border-color: #6a3030;
+  color: #f8b4b4;
+}
+
+@media (max-width: 720px) {
+  .task-dispatcher__row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .task-dispatcher__field--narrow {
+    flex: 1;
+  }
+}
+
+/* ── ManagedVenvPanel ──────────────────────────────────────────────────── */
+
+.managed-venv {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.managed-venv__intro {
+  margin: 0;
+  font-size: 0.92em;
+  color: var(--color-text-muted);
+  line-height: 1.55;
+}
+
+.managed-venv__intro code {
+  background: var(--color-surface);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--color-text);
+  font-size: 0.95em;
+}
+
+.managed-venv__status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.managed-venv__path {
+  font-size: 0.88em;
+  color: var(--color-text-muted);
+}
+
+.managed-venv__path code {
+  color: var(--color-text);
+}
+
+.managed-venv__hint {
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+  flex-basis: 100%;
+}
+
+.managed-venv__hint code {
+  background: var(--color-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.9em;
+  color: var(--color-text);
+}
+
+.managed-venv__actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.managed-venv__progress {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 0.88em;
+  color: var(--color-text-muted);
+  background: rgba(99, 102, 241, 0.08);
+  border-left: 3px solid var(--color-primary);
+  border-radius: 4px;
+  line-height: 1.5;
+}
+
+.section__hint {
+  margin: -8px 0 12px 0;
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+}
+
+/* Resource history sparklines */
+
+.history {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.history__title {
+  margin: 0 0 10px 0;
+  font-size: 0.95em;
+  font-weight: 600;
+}
+
+.history__sublabel {
+  font-weight: normal;
+  color: var(--color-text-muted);
+  font-size: 0.85em;
+}
+
+.history__row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.history__panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+.history__panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.history__panel-label {
+  font-weight: 600;
+  font-size: 0.95em;
+}
+
+.history__panel-current {
+  font-size: 0.9em;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.history__panel-stats {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 0.78em;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fleet view */
+
+.fleet__summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 0 0 20px 0;
+  padding: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.fleet__stat {
+  text-align: center;
+  padding: 6px 8px;
+}
+
+.fleet__stat-value {
+  font-size: 1.5em;
+  font-weight: 700;
+  color: var(--color-primary);
+  line-height: 1.1;
+}
+
+.fleet__stat-label {
+  font-size: 0.85em;
+  color: var(--color-text);
+  margin-top: 2px;
+}
+
+.fleet__stat-hint {
+  font-size: 0.75em;
+  color: var(--color-text-muted);
+  margin-top: 1px;
+}
+
+.fleet__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.peer-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.peer-card--unusable {
+  opacity: 0.6;
+}
+
+.peer-card__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.peer-card__name {
+  margin: 0;
+  font-size: 1.05em;
+  font-weight: 600;
+  flex: 1;
+}
+
+.peer-card__ip {
+  font-size: 0.8em;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.peer-card__badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.badge--ok {
+  background: rgba(16, 185, 129, 0.15);
+  color: #059669;
+}
+
+.badge--warn {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+}
+
+.badge--off {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--color-text-muted);
+}
+
+.badge--alert {
+  background: rgba(245, 158, 11, 0.15);
+  color: #d97706;
+}
+
+.peer-card__caps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--color-bg, #0f1117);
+  border-radius: 6px;
+}
+
+.peer-card__caps > div {
+  text-align: center;
+}
+
+.peer-card__caps dt {
+  font-size: 0.75em;
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+.peer-card__caps dd {
+  font-size: 0.95em;
+  font-weight: 600;
+  margin: 2px 0 0;
+}
+
+.peer-card__caps dd small {
+  font-weight: normal;
+  font-size: 0.8em;
+  color: var(--color-text-muted);
+}
+
+.peer-card__tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.peer-card__idle {
+  font-style: italic;
+  color: var(--color-text-muted);
+  font-size: 0.9em;
+}
+
+.peer-card__task-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.peer-card__task-list li {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  background: var(--color-bg, #0f1117);
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
+.peer-card__task-cmd {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85em;
+  word-break: break-all;
+}
+
+.peer-card__task-metrics {
+  font-size: 0.8em;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.concurrency-cap {
+  margin: 0 0 12px 0;
+  padding: 8px 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.concurrency-cap__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.concurrency-cap__input {
+  width: 60px;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 0.95em;
+}
+
+.concurrency-cap__hint {
+  margin: 4px 0 0 0;
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+}
+
+/* DDPDispatcher */
+
+.ddp-dispatcher {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ddp-dispatcher__intro {
+  margin: 0;
+  font-size: 0.9em;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
+.ddp-dispatcher__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ddp-dispatcher__peers {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 8px 12px 12px;
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ddp-dispatcher__peers legend {
+  padding: 0 6px;
+  font-weight: 500;
+  font-size: 0.9em;
+  color: var(--color-text-muted);
+}
+
+.ddp-dispatcher__peer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.ddp-dispatcher__peer-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  cursor: pointer;
+}
+
+.ddp-dispatcher__peer-count {
+  width: 50px;
+  padding: 3px 5px;
+}
+
+.ddp-dispatcher__peer-max {
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+}
+
+.ddp-dispatcher__row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ddp-dispatcher__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 140px;
+}
+
+.ddp-dispatcher__field--narrow {
+  flex: 0 0 120px;
+}
+
+.ddp-dispatcher__field span {
+  font-size: 0.9em;
+  font-weight: 500;
+}
+
+.ddp-dispatcher__field input,
+.ddp-dispatcher__field select {
+  padding: 6px 8px;
+  font-family: inherit;
+}
+
+.ddp-dispatcher__file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ddp-dispatcher__file-size {
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+}
+
+.ddp-dispatcher__files {
+  list-style: none;
+  margin: 6px 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ddp-dispatcher__files li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9em;
+}
+
+.ddp-dispatcher__file-remove {
+  background: none;
+  border: none;
+  color: var(--color-error, #c00);
+  cursor: pointer;
+  font-size: 1.1em;
+  padding: 0 4px;
+}
+
+.ddp-dispatcher__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.ddp-dispatcher__ranks {
+  margin-top: 8px;
+}
+
+.ddp-dispatcher__ranks h4 {
+  margin: 0 0 6px 0;
+  font-size: 1em;
+}
+
+.ddp-dispatcher__rank-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.ddp-dispatcher__rank-table th,
+.ddp-dispatcher__rank-table td {
+  border-bottom: 1px solid var(--color-border);
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.ddp-dispatcher__progress {
+  position: relative;
+  width: 120px;
+  height: 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.ddp-dispatcher__progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--color-primary);
+  transition: width 200ms ease;
+}
+
+.ddp-dispatcher__progress span {
+  position: relative;
+  z-index: 1;
+  font-size: 0.78em;
+  line-height: 16px;
+  display: block;
+  text-align: center;
+  color: white;
+  mix-blend-mode: difference;
+}
+
+/* TaskDispatcher : workspace upload */
+
+.task-dispatcher__workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.task-dispatcher__workspace-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.task-dispatcher__workspace-header .task-dispatcher__label {
+  flex: 1;
+}
+
+.task-dispatcher__files {
+  list-style: none;
+  margin: 6px 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.task-dispatcher__files li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.88em;
+  padding: 4px 8px;
+  background: var(--color-bg);
+  border-radius: 4px;
+}
+
+.task-dispatcher__files li code {
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  flex: 1;
+  color: var(--color-text);
+}
+
+.task-dispatcher__file-size {
+  color: var(--color-text-muted);
+  font-size: 0.85em;
+}
+
+.task-dispatcher__file-remove {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.95em;
+  line-height: 1;
+  padding: 0;
+}
+
+.task-dispatcher__file-remove:hover:not(:disabled) {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.task-dispatcher__files-total {
+  background: transparent !important;
+  color: var(--color-text-muted);
+  font-size: 0.82em;
+  padding: 4px 8px 0 8px;
+}
+
+/* TaskDispatcher : mode tabs (command vs file) */
+
+.task-dispatcher__mode-tabs {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--color-bg);
+  width: fit-content;
+}
+
+.task-dispatcher__mode-tab {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  padding: 7px 14px;
+  font-size: 0.88em;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+.task-dispatcher__mode-tab + .task-dispatcher__mode-tab {
+  border-left: 1px solid var(--color-border);
+}
+
+.task-dispatcher__mode-tab:hover:not(:disabled):not(.task-dispatcher__mode-tab--active) {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.task-dispatcher__mode-tab--active {
+  background: var(--color-primary);
+  color: white;
+}
+
+.task-dispatcher__mode-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.task-dispatcher__file-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-dispatcher__file-mode-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ManagedVenvPanel : install log (helper streamed output) */
+
+.managed-venv__log-box {
+  margin: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.managed-venv__log-box > summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+  user-select: none;
+}
+
+.managed-venv__log-box[open] > summary {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.managed-venv__log {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  font-size: 0.78em;
+  line-height: 1.45;
+  background: var(--color-bg);
+  color: var(--color-text);
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }

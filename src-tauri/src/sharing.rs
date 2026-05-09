@@ -32,6 +32,12 @@ pub struct SharingController {
     config: Arc<Mutex<SharingConfig>>,
 }
 
+impl Default for SharingController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SharingController {
     pub fn new() -> Self {
         Self {
@@ -46,26 +52,47 @@ impl SharingController {
     pub fn enable(&self) -> Result<SharingConfig, String> {
         let mut config = self.config.lock().unwrap();
 
-        crate::user_manager::UserManager::create_user()?;
+        // Only create the user if it doesn't exist yet (requires pkexec)
+        if !crate::user_manager::UserManager::user_exists() {
+            crate::user_manager::UserManager::create_user()?;
+        }
 
+        // Setup cgroup — tries direct write first, falls back to pkexec
         crate::user_manager::UserManager::setup_cgroup(
             config.cpu_limit_percent,
             config.ram_limit_mb,
             config.gpu_limit_percent,
         )?;
 
-        // Open firewall for incoming connections
-        crate::user_manager::UserManager::open_port()?;
+        // Open firewall — may silently fail if already open or no privileges
+        let _ = crate::user_manager::UserManager::open_port();
+
+        // Start the CUDA MPS daemon so per-task `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE`
+        // env vars are honoured. Best-effort : a host without nvidia-cuda-mps-control
+        // (no CUDA toolkit, or no NVIDIA GPU) silently degrades to advisory-only.
+        let _ = crate::user_manager::UserManager::setup_mps();
 
         config.status = SharingStatus::Active;
         Ok(config.clone())
     }
 
+    /// Désactivation complète : remove the partagpu user, kill its running
+    /// processes, free the cgroup, close the firewall, drop the managed
+    /// venv. Brings the system back to a clean state as if PartaGPU had
+    /// never been activated. Use *Pause* for a temporary stop instead —
+    /// pause keeps everything in place for fast resume.
     pub fn disable(&self) -> Result<SharingConfig, String> {
         let mut config = self.config.lock().unwrap();
 
-        // Close firewall — no more incoming connections
-        let _ = crate::user_manager::UserManager::close_port();
+        // Stop MPS first so its socket is gone before we wipe the user.
+        let _ = crate::user_manager::UserManager::teardown_mps();
+
+        // Full cleanup via the helper (pkexec password prompt). Kills all
+        // running tasks (pkill -u partagpu), removes the user (userdel
+        // --remove also wipes /var/lib/partagpu including the managed venv),
+        // strips SSH/sudo deny rules, removes the restricted shell from
+        // /etc/shells, deletes the cgroup, closes the firewall.
+        crate::user_manager::UserManager::remove_user()?;
 
         config.status = SharingStatus::Disabled;
         Ok(config.clone())
@@ -95,6 +122,14 @@ impl SharingController {
 
         config.status = SharingStatus::Active;
         Ok(config.clone())
+    }
+
+    /// Test-only : flip the in-memory status to Active without going through
+    /// the helper / pkexec / cgroup setup. Used by the peer-API integration
+    /// tests so they can submit tasks without requiring root privileges.
+    #[doc(hidden)]
+    pub fn force_active_for_tests(&self) {
+        self.config.lock().unwrap().status = SharingStatus::Active;
     }
 
     pub fn set_limits(

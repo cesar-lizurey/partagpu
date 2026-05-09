@@ -1,4 +1,6 @@
 import type { SharingStatus } from "../lib/api";
+import { useT } from "../lib/i18n";
+import type { MessageKey } from "../lib/messages";
 
 interface SharingToggleProps {
   status: SharingStatus;
@@ -8,10 +10,10 @@ interface SharingToggleProps {
   onResume: () => void;
 }
 
-const STATUS_LABELS: Record<SharingStatus, { label: string; className: string }> = {
-  Disabled: { label: "Désactivé", className: "status--disabled" },
-  Active: { label: "Actif", className: "status--active" },
-  Paused: { label: "En pause", className: "status--paused" },
+const STATUS_LABEL_KEY: Record<SharingStatus, { key: MessageKey; className: string }> = {
+  Disabled: { key: "sharing.status_disabled", className: "status--disabled" },
+  Active: { key: "sharing.status_active", className: "status--active" },
+  Paused: { key: "sharing.status_paused", className: "status--paused" },
 };
 
 export function SharingToggle({
@@ -21,37 +23,56 @@ export function SharingToggle({
   onPause,
   onResume,
 }: SharingToggleProps) {
-  const { label, className } = STATUS_LABELS[status];
+  const t = useT();
+  const { key, className } = STATUS_LABEL_KEY[status];
+
+  const handleDisable = () => {
+    if (window.confirm(t("sharing.confirm_disable"))) {
+      onDisable();
+    }
+  };
 
   return (
     <div className="sharing-toggle">
       <div className={`sharing-toggle__status ${className}`}>
         <span className="sharing-toggle__dot" />
-        <span>{label}</span>
+        <span>{t(key)}</span>
       </div>
       <div className="sharing-toggle__actions">
         {status === "Disabled" && (
           <button className="btn btn--primary" onClick={onEnable}>
-            Activer le partage
+            {t("sharing.btn_enable")}
           </button>
         )}
         {status === "Active" && (
           <>
-            <button className="btn btn--warning" onClick={onPause}>
-              Pause
+            <button
+              className="btn btn--warning"
+              onClick={onPause}
+              title={t("sharing.tip_pause")}
+            >
+              {t("sharing.btn_pause")}
             </button>
-            <button className="btn btn--danger" onClick={onDisable}>
-              Désactiver
+            <button
+              className="btn btn--danger"
+              onClick={handleDisable}
+              title={t("sharing.tip_disable")}
+            >
+              {t("sharing.btn_disable")}
             </button>
           </>
         )}
         {status === "Paused" && (
           <>
             <button className="btn btn--primary" onClick={onResume}>
-              Reprendre
+              {t("sharing.btn_resume")}
             </button>
-            <button className="btn btn--danger" onClick={onDisable}>
-              Désactiver
+            <button
+              className="btn btn--danger"
+              onClick={handleDisable}
+              title={t("sharing.tip_disable_paused")}
+            >
+              {t("sharing.btn_disable")}
             </button>
           </>
         )}

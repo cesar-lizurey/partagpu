@@ -24,7 +24,26 @@ const SSHD_DENY_FILE: &str = "/etc/ssh/sshd_config.d/partagpu-deny.conf";
 const PASSWORD_MAX_DAYS: u32 = 90;
 const CGROUP_PATH: &str = "/sys/fs/cgroup/partagpu";
 const APP_PORT: u16 = 7654;
+const PEER_PORT: u16 = 7655;
 const MDNS_PORT: u16 = 5353;
+/// Rendezvous range for distributed training (NCCL/Gloo). Default torch.distributed
+/// uses 29500; we open a small range so concurrent jobs don't collide.
+const RENDEZVOUS_RANGE: &str = "29500:29510";
+
+/// Managed Python venv used by the sandbox so users don't need to do
+/// `sudo pip install --break-system-packages` on each peer. The venv is
+/// installed once via the helper, then bind-mounted read-only inside the
+/// sandbox at `/opt/partagpu-venv`.
+const MANAGED_VENV: &str = "/var/lib/partagpu/venv";
+
+/// CUDA MPS pipe directory : the Unix socket NVIDIA's MPS daemon listens
+/// on, plus the directory client processes use to connect. Lives under
+/// `/var/lib/partagpu` (owned by partagpu) so daemon and sandbox clients
+/// (both running as partagpu UID) can share it. Bind-mounted into bwrap.
+const MPS_PIPE_DIR: &str = "/var/lib/partagpu/mps";
+/// MPS daemon log directory. Useful for diagnostics if MPS misbehaves —
+/// `tail /var/lib/partagpu/mps-log/control.log` from a privileged shell.
+const MPS_LOG_DIR: &str = "/var/lib/partagpu/mps-log";
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -112,9 +131,11 @@ fn chown_recursive(path: &str, user: &str) {
 }
 
 fn validate_int(name: &str, value: &str) -> u64 {
-    value
-        .parse::<u64>()
-        .unwrap_or_else(|_| die(&format!("{name} must be a positive integer, got: '{value}'")))
+    value.parse::<u64>().unwrap_or_else(|_| {
+        die(&format!(
+            "{name} must be a positive integer, got: '{value}'"
+        ))
+    })
 }
 
 // ── Commands ───────────────────────────────────────────────
@@ -139,10 +160,13 @@ fn cmd_create_user() {
         if !run(
             "useradd",
             &[
-                "--shell", RESTRICTED_SHELL,
+                "--shell",
+                RESTRICTED_SHELL,
                 "--create-home",
-                "--home-dir", PARTAGPU_HOME,
-                "--comment", "PartaGPU — partage de calcul",
+                "--home-dir",
+                PARTAGPU_HOME,
+                "--comment",
+                "PartaGPU — partage de calcul",
                 PARTAGPU_USER,
             ],
         ) {
@@ -150,10 +174,13 @@ fn cmd_create_user() {
             let _ = run(
                 "useradd",
                 &[
-                    "--shell", "/bin/bash",
+                    "--shell",
+                    "/bin/bash",
                     "--create-home",
-                    "--home-dir", PARTAGPU_HOME,
-                    "--comment", "PartaGPU — partage de calcul",
+                    "--home-dir",
+                    PARTAGPU_HOME,
+                    "--comment",
+                    "PartaGPU — partage de calcul",
                     PARTAGPU_USER,
                 ],
             );
@@ -162,10 +189,10 @@ fn cmd_create_user() {
     }
 
     // 2. Set password expiration (90 days)
-    let _ = run("chage", &[
-        "--maxdays", &PASSWORD_MAX_DAYS.to_string(),
-        PARTAGPU_USER,
-    ]);
+    let _ = run(
+        "chage",
+        &["--maxdays", &PASSWORD_MAX_DAYS.to_string(), PARTAGPU_USER],
+    );
 
     // 3. Block SSH access
     install_ssh_deny();
@@ -173,8 +200,13 @@ fn cmd_create_user() {
     // 4. Block sudo access
     install_sudoers_deny();
 
-    // 5. Lock down home directory permissions (only partagpu can read)
-    set_permissions(PARTAGPU_HOME, 0o700);
+    // 5. Home directory permissions : 0o711 = traversable (anyone can `cd`
+    //    or stat() a child path) but not listable (no `ls` for non-partagpu).
+    //    Files inside stay private through their own mode bits. Pure 0o700
+    //    would block the main app (running as the regular user) from even
+    //    checking whether `/var/lib/partagpu/venv/bin/python3` exists, which
+    //    is needed to render the "managed venv installed" badge in the UI.
+    set_permissions(PARTAGPU_HOME, 0o711);
 
     // 6. Autostart
     cmd_setup_autostart();
@@ -218,7 +250,9 @@ exec {exec_path}
 "#
     );
 
-    let parent = Path::new(RESTRICTED_SHELL).parent().unwrap_or(Path::new("/"));
+    let parent = Path::new(RESTRICTED_SHELL)
+        .parent()
+        .unwrap_or(Path::new("/"));
     mkdir_p(&parent.to_string_lossy());
     write_file(RESTRICTED_SHELL, &shell_script);
     set_permissions(RESTRICTED_SHELL, 0o755);
@@ -226,10 +260,7 @@ exec {exec_path}
     // Register in /etc/shells so display managers accept it
     let shells_content = fs::read_to_string("/etc/shells").unwrap_or_default();
     if !shells_content.contains(RESTRICTED_SHELL) {
-        let mut f = fs::OpenOptions::new()
-            .append(true)
-            .open("/etc/shells")
-            .ok();
+        let mut f = fs::OpenOptions::new().append(true).open("/etc/shells").ok();
         if let Some(ref mut file) = f {
             use std::io::Write;
             let _ = writeln!(file, "{RESTRICTED_SHELL}");
@@ -239,13 +270,17 @@ exec {exec_path}
 
 /// Block SSH access for the partagpu user.
 fn install_ssh_deny() {
-    let sshd_dir = Path::new(SSHD_DENY_FILE).parent().unwrap_or(Path::new("/etc/ssh"));
+    let sshd_dir = Path::new(SSHD_DENY_FILE)
+        .parent()
+        .unwrap_or(Path::new("/etc/ssh"));
 
     // Only write if the sshd_config.d directory exists (modern sshd)
     if sshd_dir.is_dir() {
         write_file(
             SSHD_DENY_FILE,
-            &format!("# PartaGPU: block SSH access for the sharing account\nDenyUsers {PARTAGPU_USER}\n"),
+            &format!(
+                "# PartaGPU: block SSH access for the sharing account\nDenyUsers {PARTAGPU_USER}\n"
+            ),
         );
         set_permissions(SSHD_DENY_FILE, 0o644);
         // Reload sshd to apply (best effort)
@@ -289,7 +324,9 @@ fn cmd_set_password() {
     }
 
     if !user_exists() {
-        die(&format!("user {PARTAGPU_USER} does not exist. Create it first."));
+        die(&format!(
+            "user {PARTAGPU_USER} does not exist. Create it first."
+        ));
     }
 
     // Pipe to chpasswd via stdin
@@ -303,7 +340,9 @@ fn cmd_set_password() {
         let _ = writeln!(stdin, "{PARTAGPU_USER}:{password}");
     }
 
-    let status = child.wait().unwrap_or_else(|e| die(&format!("chpasswd error: {e}")));
+    let status = child
+        .wait()
+        .unwrap_or_else(|e| die(&format!("chpasswd error: {e}")));
     if !status.success() {
         die("chpasswd failed");
     }
@@ -369,7 +408,8 @@ fn cmd_remove_user() {
             .lines()
             .filter(|l| l.trim() != RESTRICTED_SHELL)
             .collect::<Vec<_>>()
-            .join("\n") + "\n";
+            .join("\n")
+            + "\n";
         let _ = fs::write("/etc/shells", filtered);
     }
 
@@ -379,6 +419,13 @@ fn cmd_remove_user() {
 
     println!("User {PARTAGPU_USER} removed");
 }
+
+/// Hard cap on the number of processes a single sandbox subtree can spawn.
+/// Without this, a fork bomb in the sandbox (`:(){:|:&};:`) eats the whole
+/// system `pid_max`. 1024 is plenty for a Python+torch DDP workload (a few
+/// dozen processes typically) but tight enough that runaway fork bombs hit
+/// the wall fast.
+const PIDS_MAX_PER_SANDBOX: u32 = 1024;
 
 fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
     let cpu_percent = validate_int("cpu_percent", cpu_str);
@@ -390,12 +437,24 @@ fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
 
     mkdir_p(CGROUP_PATH);
 
-    // Enable controllers
-    let _ = fs::write("/sys/fs/cgroup/cgroup.subtree_control", "+cpu +memory");
+    // Enable controllers (cpu, memory, pids). The pids controller is what
+    // makes pids.max actually enforce — without it, the file exists but
+    // writing to it is a no-op.
+    let _ = fs::write(
+        "/sys/fs/cgroup/cgroup.subtree_control",
+        "+cpu +memory +pids",
+    );
 
-    // CPU limit
+    // CPU limit. cgroup v2 cpu.max counts CPU time across all cores, so a
+    // quota of 100000us per 100000us period caps the cgroup at one full core
+    // (≈ 6.25% on a 16-core host). The user-facing slider means "% of the
+    // whole machine" — scale the quota by the core count so 50% on a
+    // 16-core box becomes 800000us per 100000us = 8 cores.
     if cpu_percent > 0 && cpu_percent <= 100 {
-        let quota = cpu_percent * 1000;
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get() as u64)
+            .unwrap_or(1);
+        let quota = (cpu_percent as u64) * 1000 * cores;
         write_file(
             &format!("{CGROUP_PATH}/cpu.max"),
             &format!("{quota} 100000"),
@@ -410,58 +469,187 @@ fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
     };
     write_file(&format!("{CGROUP_PATH}/memory.max"), &mem_val);
 
-    // Grant calling user write access (PKEXEC_UID)
+    // Process count cap — kills fork bombs cleanly. Applied at the parent
+    // partagpu cgroup so it caps the union of all running tasks. Per-task
+    // sub-cgroups inherit, so any single sandbox tree is also capped at
+    // this number.
+    write_file(
+        &format!("{CGROUP_PATH}/pids.max"),
+        &PIDS_MAX_PER_SANDBOX.to_string(),
+    );
+
+    // Enable cpu + memory + pids controllers for sub-cgroups so per-task
+    // child cgroups can use them.
+    let _ = fs::write(
+        format!("{CGROUP_PATH}/cgroup.subtree_control"),
+        "+cpu +memory +pids",
+    );
+
+    // Grant calling user write access (PKEXEC_UID) so the main app can
+    // adjust limits AND create per-task sub-cgroups (mkdir under
+    // /sys/fs/cgroup/partagpu/) without re-elevation.
     if let Ok(uid_str) = env::var("PKEXEC_UID") {
         if let Ok(uid) = uid_str.parse::<u32>() {
-            for file in ["cpu.max", "memory.max", "cgroup.procs"] {
+            // Limit + procs files of the parent cgroup.
+            for file in [
+                "cpu.max",
+                "memory.max",
+                "pids.max",
+                "cgroup.procs",
+                "cgroup.subtree_control",
+            ] {
                 let path = format!("{CGROUP_PATH}/{file}");
                 let _ = chown(&path, Some(uid), None);
             }
+            // The directory itself, so the user can mkdir sub-cgroups.
+            let _ = chown(CGROUP_PATH, Some(uid), None);
         }
     }
 
-    println!("Cgroup configured: cpu={cpu_percent}% ram={ram_limit_mb}M");
+    println!(
+        "Cgroup configured: cpu={cpu_percent}% ram={ram_limit_mb}M pids={PIDS_MAX_PER_SANDBOX} (per-task sub-cgroups enabled)"
+    );
 }
 
 fn cmd_remove_cgroup() {
     if Path::new(CGROUP_PATH).exists() {
-        let _ = fs::remove_dir(CGROUP_PATH)
-            .or_else(|_| fs::remove_dir_all(CGROUP_PATH));
+        let _ = fs::remove_dir(CGROUP_PATH).or_else(|_| fs::remove_dir_all(CGROUP_PATH));
     }
     println!("Cgroup removed");
 }
 
 fn cmd_open_port() {
     let app_tcp = format!("{APP_PORT}/tcp");
+    let peer_tcp = format!("{PEER_PORT}/tcp");
+    let rdv_tcp = format!("{RENDEZVOUS_RANGE}/tcp");
     let mdns_udp = format!("{MDNS_PORT}/udp");
 
     if which("ufw") {
         let _ = run_silent("ufw", &["allow", &app_tcp, "comment", "PartaGPU"]);
+        let _ = run_silent("ufw", &["allow", &peer_tcp, "comment", "PartaGPU peer"]);
+        let _ = run_silent("ufw", &["allow", &rdv_tcp, "comment", "PartaGPU DDP"]);
         let _ = run_silent("ufw", &["allow", &mdns_udp, "comment", "PartaGPU mDNS"]);
-        println!("Firewall opened (ufw): TCP {APP_PORT}, UDP {MDNS_PORT}");
+        println!(
+            "Firewall opened (ufw): TCP {APP_PORT}, TCP {PEER_PORT}, TCP {RENDEZVOUS_RANGE}, UDP {MDNS_PORT}"
+        );
     } else if which("iptables") {
-        // Remove first to avoid duplicates, then add
+        for port in [APP_PORT, PEER_PORT] {
+            let comment = if port == APP_PORT {
+                "PartaGPU"
+            } else {
+                "PartaGPU peer"
+            };
+            let _ = run_silent(
+                "iptables",
+                &[
+                    "-D",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    &port.to_string(),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    comment,
+                    "-j",
+                    "ACCEPT",
+                ],
+            );
+            run(
+                "iptables",
+                &[
+                    "-A",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    &port.to_string(),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    comment,
+                    "-j",
+                    "ACCEPT",
+                ],
+            );
+        }
+        // Rendezvous range for distributed training
         let _ = run_silent(
             "iptables",
-            &["-D", "INPUT", "-p", "tcp", "--dport", &APP_PORT.to_string(),
-              "-m", "comment", "--comment", "PartaGPU", "-j", "ACCEPT"],
-        );
-        let _ = run_silent(
-            "iptables",
-            &["-D", "INPUT", "-p", "udp", "--dport", &MDNS_PORT.to_string(),
-              "-m", "comment", "--comment", "PartaGPU mDNS", "-j", "ACCEPT"],
+            &[
+                "-D",
+                "INPUT",
+                "-p",
+                "tcp",
+                "-m",
+                "multiport",
+                "--dports",
+                RENDEZVOUS_RANGE,
+                "-m",
+                "comment",
+                "--comment",
+                "PartaGPU DDP",
+                "-j",
+                "ACCEPT",
+            ],
         );
         run(
             "iptables",
-            &["-A", "INPUT", "-p", "tcp", "--dport", &APP_PORT.to_string(),
-              "-m", "comment", "--comment", "PartaGPU", "-j", "ACCEPT"],
+            &[
+                "-A",
+                "INPUT",
+                "-p",
+                "tcp",
+                "-m",
+                "multiport",
+                "--dports",
+                RENDEZVOUS_RANGE,
+                "-m",
+                "comment",
+                "--comment",
+                "PartaGPU DDP",
+                "-j",
+                "ACCEPT",
+            ],
+        );
+        let _ = run_silent(
+            "iptables",
+            &[
+                "-D",
+                "INPUT",
+                "-p",
+                "udp",
+                "--dport",
+                &MDNS_PORT.to_string(),
+                "-m",
+                "comment",
+                "--comment",
+                "PartaGPU mDNS",
+                "-j",
+                "ACCEPT",
+            ],
         );
         run(
             "iptables",
-            &["-A", "INPUT", "-p", "udp", "--dport", &MDNS_PORT.to_string(),
-              "-m", "comment", "--comment", "PartaGPU mDNS", "-j", "ACCEPT"],
+            &[
+                "-A",
+                "INPUT",
+                "-p",
+                "udp",
+                "--dport",
+                &MDNS_PORT.to_string(),
+                "-m",
+                "comment",
+                "--comment",
+                "PartaGPU mDNS",
+                "-j",
+                "ACCEPT",
+            ],
         );
-        println!("Firewall opened (iptables): TCP {APP_PORT}, UDP {MDNS_PORT}");
+        println!(
+            "Firewall opened (iptables): TCP {APP_PORT}, TCP {PEER_PORT}, TCP {RENDEZVOUS_RANGE}, UDP {MDNS_PORT}"
+        );
     } else {
         println!("No firewall detected, skipping");
     }
@@ -469,19 +657,141 @@ fn cmd_open_port() {
 
 fn cmd_close_port() {
     let app_tcp = format!("{APP_PORT}/tcp");
+    let peer_tcp = format!("{PEER_PORT}/tcp");
+    let rdv_tcp = format!("{RENDEZVOUS_RANGE}/tcp");
 
     if which("ufw") {
         let _ = run_silent("ufw", &["delete", "allow", &app_tcp]);
-        println!("Firewall closed (ufw): TCP {APP_PORT}");
+        let _ = run_silent("ufw", &["delete", "allow", &peer_tcp]);
+        let _ = run_silent("ufw", &["delete", "allow", &rdv_tcp]);
+        println!("Firewall closed (ufw): TCP {APP_PORT}, TCP {PEER_PORT}, TCP {RENDEZVOUS_RANGE}");
     } else if which("iptables") {
+        for (port, comment) in [(APP_PORT, "PartaGPU"), (PEER_PORT, "PartaGPU peer")] {
+            let _ = run_silent(
+                "iptables",
+                &[
+                    "-D",
+                    "INPUT",
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    &port.to_string(),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    comment,
+                    "-j",
+                    "ACCEPT",
+                ],
+            );
+        }
         let _ = run_silent(
             "iptables",
-            &["-D", "INPUT", "-p", "tcp", "--dport", &APP_PORT.to_string(),
-              "-m", "comment", "--comment", "PartaGPU", "-j", "ACCEPT"],
+            &[
+                "-D",
+                "INPUT",
+                "-p",
+                "tcp",
+                "-m",
+                "multiport",
+                "--dports",
+                RENDEZVOUS_RANGE,
+                "-m",
+                "comment",
+                "--comment",
+                "PartaGPU DDP",
+                "-j",
+                "ACCEPT",
+            ],
         );
-        println!("Firewall closed (iptables): TCP {APP_PORT}");
+        println!(
+            "Firewall closed (iptables): TCP {APP_PORT}, TCP {PEER_PORT}, TCP {RENDEZVOUS_RANGE}"
+        );
     } else {
         println!("No firewall detected, skipping");
+    }
+}
+
+// ── Managed venv ──────────────────────────────────────────────────────────
+
+fn cmd_setup_venv() {
+    // Use the system python to create the venv.
+    if !std::path::Path::new("/usr/bin/python3").exists() {
+        die("/usr/bin/python3 introuvable. Installez python3 d'abord.");
+    }
+
+    // Ensure the parent dir exists and is owned by partagpu.
+    if let Some(parent) = std::path::Path::new(MANAGED_VENV).parent() {
+        mkdir_p(&parent.to_string_lossy());
+    }
+
+    // Create the venv (idempotent — `python3 -m venv` reuses an existing dir
+    // if it already has a `bin/python` matching the current python).
+    if !run("/usr/bin/python3", &["-m", "venv", MANAGED_VENV]) {
+        die("python3 -m venv a échoué.");
+    }
+
+    let pip = format!("{MANAGED_VENV}/bin/pip");
+
+    // Upgrade pip (best effort — old pip versions sometimes can't install
+    // recent torch wheels). Failure is non-fatal.
+    let _ = run(&pip, &["install", "--upgrade", "pip"]);
+
+    // Curated "ML basics" toolkit — what most data science / ML courses
+    // need on day one. Tradeoff : larger initial install (~3 GB vs ~2 GB
+    // for torch alone) but the user doesn't have to manually pip install
+    // pandas/sklearn/matplotlib for every task.
+    //
+    // - torch + torchvision : core deep learning + image utilities
+    // - numpy + scipy       : foundation
+    // - pandas              : tabular data
+    // - scikit-learn        : classical ML
+    // - matplotlib          : plots
+    // - pillow              : image I/O (transitive of torchvision but
+    //                         explicit for clarity / robustness)
+    let packages = [
+        "torch",
+        "torchvision",
+        "numpy",
+        "scipy",
+        "pandas",
+        "scikit-learn",
+        "matplotlib",
+        "pillow",
+    ];
+    println!(
+        "Installation de la toolkit ML : {} (peut prendre 5-10 minutes, ~3 Go)…",
+        packages.join(" + ")
+    );
+    let mut args = vec!["install", "--upgrade"];
+    args.extend(packages.iter().copied());
+    if !run(&pip, &args) {
+        die("pip install de la toolkit ML a échoué.");
+    }
+
+    // Hand ownership to partagpu so the sandbox UID can read the files
+    // (technically, world-readable mode would suffice, but this keeps perms
+    // clean if pip ever installs with mode 600 something).
+    chown_recursive(MANAGED_VENV, PARTAGPU_USER);
+
+    // Ensure the parent /var/lib/partagpu is traversable by other users
+    // (mode 0o711). On older installs that still have 0o700 from a
+    // previous create-user, the main app can't stat /venv/bin/python3
+    // and renders "Non installé" even when the venv is there. This makes
+    // setup-venv idempotently fix that.
+    set_permissions(PARTAGPU_HOME, 0o711);
+
+    println!("Venv géré installé dans {MANAGED_VENV}");
+}
+
+fn cmd_remove_venv() {
+    if std::path::Path::new(MANAGED_VENV).exists() {
+        if let Err(e) = fs::remove_dir_all(MANAGED_VENV) {
+            die(&format!("rm -rf {MANAGED_VENV} : {e}"));
+        }
+        println!("Venv géré supprimé.");
+    } else {
+        println!("Aucun venv géré à supprimer.");
     }
 }
 
@@ -493,6 +803,102 @@ fn which(cmd: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+// ── CUDA MPS lifecycle ─────────────────────────────────────
+
+/// Whether an MPS daemon is currently running as the partagpu user.
+fn is_mps_running() -> bool {
+    Command::new("pgrep")
+        .args(["-u", PARTAGPU_USER, "-f", "nvidia-cuda-mps-control"])
+        .stdout(process::Stdio::null())
+        .stderr(process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Start the CUDA MPS daemon as the partagpu user. Idempotent : no-op if
+/// already running. Best-effort : if `nvidia-cuda-mps-control` is missing
+/// or the daemon fails to start, the function returns successfully and
+/// just logs a warning — the GPU limit will degrade to advisory-only,
+/// but everything else (cgroup, sandbox, dispatch) keeps working.
+///
+/// MPS allows tasks running as the partagpu UID to be capped to a
+/// fraction of GPU SM threads via the `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE`
+/// env var (set by the sandbox per-task). Without MPS, that env var is
+/// ignored by the CUDA driver.
+fn cmd_setup_mps() {
+    if !which("nvidia-cuda-mps-control") {
+        println!(
+            "MPS unavailable (nvidia-cuda-mps-control missing) — GPU limit will be advisory-only."
+        );
+        return;
+    }
+    if !user_exists() {
+        die(&format!(
+            "user {PARTAGPU_USER} does not exist; create it before MPS setup"
+        ));
+    }
+
+    // Pipe + log dirs owned by partagpu so the daemon (also running as
+    // partagpu) can write its socket / logs there.
+    mkdir_p(MPS_PIPE_DIR);
+    mkdir_p(MPS_LOG_DIR);
+    chown_to_user(MPS_PIPE_DIR, PARTAGPU_USER);
+    chown_to_user(MPS_LOG_DIR, PARTAGPU_USER);
+    set_permissions(MPS_PIPE_DIR, 0o711);
+    set_permissions(MPS_LOG_DIR, 0o755);
+
+    if is_mps_running() {
+        println!("MPS daemon already running");
+        return;
+    }
+
+    // Start as partagpu via runuser (bypasses the restricted login shell).
+    // The `-d` flag makes the daemon detach and the foreground process
+    // exit immediately, so this returns quickly.
+    let cmd = format!(
+        "CUDA_MPS_PIPE_DIRECTORY={MPS_PIPE_DIR} CUDA_MPS_LOG_DIRECTORY={MPS_LOG_DIR} \
+         nvidia-cuda-mps-control -d"
+    );
+    let ok = run(
+        "runuser",
+        &["-u", PARTAGPU_USER, "--", "sh", "-c", cmd.as_str()],
+    );
+    if !ok {
+        eprintln!(
+            "Warning: failed to start MPS daemon. GPU limit will be advisory-only \
+             until the next sharing toggle. Check {MPS_LOG_DIR} for details."
+        );
+    } else {
+        println!("MPS daemon started (pipe: {MPS_PIPE_DIR})");
+    }
+}
+
+/// Stop the CUDA MPS daemon. Best-effort + idempotent. Called when
+/// sharing is being disabled (along with cgroup teardown, account
+/// removal etc.).
+fn cmd_teardown_mps() {
+    if !which("nvidia-cuda-mps-control") {
+        return;
+    }
+    if !is_mps_running() {
+        println!("MPS daemon not running");
+        return;
+    }
+    let cmd = format!("echo quit | CUDA_MPS_PIPE_DIRECTORY={MPS_PIPE_DIR} nvidia-cuda-mps-control");
+    let _ = run(
+        "runuser",
+        &["-u", PARTAGPU_USER, "--", "sh", "-c", cmd.as_str()],
+    );
+    // Belt-and-suspenders : a misbehaving daemon may not respond to `quit`.
+    // pkill catches the leftover.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    if is_mps_running() {
+        let _ = run_silent("pkill", &["-u", PARTAGPU_USER, "-f", "nvidia-cuda-mps"]);
+    }
+    println!("MPS daemon stopped");
 }
 
 // ── Main ───────────────────────────────────────────────────
@@ -508,6 +914,12 @@ fn usage() -> ! {
     eprintln!("  remove-cgroup");
     eprintln!("  open-port                Open firewall for PartaGPU");
     eprintln!("  close-port               Close firewall for PartaGPU");
+    eprintln!("  setup-venv               Create /var/lib/partagpu/venv with torch + numpy");
+    eprintln!("  remove-venv              Remove the managed venv");
+    eprintln!(
+        "  setup-mps                Start the CUDA MPS daemon (so the sandbox can cap GPU SM%)"
+    );
+    eprintln!("  teardown-mps             Stop the CUDA MPS daemon");
     process::exit(1);
 }
 
@@ -530,6 +942,10 @@ fn main() {
         "remove-cgroup" => cmd_remove_cgroup(),
         "open-port" => cmd_open_port(),
         "close-port" => cmd_close_port(),
+        "setup-venv" => cmd_setup_venv(),
+        "remove-venv" => cmd_remove_venv(),
+        "setup-mps" => cmd_setup_mps(),
+        "teardown-mps" => cmd_teardown_mps(),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             usage();

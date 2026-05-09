@@ -12,9 +12,15 @@ export interface Peer {
   cpu_limit: number;
   ram_limit: number;
   gpu_limit: number;
-  totp_code: string;
+  /** Number of CUDA devices visible on this peer (0 if no GPU). */
+  gpu_count?: number;
+  /** True iff this peer answered the active `/peer/v1/verify` HMAC challenge
+   *  with a valid response. Updated asynchronously after the first probe. */
   verified: boolean;
   hostname_conflict: boolean;
+  /** Peer's ephemeral X25519 public key (base64), regenerated on app restart.
+   *  Empty when the peer is on an older PartaGPU version. */
+  eph_pk?: string;
 }
 
 export interface RoomStatus {
@@ -39,6 +45,10 @@ export interface ResourceUsage {
   gpu_memory_used_mb: number;
   gpu_memory_total_mb: number;
   gpu_available: boolean;
+  /** True when the GPU share-limit is actually enforced (CUDA MPS daemon up).
+   *  False when MPS is missing or down — the slider is then advisory-only and
+   *  the UI surfaces a warning so users don't expect hard caps. */
+  gpu_limit_enforced: boolean;
 }
 
 export type SharingStatus = "Disabled" | "Active" | "Paused";
@@ -57,6 +67,18 @@ export type TaskStatus =
   | "Failed"
   | "Cancelled";
 
+export interface WorkspaceFile {
+  path: string;
+  content_b64: string;
+}
+
+export interface Artifact {
+  /** Relative path inside the task's `/workspace` (as requested via `outputs`). */
+  path: string;
+  /** Standard base64 encoding of the file contents. */
+  content_b64: string;
+}
+
 export interface Task {
   id: string;
   command: string;
@@ -73,6 +95,16 @@ export interface Task {
   error_output: string;
   exit_code: number | null;
   created_at: number;
+  /** Unix timestamp (seconds) when the task transitioned to a terminal state.
+   *  Null while still Queued/Running. Combined with `created_at` it gives
+   *  the total wall-clock time shown under the progress bar. */
+  ended_at?: number | null;
+  /** True when the sandbox kept host network access (DDP rendezvous). */
+  network_enabled?: boolean;
+  /** Files retrieved from `/workspace` after the task completed (when the
+   *  caller asked for them via `outputs=[...]`). Not persisted across app
+   *  restarts. */
+  artifacts?: Artifact[];
 }
 
 export interface MachineInfo {
@@ -94,6 +126,18 @@ export const setUserPassword = (password: string) =>
 export const getPeers = () => invoke<Peer[]>("get_peers");
 
 export const getResources = () => invoke<ResourceUsage>("get_resources");
+
+export interface ResourceSample {
+  timestamp_secs: number;
+  cpu_percent: number;
+  ram_used_mb: number;
+  gpu_percent: number;
+}
+
+/** Last ~5 min of CPU/RAM/GPU samples (one every 5 s). Used to render
+ *  sparkline graphs of recent resource usage. */
+export const getResourceHistory = () =>
+  invoke<ResourceSample[]>("get_resource_history");
 
 export const getSharingConfig = () =>
   invoke<SharingConfig>("get_sharing_config");
@@ -126,8 +170,85 @@ export const submitTask = (
   sourceMachine: string,
   sourceUser: string,
   timeoutSecs?: number,
+  networkEnabled?: boolean,
+  workspace?: WorkspaceFile[],
 ) =>
-  invoke<Task>("submit_task", { args, sourceMachine, sourceUser, timeoutSecs });
+  invoke<Task>("submit_task", {
+    args,
+    sourceMachine,
+    sourceUser,
+    timeoutSecs,
+    networkEnabled,
+    workspace,
+  });
+
+// ── Managed venv ─────────────────────────────────────────────────────────
+
+export interface ManagedVenvStatus {
+  installed: boolean;
+  path: string;
+}
+
+export const getManagedVenvStatus = () =>
+  invoke<ManagedVenvStatus>("get_managed_venv_status");
+
+/** Install the managed venv (~2 GB pip download for torch). Long-running. */
+export const setupManagedVenv = () => invoke<void>("setup_managed_venv");
+
+export const removeManagedVenv = () => invoke<void>("remove_managed_venv");
+
+// ── Concurrency cap ──────────────────────────────────────────────────────
+
+/** Max number of incoming tasks that may run at once on this machine.
+ *  Tasks beyond the cap stay Queued until a running task ends. */
+export const getMaxConcurrentTasks = () =>
+  invoke<number>("get_max_concurrent_tasks");
+
+export const setMaxConcurrentTasks = (n: number) =>
+  invoke<void>("set_max_concurrent_tasks", { n });
+
+/** Dispatch a command to a peer from the UI. Blocks until the task ends. */
+export const dispatchTask = (
+  peerIp: string,
+  args: string[],
+  options: {
+    timeoutSecs?: number;
+    network?: boolean;
+    user?: string;
+    /** Pre-allocated outgoing task id. Lets the UI poll the live task while
+     *  the dispatch is still in flight. */
+    localId?: string;
+    /** Files to push to the peer's `/workspace` before exec. Each file's
+     *  `content_b64` is the base64 of its raw bytes. */
+    workspace?: WorkspaceFile[];
+  } = {},
+) =>
+  invoke<Task>("dispatch_task", {
+    peerIp,
+    args,
+    timeoutSecs: options.timeoutSecs,
+    network: options.network,
+    user: options.user,
+    localId: options.localId,
+    workspace: options.workspace,
+  });
+
+export const cancelIncomingTask = (taskId: string) =>
+  invoke<void>("cancel_incoming_task", { taskId });
+
+/** Cancel an outgoing task. Returns true if the peer acknowledged the cancel,
+ *  false if only local state was updated (peer unreachable). */
+export const cancelOutgoingTask = (localId: string) =>
+  invoke<boolean>("cancel_outgoing_task", { localId });
+
+/** Drop an incoming task from local history. Only allowed once the task has
+ *  reached a terminal state (Completed/Failed/Cancelled). */
+export const removeIncomingTask = (taskId: string) =>
+  invoke<void>("remove_incoming_task", { taskId });
+
+/** Drop an outgoing task from local history (terminal states only). */
+export const removeOutgoingTask = (localId: string) =>
+  invoke<void>("remove_outgoing_task", { localId });
 
 export const getAllowlist = () => invoke<string[]>("get_allowlist");
 
@@ -156,7 +277,7 @@ export const getSecurityLog = (since?: number) =>
 
 export const clearSecurityLog = () => invoke<void>("clear_security_log");
 
-// ── Room / TOTP auth ──────────────────────────────────────
+// ── Room / HMAC auth ──────────────────────────────────────
 
 export const createRoom = (roomName: string) =>
   invoke<CreateRoomResult>("create_room", { roomName });
