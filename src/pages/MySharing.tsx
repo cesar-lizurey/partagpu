@@ -403,6 +403,14 @@ export function MySharing() {
                         ? (v) => setLimit("gpu", v)
                         : undefined
                     }
+                    limitWarning={
+                      config &&
+                      config.status !== "Disabled" &&
+                      config.gpu_limit_percent < 100 &&
+                      !resources.gpu_limit_enforced
+                        ? t("gauge.gpu_advisory")
+                        : undefined
+                    }
                   />
                 )}
               </div>

@@ -227,6 +227,15 @@ impl IncomingTasks {
                 // leave gpu_usage at 0 in that case.
                 let gpu_per_pid = sample_gpu_per_pid();
 
+                // sysinfo's `process.cpu_usage()` returns 100% per fully-used
+                // logical core, so a multi-threaded task on a 16-core host can
+                // legitimately reach ~1600%. The frontend gauges and the
+                // per-user breakdown both treat `task.cpu_usage` as a system-
+                // wide percentage (0..100), comparable with `global_cpu_usage`.
+                // We therefore divide the raw sum by the core count here so
+                // both meanings stay aligned and the breakdown can no longer
+                // show > 100% (the historical "108% / 100%" bug).
+                let cpu_cores = sys.cpus().len().max(1) as f32;
                 for (task_id, root_pid) in snapshot_pids {
                     // Walk the process tree rooted at the bwrap PID, summing
                     // CPU%. The sandbox creates child processes (python, etc.)
@@ -244,6 +253,7 @@ impl IncomingTasks {
                             gpu_sum += *util;
                         }
                     }
+                    let cpu_pct = (cpu_sum / cpu_cores).min(100.0);
                     // RAM : prefer the kernel's per-cgroup tally
                     // (`memory.current` of the task's sub-cgroup) — it
                     // accounts shared pages once, which the sum of
@@ -268,7 +278,7 @@ impl IncomingTasks {
                     if let Some(task) = tasks.lock().unwrap().get_mut(&task_id) {
                         if task.status == TaskStatus::Running {
                             task.progress = progress;
-                            task.cpu_usage = cpu_sum;
+                            task.cpu_usage = cpu_pct;
                             task.ram_usage_mb = ram_mb;
                             task.gpu_usage = gpu_pct;
                             changed = true;

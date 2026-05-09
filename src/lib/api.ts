@@ -45,6 +45,10 @@ export interface ResourceUsage {
   gpu_memory_used_mb: number;
   gpu_memory_total_mb: number;
   gpu_available: boolean;
+  /** True when the GPU share-limit is actually enforced (CUDA MPS daemon up).
+   *  False when MPS is missing or down — the slider is then advisory-only and
+   *  the UI surfaces a warning so users don't expect hard caps. */
+  gpu_limit_enforced: boolean;
 }
 
 export type SharingStatus = "Disabled" | "Active" | "Paused";

@@ -11,9 +11,9 @@
 //!   is broadcast on the wire ; a passive LAN listener cannot collect HMAC
 //!   tags to brute-force the passphrase.
 //! - **HTTP request auth headers** ([`crypto::compute_request_auth`]) :
-//!   `X-PartaGPU-AUTH: <unix_ts>:<full HMAC>` where the HMAC binds the
+//!   `X-PartaGPU-AUTH: <unix_ts_ms>:<full HMAC>` where the HMAC binds the
 //!   timestamp + method + path + body hash. Anti-replay window of
-//!   `crypto::AUTH_WINDOW_SECS` (30 s by default).
+//!   `crypto::AUTH_WINDOW_MS` (30 000 ms by default).
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -255,7 +255,7 @@ impl AuthManager {
 
     /// Verify an `X-PartaGPU-AUTH` header on an incoming HTTP request.
     /// Returns `Ok(())` if the room is joined and the HMAC matches within
-    /// the AUTH_WINDOW_SECS clock-skew window.
+    /// the AUTH_WINDOW_MS clock-skew window.
     pub fn verify_request_auth(
         &self,
         header_value: &str,

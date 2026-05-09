@@ -96,6 +96,8 @@ const fr = {
   "gauge.input_disabled_title": "Activez le partage pour ajuster la limite",
   "gauge.input_drag_title": "Faites glisser pour ajuster la limite de partage",
   "gauge.you_label": "Vous (cette machine)",
+  "gauge.gpu_advisory":
+    "indicative (CUDA MPS inactif, la limite n'est pas appliquée)",
 
   // ── SharingToggle ──────────────────────────────────────────
   "sharing.status_disabled": "Désactivé",
@@ -430,6 +432,8 @@ const en: Record<keyof typeof fr, string> = {
   "gauge.input_disabled_title": "Enable sharing to adjust the limit",
   "gauge.input_drag_title": "Drag to adjust the share limit",
   "gauge.you_label": "You (this machine)",
+  "gauge.gpu_advisory":
+    "advisory only (CUDA MPS not running, limit isn't enforced)",
 
   // ── SharingToggle ──────────────────────────────────────────
   "sharing.status_disabled": "Disabled",

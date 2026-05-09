@@ -1,9 +1,15 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::process::Command;
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
+
+/// Same path as `sandbox::exec::MPS_PIPE_DIR`. Duplicated here (rather than
+/// `pub use`d) because the sandbox module is internal and we only need the
+/// const + a liveness probe to populate `ResourceUsage::gpu_limit_enforced`.
+const MPS_PIPE_DIR: &str = "/var/lib/partagpu/mps";
 
 /// Resource history sample : one tick of CPU / RAM / GPU usage with a
 /// unix-epoch timestamp. Compact representation chosen for cheap JSON
@@ -40,6 +46,29 @@ pub struct ResourceUsage {
     pub gpu_count: u32,
     /// Per-device snapshot. Empty when no GPU is available.
     pub gpus: Vec<GpuDevice>,
+    /// True when the GPU share-limit slider is actually enforced — i.e. the
+    /// CUDA MPS daemon is up so `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE` injected
+    /// into the sandbox env is honoured. False when MPS is missing or its
+    /// daemon isn't running ; in that case the slider is advisory-only and
+    /// the UI shows a warning to set expectations.
+    pub gpu_limit_enforced: bool,
+}
+
+/// Liveness probe for the CUDA MPS daemon. Mirrors the check in
+/// `sandbox::exec::is_mps_daemon_alive` — we duplicate it here so the
+/// frontend can be told whether the GPU share-limit is actually applied
+/// without having to call into the sandbox module.
+fn is_mps_active() -> bool {
+    if !Path::new(MPS_PIPE_DIR).is_dir() {
+        return false;
+    }
+    Command::new("pgrep")
+        .args(["-x", "nvidia-cuda-mps-control"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Snapshot of one CUDA device.
@@ -159,6 +188,7 @@ impl ResourceMonitor {
             gpu_available,
             gpu_count,
             gpus,
+            gpu_limit_enforced: gpu_available && is_mps_active(),
         }
     }
 }

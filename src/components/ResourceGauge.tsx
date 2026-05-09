@@ -36,6 +36,10 @@ interface ResourceGaugeProps {
   onLimitChange?: (newLimit: number) => void;
   /** Disables the limit interaction (greyed out). */
   limitDisabled?: boolean;
+  /** Optional warning shown next to the limit badge (e.g. "advisory only").
+   *  Used by the GPU gauge when CUDA MPS isn't running so the slider can't
+   *  actually be enforced. Empty/undefined hides it. */
+  limitWarning?: string;
 }
 
 export function ResourceGauge({
@@ -49,6 +53,7 @@ export function ResourceGauge({
   limitUnit = "%",
   onLimitChange,
   limitDisabled = false,
+  limitWarning,
 }: ResourceGaugeProps) {
   const t = useT();
   const clampedPercent = Math.min(100, Math.max(0, percent));
@@ -162,6 +167,14 @@ export function ResourceGauge({
         <div className="resource-gauge__limit-label">
           {t("gauge.share_limit")}
           <strong>{formattedLimit}</strong>
+          {limitWarning && (
+            <span
+              className="resource-gauge__limit-warning"
+              title={limitWarning}
+            >
+              {" "}— {limitWarning}
+            </span>
+          )}
         </div>
       )}
     </div>

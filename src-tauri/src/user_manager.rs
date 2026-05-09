@@ -220,7 +220,15 @@ impl UserManager {
         let mem_max_path = format!("{CGROUP_PATH}/memory.max");
 
         if cpu_percent > 0 && cpu_percent <= 100 {
-            let quota = (cpu_percent as u64) * 1000;
+            // cgroup v2 cpu.max accounts CPU time across all cores : a quota
+            // of 100000us per 100000us period caps the cgroup at one full
+            // core (≈ 6.25% of a 16-core host). The user-facing slider means
+            // "% of the whole machine", so we scale the quota by the core
+            // count : 50% on a 16-core box ⇒ 800000us per 100000us = 8 cores.
+            let cores = std::thread::available_parallelism()
+                .map(|n| n.get() as u64)
+                .unwrap_or(1);
+            let quota = (cpu_percent as u64) * 1000 * cores;
             let val = format!("{quota} 100000");
             fs::write(&cpu_max_path, &val)
                 .map_err(|e| format!("Impossible d'écrire dans {cpu_max_path} : {e}"))?;

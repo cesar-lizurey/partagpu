@@ -47,7 +47,7 @@ const MAX_CONCURRENT_CONNECTIONS: usize = 64;
 /// already binds auth to ts + method + path + body_hash, so two requests
 /// with the same header are by definition byte-identical replays. Cap on
 /// entries below acts as a safety net if pruning lags.
-const REPLAY_RETENTION_SECS: u64 = crate::crypto::AUTH_WINDOW_SECS * 2;
+const REPLAY_RETENTION_SECS: u64 = (crate::crypto::AUTH_WINDOW_MS * 2) / 1000;
 const REPLAY_CACHE_MAX_ENTRIES: usize = 4096;
 
 /// In-memory cache of recently-seen, successfully-authenticated request

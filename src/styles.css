@@ -708,7 +708,14 @@ body {
   font-size: 0.75rem;
   color: var(--color-text-muted);
   white-space: nowrap;
-  min-width: 80px;
+  /* Largeur fixe pour aligner les pistes des trois lignes (CPU/RAM/GPU) :
+     les valeurs RAM en Mo sont plus longues que les % CPU/GPU, sans largeur
+     fixe les barres se decalaient horizontalement. flex-shrink: 0 empeche
+     l'ecrasement quand la fenetre est etroite. */
+  width: 140px;
+  flex-shrink: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Resource gauges ───────────────────────────────────── */
@@ -861,6 +868,11 @@ body {
 .resource-gauge__limit-label strong {
   color: var(--color-danger);
   font-weight: 600;
+}
+
+.resource-gauge__limit-warning {
+  color: var(--color-warning);
+  font-style: italic;
 }
 
 /* ── Tables ────────────────────────────────────────────── */

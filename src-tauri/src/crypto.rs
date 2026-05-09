@@ -52,9 +52,13 @@ const HKDF_SALT: &[u8] = b"PartaGPU/peer-api/v1";
 const HKDF_INFO: &[u8] = b"AES-256-GCM message key";
 const HKDF_INFO_V2: &[u8] = b"AES-256-GCM session key v2 (room|ecdh)";
 
-/// Anti-replay window for HMAC request auth (seconds). Used by the
+/// Anti-replay window for HMAC request auth (milliseconds). Used by the
 /// `X-PartaGPU-AUTH` header check to bound the clock-skew tolerance.
-pub const AUTH_WINDOW_SECS: u64 = 30;
+/// Millisecond granularity ensures that two requests scheduled within the
+/// same UNIX second produce distinct headers — otherwise a poll loop
+/// running at sub-second cadence would generate byte-identical auth
+/// headers and trip the replay cache.
+pub const AUTH_WINDOW_MS: u64 = 30_000;
 
 /// Content-Type header used to signal an encrypted body. Receivers MUST
 /// reject bodies that don't carry this content-type — rejecting plaintext
@@ -375,13 +379,13 @@ pub fn derive_auth_key(secret_base32: &str) -> Result<[u8; 32], CryptoError> {
 //   2. `compute_request_auth` / `verify_request_auth` : full HMAC bound to
 //      a specific HTTP request (timestamp + method + path + body hash).
 //      Sent in the `X-PartaGPU-AUTH` header. Anti-replay window of
-//      ±AUTH_WINDOW_SECS, plus binding to the request body so a captured
+//      ±AUTH_WINDOW_MS, plus binding to the request body so a captured
 //      header can't be reused with a different body.
 
-fn now_secs() -> u64 {
+fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
 
@@ -433,10 +437,10 @@ pub fn verify_response(auth_key: &[u8; 32], nonce: &[u8], candidate_hex: &str) -
 ///    || "\n" || sha256(body)`
 ///
 /// A captured header can therefore be replayed only on the same request
-/// payload and only within the AUTH_WINDOW_SECS window. Body integrity
+/// payload and only within the AUTH_WINDOW_MS window. Body integrity
 /// comes for free since the body hash is in the signed input.
 pub fn compute_request_auth(auth_key: &[u8; 32], method: &str, path: &str, body: &[u8]) -> String {
-    let ts = now_secs();
+    let ts = now_millis();
     format!(
         "{ts}:{}",
         request_hmac_hex(auth_key, ts, method, path, body)
@@ -484,9 +488,9 @@ pub fn verify_request_auth(
         return Err(AuthVerifyError::Malformed);
     }
     let ts: u64 = ts_str.parse().map_err(|_| AuthVerifyError::Malformed)?;
-    let now = now_secs();
+    let now = now_millis();
     let drift = now.abs_diff(ts);
-    if drift > AUTH_WINDOW_SECS {
+    if drift > AUTH_WINDOW_MS {
         return Err(AuthVerifyError::TimestampOutOfWindow { drift });
     }
     let expected = request_hmac_hex(auth_key, ts, method, path, body);
@@ -509,8 +513,8 @@ pub enum AuthVerifyError {
     /// Header doesn't parse as `<unix_ts>:<hex>`.
     #[error("header X-PartaGPU-AUTH mal formé")]
     Malformed,
-    /// `|now - ts|` exceeded `AUTH_WINDOW_SECS`. Likely clock skew or replay.
-    #[error("timestamp hors fenêtre (dérive {drift} s, max {})", AUTH_WINDOW_SECS)]
+    /// `|now - ts|` exceeded `AUTH_WINDOW_MS`. Likely clock skew or replay.
+    #[error("timestamp hors fenêtre (dérive {drift} ms, max {})", AUTH_WINDOW_MS)]
     TimestampOutOfWindow { drift: u64 },
     /// HMAC did not verify. Wrong key, tampered request, or unknown peer.
     #[error("HMAC invalide")]
@@ -773,7 +777,7 @@ mod tests {
         let secret_b32 = data_encoding::BASE32.encode(b"shared-room!!!!!!!!!!!!!");
         let key = derive_auth_key(&secret_b32).unwrap();
         // Build a header by hand with a far-past timestamp.
-        let ancient_ts = now_secs() - (AUTH_WINDOW_SECS * 10);
+        let ancient_ts = now_millis() - (AUTH_WINDOW_MS * 10);
         let hmac = request_hmac_hex(&key, ancient_ts, "POST", "/peer/v1/tasks", b"");
         let header = format!("{ancient_ts}:{hmac}");
         let err = verify_request_auth(&key, &header, "POST", "/peer/v1/tasks", b"").unwrap_err();

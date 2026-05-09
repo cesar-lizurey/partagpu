@@ -39,16 +39,27 @@ pub(super) fn sample_gpu_per_pid() -> HashMap<u32, f32> {
     out
 }
 
-/// Read the cgroup-accounted RSS of a sandbox task in megabytes. Reads
+/// Read the cgroup-accounted RAM of a sandbox task in megabytes. Reads
 /// `/proc/<root_pid>/cgroup` to find which sub-cgroup the bwrap parent
-/// lives in (`/sys/fs/cgroup/partagpu/task-<uuid>/`), then reads
-/// `memory.current` from that cgroup.
+/// lives in (`/sys/fs/cgroup/partagpu/task-<uuid>/`), then parses
+/// `memory.stat` from that cgroup and sums `anon + kernel_stack + pagetables
+/// + slab + sock` — i.e. memory that is actually allocated to the task and
+/// not reclaimable file cache.
 ///
-/// Why : summing `process.memory()` (RSS) across the descendant tree
-/// double-counts shared memory pages — a PyTorch worker tree with
-/// 3 processes each loading libtorch reports ~3× the real footprint.
-/// `memory.current` is the kernel's authoritative tally for that cgroup,
-/// computed without double-counting (PSS-style accounting at page level).
+/// Why not `memory.current` : that field includes file-backed page cache.
+/// A task that mmap'd a 10 GiB dataset shows 10 GiB in `memory.current`,
+/// but those pages are evictable and the host kernel reports them as
+/// "available", so `sysinfo::used_memory()` excludes them. Comparing the
+/// two leads to the per-user segments dwarfing the system "used" total
+/// (segments based on `memory.current`, total based on sysinfo) — the
+/// gauge ends up showing one peer "using" more than the whole machine.
+/// Summing only the unreclaimable fields gives a number that is directly
+/// comparable to sysinfo's view, so the segments fit inside the total.
+///
+/// Why summing `process.memory()` (RSS) across descendants is also wrong :
+/// it double-counts shared library pages — a PyTorch worker tree with
+/// 3 processes each loading libtorch would report ~3× the real footprint.
+/// The cgroup's own `anon` field is PSS-accounted at the page level.
 ///
 /// Returns `None` if the process isn't in a partagpu sub-cgroup (fallback
 /// path with no cgroup, or cgroup v1 layout — the caller falls back to
@@ -69,12 +80,23 @@ pub(super) fn cgroup_memory_mb(root_pid: u32) -> Option<u64> {
         }
     })?;
     let abs = PathBuf::from("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
-    let mem_bytes: u64 = std::fs::read_to_string(abs.join("memory.current"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    Some(mem_bytes / (1024 * 1024))
+    let stat = std::fs::read_to_string(abs.join("memory.stat")).ok()?;
+    // Sum only the fields that represent unreclaimable memory truly held
+    // by the task. Skip `file` (page cache, evictable) and `shmem` (already
+    // counted as anon in cgroup v2). Missing keys silently contribute 0.
+    const COUNTED: &[&str] = &["anon", "kernel_stack", "pagetables", "slab", "sock"];
+    let mut total_bytes: u64 = 0;
+    for line in stat.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(key) = parts.next() else { continue };
+        if !COUNTED.contains(&key) {
+            continue;
+        }
+        if let Some(val) = parts.next().and_then(|s| s.parse::<u64>().ok()) {
+            total_bytes = total_bytes.saturating_add(val);
+        }
+    }
+    Some(total_bytes / (1024 * 1024))
 }
 
 /// Collect the BFS process tree rooted at `root`, using the parent-child

@@ -445,9 +445,16 @@ fn cmd_setup_cgroup(cpu_str: &str, ram_str: &str) {
         "+cpu +memory +pids",
     );
 
-    // CPU limit
+    // CPU limit. cgroup v2 cpu.max counts CPU time across all cores, so a
+    // quota of 100000us per 100000us period caps the cgroup at one full core
+    // (≈ 6.25% on a 16-core host). The user-facing slider means "% of the
+    // whole machine" — scale the quota by the core count so 50% on a
+    // 16-core box becomes 800000us per 100000us = 8 cores.
     if cpu_percent > 0 && cpu_percent <= 100 {
-        let quota = cpu_percent * 1000;
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get() as u64)
+            .unwrap_or(1);
+        let quota = (cpu_percent as u64) * 1000 * cores;
         write_file(
             &format!("{CGROUP_PATH}/cpu.max"),
             &format!("{quota} 100000"),
